@@ -245,6 +245,21 @@ test('evidence: what the statements show, what the GL shows, and where both agre
   assert.equal(ev('auto-incoming'), 'statement');
 });
 
+test('a Stripe transfer that’s a gift through someone else’s Stripe stays in revenue', () => {
+  // October 2025: 9.43 "STRIPE/TRANSFER" on Cass, not one of our payouts; the GL books it as a DAF gift.
+  const rec = feb();
+  rec.statements.operating.transactions.push(cr('5884-s1', '2026-02-02', 308676.23, 'STRIPE/TRANSFER'), cr('5884-s2', '2026-02-27', 9.43, 'STRIPE/TRANSFER'));
+  rec.stripe = { payouts: 308676.23, revenue: 0, payments: 0, refunds: 0 };
+  const g = glBy();
+  g['2026-02'].receipts.push(gl('ST1', '2026-02-02', 308676.23, { 1200: 308676.23 }, 'Transfer Stripe Checking to Cass Operating'), gl('EV1', '2026-02-27', 9.43, { 4018: 9.43 }, 'DAF Gifts - Every.org via Stripe Transfer'));
+  const d = depositChecks({ recs: { '2026-02': rec }, glBy: g })['2026-02'];
+  assert.deepEqual(d.stripeGifts.map((x) => x.id), ['5884-s2']);
+  const c = computePoc(rec, { deposits: d });
+  assert.equal(c.adjustments.find((a) => a.id === 'auto-stripe').amount, -308676.23); // the gift isn't taken out
+  assert.equal(c.stripeCheck.state, 'match');
+  assert.ok(c.stripeCheck.ignored[0].ignored.gift);
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

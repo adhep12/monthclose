@@ -135,6 +135,12 @@ function matchMonth(month, lines, receiptsBy, used) {
     const x = all.filter((y) => open(y) && y.stripe && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
     if (x) take(x, [l]);
   }
+  // A Stripe transfer that isn't one of our payouts can be a gift paid through someone else's Stripe
+  // account (Every.org, October: 9.43), which the GL books as revenue.
+  for (const l of lines.filter((y) => STRIPE.test(y.desc) && !byLine.has(y))) {
+    const x = all.filter((y) => open(y) && y.kind === 'revenue' && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
+    if (x) take(x, [l]);
+  }
 
   // Incoming, a day at a time.
   const days = {};
@@ -280,6 +286,7 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const x = byLine.get(l);
       const k = x ? glKind(x.r, config, names) : null;
       res.lines.push({ line: l, match: x ? { ...x.r, when: x.when, group: x.group, ...k } : null });
+      if (x && STRIPE.test(l.desc) && k.kind === 'revenue') (res.stripeGifts ||= []).push({ id: l.id, batch: x.r.batch, desc: x.r.desc, label: k.label });
       if (!x) {
         if (!STRIPE.test(l.desc) && l.kind !== 'outgoing') res.noGl.push({ line: l, covered: coveredBy(l.amount) });
         continue;

@@ -237,7 +237,9 @@ export function statementAdjustments(rec, deposits = null) {
       detail: [{ date: `${rec.month}-01`.slice(0, 10), amount: -rec.stripe.disputes, desc: 'Stripe CSV: Disputes, gross amount' }] });
   }
   if (st.operating) {
-    const stripe = st.operating.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc));
+    // Gifts that arrived through someone else's Stripe account stay in revenue (per the GL).
+    const gifts = new Set((deposits?.stripeGifts || []).map((g) => g.id));
+    const stripe = st.operating.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc) && !gifts.has(t.id));
     if (stripe.length) {
       adj.push({ id: 'auto-stripe', account: 'cassOp', type: 'transfer', label: 'Stripe transfers into Cass', amount: -round2(sum(stripe, (t) => t.amount)), auto: true,
         detail: stripe.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc })),
@@ -310,7 +312,7 @@ export function statementAdjustments(rec, deposits = null) {
 export const EVIDENCE = {
   statement: { label: 'Statement', hint: 'The bank statement (or Stripe / PayPal / Wise report) shows it and says what it is.' },
   both: { label: 'Statement + GL', hint: 'The statement shows it, and the GL books it the same way.' },
-  glWhat: { label: 'Statement (GL says what)', hint: 'The statement shows the amount; the GL says what it was.' },
+  glWhat: { label: 'Statement amount · GL says what', hint: 'The deposit and its amount are on the statement, but the statement doesn’t say who or what it was (a check deposit, say). The GL batch does — vouch it to the check or deposit slip.' },
   gl: { label: 'GL', hint: 'Only the GL shows it — a book entry with no bank document behind it (a reclass, a fee netted out, cash spent before deposit).' },
   typed: { label: 'Typed', hint: 'Entered by a person, with their note.' },
 };
@@ -324,12 +326,14 @@ const NAMED_PAYER = /WEX COBRA|ADP (WAGE|TAX)|CIGNA|DIVVY REIMBURSEM|PLANE\/REFU
 // credits on the Cass Operating statement. A payout at month end can land in Cass the next
 // month, so a difference can be explained (with a note) — the explanation is tied to the exact
 // difference, so it flags again if either number changes.
-export function stripePayoutCheck(rec) {
+export function stripePayoutCheck(rec, deposits = null) {
   const op = rec.statements?.operating;
   const all = op ? op.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc)) : null;
   // Transfers someone chose to leave out of this check (small Stripe payments that aren't payouts).
-  // They still come out of Cass deposits as Stripe money; only the comparison skips them.
-  const ignoredBy = rec.stripeIgnored || {};
+  // They still come out of Cass deposits as Stripe money; only the comparison skips them. A gift
+  // through someone else's Stripe account (per the GL) is left out too, and stays in revenue.
+  const gifts = Object.fromEntries((deposits?.stripeGifts || []).map((g) => [g.id, { note: `A gift, not a Stripe payout — the GL books it as revenue: ${g.batch} ${g.desc} (${g.label})`, gift: true, by: 'GL' }]));
+  const ignoredBy = { ...(rec.stripeIgnored || {}), ...gifts };
   const transfers = all ? all.filter((t) => !ignoredBy[t.id]) : null;
   const ignored = all ? all.filter((t) => ignoredBy[t.id]).map((t) => ({ ...t, ignored: ignoredBy[t.id] })) : [];
   const cass = transfers ? round2(sum(transfers, (t) => t.amount)) : null;
@@ -463,7 +467,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
     ditTotal, priorDit, ditChange, timing: t,
     revAdjusted, intAdjusted,
     glRev, glInt, glSource, gl, workbookGl,
-    stripeCheck: stripePayoutCheck(rec),
+    stripeCheck: stripePayoutCheck(rec, deposits),
     warnings: [...missingStatements(rec), ...ditNotes], deposits, ditFromGl: !!deposits?.dit, waiting, priorDitMissing,
     diffRev, diffInt,
     pctRev: diffRev == null || !glRev ? null : diffRev / glRev,

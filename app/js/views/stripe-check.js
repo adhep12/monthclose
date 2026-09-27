@@ -45,9 +45,10 @@ export function stripeCheckBox(chk, { rec, user, onChange }) {
       h('p', { class: 'muted' }, 'Ignore a transfer that isn’t a Stripe payout (a small stray Stripe payment, say) to leave it out of this check.'),
       table([
         { label: 'Date', cell: (t) => t.date },
-        { label: 'Description', cell: (t) => h('span', { class: 'wrap' }, `${t.desc}${t.detail ? ` ${t.detail}` : ''}`, t.ignored ? h('div', { class: 'muted' }, `Ignored${t.ignored.note ? `: “${t.ignored.note}”` : ''} — ${t.ignored.by} · ${when(t.ignored.at)}`) : null) },
+        { label: 'Description', cell: (t) => h('span', { class: 'wrap' }, `${t.desc}${t.detail ? ` ${t.detail}` : ''}`, t.ignored ? h('div', { class: 'muted' }, t.ignored.gift ? t.ignored.note : `Ignored${t.ignored.note ? `: “${t.ignored.note}”` : ''} — ${t.ignored.by} · ${when(t.ignored.at)}`) : null) },
         { label: 'Amount', num: true, cell: (t) => (t.ignored ? h('s', { class: 'muted' }, money(t.amount)) : money(t.amount)) },
-        { label: '', cell: (t) => (t.ignored
+        { label: '', cell: (t) => (t.ignored?.gift ? h('span', { class: 'pill good' }, 'Gift — revenue')
+          : t.ignored
           ? h('button', { class: 'small-btn', onclick: () => include(t) }, 'Include')
           : h('button', { class: 'small-btn', onclick: () => ignore(t) }, 'Ignore…')) },
       ], [...chk.transfers, ...chk.ignored].sort((a, b) => a.date.localeCompare(b.date)))) : null);

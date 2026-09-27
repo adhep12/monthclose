@@ -69,6 +69,10 @@ export const adjKey = adjGroup;
 // Where the sheet was scrolled (sideways and down), per fiscal year. Kept for the whole visit so
 // attaching a statement, or going to a month and back, returns you to the same spot.
 const scrollMemory = {};
+// After a decision made in a pop-up is saved, the sheet redraws and the same pop-up opens again
+// with the new numbers.
+let reopenAfter = null;
+const REVIEW_TYPES = [['revenue', 'Revenue'], ['transfer', 'Transfer between accounts'], ['prior-period', 'Recognized in another month'], ['not-revenue', 'Not revenue (refund etc.)']];
 
 function blank(month) {
   return { month, bank: {}, statements: {}, bankStatements: {}, excluded: {}, adjustments: [], dit: [], timing: {}, gl: {}, notes: '', log: [], autoConfirm: {} };
@@ -345,7 +349,7 @@ export default async function (main, { user, rerender }) {
     const files = ACCOUNT_FILES[id] || {};
     const src = BANK_SOURCES.find((s) => s.id === id);
 
-    await panel(`${label(id)} — ${monthName(m)}`, (body) => {
+    await panel(`${label(id)} — ${monthName(m)}`, (body, close) => {
       let draw = () => {};
       const doAttach = async (list) => {
         if (!list.length) return;
@@ -428,7 +432,7 @@ export default async function (main, { user, rerender }) {
                 } }, 'Save'))),
           auto && src.id !== 'cd' ? h('p', { class: 'muted small' }, 'Detach the statement to type figures instead.') : null,
 
-          id === 'cassOp' ? cassSummary(c, m) : null,
+          id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec) : null,
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
@@ -493,9 +497,32 @@ export default async function (main, { user, rerender }) {
       outs.some((x) => x.state !== 'paid' && x.state !== 'transfer') ? h('p', { class: 'small' }, h('a', { href: `#/poc/${rec.month}` }, 'Mark the deposit as a transfer on the month page →')) : null);
   }
 
-  function cassSummary(c, m) {
+  function cassSummary(c, m, close) {
     const cassAdj = c.adjustments.filter((a) => a.account === 'cassOp' || a.auto);
-    return h('div', {}, h('h3', {}, 'Taken out of Cass deposits'),
+    const dep = c.deposits;
+    const again = { kind: 'account', id: 'cassOp', m };
+    const conflicts = dep?.conflicts || [];
+    const noGl = (dep?.noGl || []).filter((x) => !x.covered);
+    return h('div', {},
+      conflicts.length ? h('div', { class: 'notice warn' }, h('h3', {}, 'To decide: a rule says it isn’t revenue, the GL booked it as revenue'),
+        table([
+          { label: 'Date', cell: (x) => x.line.date },
+          { label: 'Deposit', cell: (x) => h('span', { class: 'wrap' }, x.line.desc) },
+          { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
+          { label: 'The rule / the GL', cell: (x) => h('span', { class: 'small wrap' }, `${x.rule.note} · GL: ${x.match.batch} ${x.match.desc}`) },
+          { label: '', cell: (x) => h('div', { class: 'row' },
+            h('button', { class: 'small-btn', onclick: () => treatAs(m, x.line, x.rule.type, `Confirmed: ${x.rule.note}`, again, close) }, x.rule.type === 'transfer' ? 'It’s a transfer' : 'Not revenue'),
+            h('button', { class: 'small-btn', onclick: () => treatAs(m, x.line, 'revenue', '', again, close) }, 'It’s revenue')) },
+        ], conflicts)) : null,
+      noGl.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have'),
+        h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side. Usually revenue booked in another month. Counted as revenue until you say otherwise.'),
+        table([
+          { label: 'Date', cell: (x) => x.line.date },
+          { label: 'Deposit', cell: (x) => h('span', { class: 'wrap' }, `${x.line.desc}${x.line.detail ? ` — ${x.line.detail}` : ''}`) },
+          { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
+          { label: 'Treat as', cell: (x) => treatSelect(m, x.line, 'revenue', again, close) },
+        ], noGl)) : null,
+      h('h3', {}, 'Taken out of Cass deposits'),
       cassAdj.length ? table([
         { label: 'What', cell: (a) => h('div', {}, adjDetail(a), a.detail?.length ? h('div', { class: 'muted small wrap' }, a.detail.slice(0, 6).map((d) => `${d.date} ${d.desc} ${money(d.amount)}`).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null) },
         { label: 'Type', cell: (a) => ADJUSTMENT_TYPES[a.type] || '' },
@@ -504,13 +531,73 @@ export default async function (main, { user, rerender }) {
       h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, 'Review every deposit (revenue / transfer / not revenue) on the month page →')));
   }
 
+  // ---- Decisions made from the fiscal year's pop-ups ----------------------------------------
+  // Saved to that month's record (logged, like on the month page); the sheet redraws and the pop-up
+  // reopens.
+  async function decide(m, change, what, again, close) {
+    try {
+      const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+      change(rec);
+      logChange(rec, user, what);
+      await saveRec(rec);
+      reopenAfter = again;
+      close?.(true);
+      rerender();
+    } catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
+  }
+  // How a deposit on the statement counts: revenue, or taken out (and why).
+  function treatAs(m, line, type, note, again, close) {
+    const name = (REVIEW_TYPES.find((x) => x[0] === type) || [, type])[1].toLowerCase();
+    return decide(m, (rec) => {
+      rec.excluded ||= {};
+      delete rec.excluded[line.id];
+      if (type === 'revenue') rec.dismissed = { ...(rec.dismissed || {}), [line.id]: true };
+      else { rec.excluded[line.id] = { type, note: note || '' }; if (rec.dismissed) delete rec.dismissed[line.id]; }
+    }, `${line.date} ${line.desc} ${money(line.amount)}: ${type === 'revenue' ? 'counted as revenue' : `marked as ${name}`} (from the fiscal year sheet)`, again, close);
+  }
+  function treatSelect(m, line, current, again, close) {
+    return h('select', { onchange: (e) => treatAs(m, line, e.target.value, '', again, close) }, REVIEW_TYPES.map(([v, t]) => h('option', { value: v, selected: v === current }, t)));
+  }
+  function leaveOut(m, a, again, close) {
+    return decide(m, (rec) => { rec.dismissed = { ...(rec.dismissed || {}), [a.id]: true }; }, `Left out “${a.label}” ${money(a.amount)} (from the fiscal year sheet)`, again, close);
+  }
+  // Deposits in transit for month m, with the same choices as the month page.
+  function ditBlock(m, c, close, again) {
+    const dit = c.deposits?.dit;
+    const M = short(m), N = short(addMonths(m, 1));
+    if (!dit) {
+      return h('div', {}, table([
+        { label: 'Date', cell: (d) => d.date || '' }, { label: 'Description', cell: (d) => d.note || '' }, { label: 'Amount', num: true, cell: (d) => money(d.amount) },
+      ], byMonth[m]?.dit || [], { empty: 'None entered.' }), h('p', { class: 'muted small' }, 'Upload the GL register to work these out from the GL.'));
+    }
+    const rows = dit.rows.filter((r) => r.counts || r.flagged || r.choice);
+    const setIn = (r, inTransit) => decide(m, (rec) => { rec.ditGl = { ...(rec.ditGl || {}), [r.batch]: { in: inTransit, by: user, at: nowIso() } }; },
+      `${r.desc} ${money(r.amount)}: ${inTransit ? `in transit at the end of ${monthName(m)}` : 'not in transit'} (from the fiscal year sheet)`, again, close);
+    const todo = dit.rows.filter((r) => r.flagged);
+    return h('div', {},
+      table([
+        { label: 'Hit the bank in', cell: (r) => (r.settled ? h('span', {}, r.counts ? (r.sign > 0 ? `${N} — in transit` : `${M}, booked ${N}`) : r.sign > 0 ? M : N)
+          : h('select', { onchange: (e) => setIn(r, e.target.value === 'in') },
+            ...(r.sign > 0 ? [['in', `${N} — in transit`], ['out', M]] : [['in', `${M} — booked in ${N}`], ['out', N]]).map(([v, t]) => h('option', { value: v, selected: (r.counts ? 'in' : 'out') === v }, t)))) },
+        { label: 'GL date', cell: (r) => r.date },
+        { label: 'Description', cell: (r) => h('span', { class: 'wrap' }, r.desc) },
+        { label: 'Why', cell: (r) => h('span', { class: 'small wrap' }, r.evidence) },
+        { label: 'Amount', num: true, cell: (r) => (r.counts ? money(r.sign * r.amount) : h('s', { class: 'muted' }, money(r.sign * r.amount))) },
+        { label: '', cell: (r) => (r.settled ? statusPill('Statement', 'good') : r.choice ? h('span', { class: 'small muted' }, `${r.choice.by} · ${when(r.choice.at)}`) : r.flagged ? statusPill('To confirm', 'warn') : '') },
+      ], rows, { empty: 'Nothing near month end.', foot: (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Hit the bank in' ? 'In transit, from the GL' : '') }),
+      dit.manual.length ? h('p', { class: 'small' }, `Typed on the month page: ${dit.manual.map((x) => `${x.d.note || 'deposit'} ${money(x.d.amount)}${x.duplicate ? ' (also on the GL’s list — not counted twice)' : ''}`).join('; ')}.`) : null,
+      todo.length ? h('div', { class: 'row', style: { marginTop: '.5rem' } }, h('button', { onclick: () => decide(m, (rec) => {
+        rec.ditGl = { ...(rec.ditGl || {}), ...Object.fromEntries(todo.map((r) => [r.batch, { in: r.suggested, by: user, at: nowIso() }])) };
+      }, `Confirmed ${todo.length} deposits in transit as suggested (from the fiscal year sheet)`, again, close) }, `Confirm ${todo.length} as suggested`)) : null);
+  }
+
   // ---- Adjustment detail panel -------------------------------------------------------------
   async function openAdjustments(key, m) {
     const col = cols.find((x) => x.m === m);
     if (!col?.c) return;
     const list = col.c.adjustments.filter((a) => adjKey(a) === key);
     const c = col.c;
-    await panel(`${key} — ${monthName(m)}`, (body) => {
+    await panel(`${key} — ${monthName(m)}`, (body, close) => {
       // Detail lines carry the transaction's own (positive) amount; show them with the adjustment's sign.
       const items = list.flatMap((a) => (a.detail?.length ? a.detail.map((d) => ({ ...d, a, shown: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, note: a.note, a, shown: a.amount }]));
       // Say what each item was, and who: a sweep between our own Cass accounts ("Trnsfr from
@@ -528,6 +615,17 @@ export default async function (main, { user, rerender }) {
       const what = (x) => (plumbing.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
       const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
       const withNotes = items.some((x) => extra(x));
+      // What can be decided here: how a deposit counts, or leaving out something the GL found.
+      const lineOf = (a) => (/^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null);
+      const action = (x) => {
+        const id = lineOf(x.a);
+        if (id) {
+          const line = { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) };
+          return treatSelect(m, line, x.a.type || 'not-revenue', { kind: 'adjustments', key, m }, close);
+        }
+        if (/^auto-gl/.test(x.a.id || '')) return h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, { kind: 'adjustments', key, m }, close) }, 'Leave out');
+        return '';
+      };
       const cols_ = [
         { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
         { label: 'Date', cell: (x) => x.date || '' },
@@ -535,6 +633,7 @@ export default async function (main, { user, rerender }) {
         { label: 'Amount', num: true, cell: (x) => money(x.shown) },
         { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
         ...(withNotes ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small' }, extra(x)) }] : []),
+        { label: '', cell: (x) => action(x) },
       ];
       // One section per kind of item, each with its reason and subtotal.
       const kinds = [...new Set(list.map(adjDetail))];
@@ -547,10 +646,13 @@ export default async function (main, { user, rerender }) {
           why ? h('p', { class: 'muted small' }, why) : null,
           table(cols_, its));
       };
+      const again = { kind: 'adjustments', key, m };
       const dit = key === TIMING && c.ditChange != null ? h('div', { class: 'adj-section' },
         h('div', { class: 'row' }, h('h3', {}, 'Deposits in transit (change)'), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(c.ditChange))),
-        h('p', { class: 'muted small' }, `${monthName(m)} in transit ${money(c.ditTotal, { dash: false })}, less ${monthName(addMonths(m, -1))}’s ${c.priorDit == null ? '(not known)' : money(c.priorDit, { dash: false })}. `,
-          h('button', { class: 'small-btn', onclick: () => openDit(m) }, 'See each deposit'))) : null;
+        h('p', { class: 'muted small' }, `${monthName(m)} in transit ${money(c.ditTotal, { dash: false })}, less ${monthName(addMonths(m, -1))}’s ${c.priorDit == null ? '(not known — counted as none)' : money(c.priorDit, { dash: false })}. `,
+          h('button', { class: 'small-btn', onclick: () => openDit(m) }, `${monthName(addMonths(m, -1))}’s list too`)),
+        h('h4', {}, `In transit at the end of ${monthName(m)}`),
+        ditBlock(m, c, close, again)) : null;
       mount(body,
         dit, kinds.map(section),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } }, rowKV(`${key}, total`, h('strong', {}, money(round2(sum(list, (a) => a.amount) + (dit ? c.ditChange : 0)))))),
@@ -617,10 +719,10 @@ export default async function (main, { user, rerender }) {
       { label: 'Amount', num: true, cell: (x) => money(x.amount) },
       { label: '', cell: (x) => (x.from === 'To confirm' ? statusPill('To confirm', 'warn') : x.from === 'Statement' ? statusPill('Statement', 'good') : h('span', { class: 'small muted' }, x.from)) },
     ], list, { empty, foot: (col_) => (col_.label === 'Amount' ? money(round2(sum(list, (x) => x.amount))) : col_.label === 'GL date' ? 'Total' : '') });
-    await panel(`Deposits in transit — ${monthName(m)}`, (body) => {
+    await panel(`Deposits in transit — ${monthName(m)}`, (body, close) => {
       mount(body,
         h('p', { class: 'muted' }, `Money the GL booked as revenue in one month that reached the bank in the next. The change is ${monthName(m)}’s in transit less ${monthName(prev)}’s, which reached the bank in ${monthName(m)}. The GL names the bank date in each batch (“3.3.2026 February Deposit”); the next month’s statement confirms it.`),
-        h('h3', {}, `In transit at the end of ${monthName(m)} (plus)`), tableOf(thisList, 'None.'),
+        h('h3', {}, `In transit at the end of ${monthName(m)} (plus)`), c.deposits?.dit ? ditBlock(m, c, close, { kind: 'dit', m }) : tableOf(thisList, 'None.'),
         h('h3', {}, `In transit at the end of ${monthName(prev)}, reached the bank in ${monthName(m)} (less)`),
         priorList ? tableOf(priorList, 'None.') : h('p', { class: 'small warn-text' }, `Not known — ${monthName(prev)} isn’t in the GL and none were entered for it, so nothing comes off. Its deposits that reached the bank in ${monthName(m)} are marked “Recognized in another month” on the deposit list instead.`),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } },
@@ -789,6 +891,11 @@ export default async function (main, { user, rerender }) {
       sheet(true, false, 'Revenue', { expand: true }), sheet(false, true, 'Interest', { expand: true })),
   );
 
+  // A decision was just saved from a pop-up: open it again with the new numbers.
+  if (reopenAfter) {
+    const r = reopenAfter; reopenAfter = null;
+    setTimeout(() => (r.kind === 'adjustments' ? openAdjustments(r.key, r.m) : r.kind === 'dit' ? openDit(r.m) : r.kind === 'account' ? openAccount(r.id, r.m) : null), 0);
+  }
   const saved = scrollMemory[fy];
   if (saved) {
     main.querySelectorAll('.screen-only .sheet').forEach((el, i) => { el.scrollLeft = saved.x[i] ?? saved.x[0] ?? 0; });
