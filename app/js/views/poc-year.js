@@ -14,6 +14,7 @@ import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, 
 import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
+import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
 const SHOW_KEY = 'monthclose:poc-show';
@@ -86,6 +87,7 @@ export default async function (main, { user, rerender }) {
   const bankRows = SHEET_ORDER.map((id) => {
     const mark = (k) => (c, rec) => {
       const l = line(c, id);
+      if (id === 'stripe' && k === 'rev' && c.stripeCheck?.state === 'mismatch') return { mark: '⚠', title: stripeFlagText(c.stripeCheck) };
       if (l[k] == null) return null;
       const st = confirmationState(rec.bank?.[id], l.values);
       return { mark: st === 'confirmed' ? '✓' : st === 'stale' ? '!' : '', title: `${l.from === 'typed' ? 'Typed' : `From ${l.from || 'the workbook'}`}${st === 'confirmed' ? ` · confirmed by ${rec.bank[id].confirmation.by}` : st === 'stale' ? ' · changed since it was confirmed' : ' · not confirmed yet'}` };
@@ -99,8 +101,10 @@ export default async function (main, { user, rerender }) {
   const rows = [
     { section: 'Per Bank Statement' },
     ...bankRows,
-    { label: `${adjOpen ? '▾' : '▸'} Cass Operating - Total Adjustments`, rev: (c) => c.adjTotal, toggle: true, hint: 'Click to open up what’s being adjusted' },
-    ...(adjOpen ? adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k })) : []),
+    { label: `${adjOpen ? '▾' : '▸'} Cass Operating - Total Adjustments`, rev: (c) => c.adjTotal, toggle: true, hint: 'Click to open up what’s being adjusted',
+      meta: { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : null) } },
+    ...(adjOpen ? adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
+      meta: k === 'Stripe Transfers' ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Matches the Stripe CSV payouts' } : null) } : null })) : []),
     { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + c.adjTotal), int: (c) => c.bankInt, strong: true },
     { section: 'Adjustments for Timing' },
     { label: 'Plus Deposit in Transit (change)', rev: (c) => c.ditChange, dit: true },
@@ -137,7 +141,7 @@ export default async function (main, { user, rerender }) {
     if (onclick) cls.push('clickable-cell');
     return h('td', { class: cls.join(' '), title: meta?.title || (onclick ? 'Click to open' : ''), onclick },
       v == null ? (onclick && empty ? h('span', { class: 'add-hint' }, empty) : '') : strong ? h('strong', {}, money(v)) : money(v),
-      meta?.mark ? h('span', { class: meta.mark === '✓' ? 'good-text' : 'warn-text' }, ` ${meta.mark}`) : null);
+      meta?.mark ? h('span', { class: meta.mark === '✓' ? 'good-text' : meta.mark === '⚠' ? 'error' : 'warn-text' }, ` ${meta.mark}`) : null);
   }
 
   function sheet(showRev, showInt, title) {
@@ -286,6 +290,7 @@ export default async function (main, { user, rerender }) {
           auto && src.id !== 'cd' ? h('p', { class: 'muted small' }, 'Detach the statement to type figures instead.') : null,
 
           id === 'cassOp' ? cassSummary(c, m) : null,
+          id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('h3', {}, 'Confirmation'),

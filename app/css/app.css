@@ -256,3 +256,10 @@ main.content { margin: 0 auto; }
 .drop-zone { display: block; border: 2px dashed var(--line); border-radius: var(--radius); padding: 1.1rem 1rem; text-align: center; cursor: pointer; margin: .5rem 0; background: color-mix(in srgb, var(--bg) 50%, var(--panel)); }
 .drop-zone:hover { border-color: var(--accent); }
 .drop-zone strong { color: var(--accent); }
+.check-box { border: 1px solid var(--line); border-radius: var(--radius); padding: .7rem .9rem; margin: .75rem 0; }
+.check-box.good { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.check-box.good > .row strong { color: var(--good); }
+.check-box.bad { border-color: var(--bad); background: var(--bad-soft); }
+.check-box.bad > .row strong { color: var(--bad); }
+.check-box.info { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.check-box .recon { max-width: 26rem; margin-top: .35rem; }

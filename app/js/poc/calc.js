@@ -174,6 +174,27 @@ export function statementAdjustments(rec) {
   return adj;
 }
 
+// ---- Stripe payouts vs Cass --------------------------------------------------------------
+// What Stripe says it paid out in the month (monthly CSV) should equal the STRIPE/TRANSFER
+// credits on the Cass Operating statement. A payout at month end can land in Cass the next
+// month, so a difference can be explained (with a note) — the explanation is tied to the exact
+// difference, so it flags again if either number changes.
+export function stripePayoutCheck(rec) {
+  const op = rec.statements?.operating;
+  const transfers = op ? op.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc)) : null;
+  const cass = transfers ? round2(sum(transfers, (t) => t.amount)) : null;
+  const csv = rec.stripe ? round2(rec.stripe.payouts || 0) : null;
+  const base = { cass, csv, transfers: transfers || [], explained: rec.stripeCheck || null };
+  if (cass == null || csv == null) return { ...base, state: 'incomplete', diff: null };
+  const diff = round2(cass - csv);
+  if (Math.abs(diff) < 0.005) return { ...base, state: 'match', diff };
+  if (rec.stripeCheck?.diff === diff) return { ...base, state: 'explained', diff };
+  // A hint for the usual cause: transfers in the first days of the month are often last
+  // month's payouts arriving late.
+  const early = (transfers || []).filter((t) => Number(t.date.slice(8, 10)) <= 3);
+  return { ...base, state: 'mismatch', diff, early };
+}
+
 export function glFigures({ glActivity, tb, soa = null, month, config = DEFAULT_POC_CONFIG }) {
   // Net debit per account for the month: from a GL register upload, or failing that a TB for
   // the same period (its Debit/Credit columns are the period's activity), or failing that the
@@ -264,6 +285,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
     ditTotal, priorDit, ditChange, timing: t,
     revAdjusted, intAdjusted,
     glRev, glInt, glSource, gl, workbookGl,
+    stripeCheck: stripePayoutCheck(rec),
     diffRev, diffInt,
     pctRev: diffRev == null || !glRev ? null : diffRev / glRev,
     pctInt: diffInt == null || !glInt ? null : diffInt / glInt,

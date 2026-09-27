@@ -82,3 +82,17 @@ test('interest side: bank interest plus accrual less prior accrual realized', ()
   assert.equal(c.intAdjusted, 47328.38);
   assert.equal(c.diffInt, 0);
 });
+
+test('Stripe payouts per the CSV are checked against the Stripe transfers into Cass', async () => {
+  const { stripePayoutCheck } = await import('../app/js/poc/calc.js');
+  const op = parseCassStatement(operating); // one STRIPE/TRANSFER credit of 1,000,000
+  assert.equal(stripePayoutCheck({ statements: { operating: op } }).state, 'incomplete');
+  assert.equal(stripePayoutCheck({ statements: { operating: op }, stripe: { payouts: 1000000 } }).state, 'match');
+  const off = stripePayoutCheck({ statements: { operating: op }, stripe: { payouts: 1250000 } });
+  assert.equal(off.state, 'mismatch');
+  assert.equal(off.diff, -250000);
+  const explained = { statements: { operating: op }, stripe: { payouts: 1250000 }, stripeCheck: { diff: -250000, note: 'timing' } };
+  assert.equal(stripePayoutCheck(explained).state, 'explained');
+  // The explanation is for that exact difference: if a number changes, it flags again.
+  assert.equal(stripePayoutCheck({ ...explained, stripe: { payouts: 1300000 } }).state, 'mismatch');
+});

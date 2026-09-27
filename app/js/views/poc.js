@@ -2,6 +2,7 @@ import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } f
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa } from '../data.js';
 import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest } from '../poc/calc.js';
 import { attachFiles } from '../poc/attach.js';
+import { stripeCheckBox } from './stripe-check.js';
 import { monthSummary } from '../cd/schedule.js';
 import { ACCEPT } from '../ingest.js';
 import { balanceAtEndOf } from '../tb.js';
@@ -95,6 +96,7 @@ export default async function (main, { month, monthName, user, rerender }) {
   const logHost = h('div');
   const signHost = h('div');
   const ditTotals = h('span', { class: 'small' });
+  const stripeHost = h('div');
 
   function refresh() {
     const c = calc();
@@ -246,6 +248,7 @@ export default async function (main, { month, monthName, user, rerender }) {
   // ---- Adjustments -------------------------------------------------------------------------
   function drawAutoAdj(c) {
     const auto = c.adjustments.filter((a) => a.auto);
+    stripeHost.replaceChildren(stripeCheckBox(c.stripeCheck, { rec, user, onChange: () => changed({ now: true }) }));
     const stmt = rec.statements.operating || rec.statements.incoming || rec.statements.outgoing;
     mount(autoAdjHost, auto.length ? table([
       { label: 'From the Cass statements', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null,
@@ -395,7 +398,7 @@ export default async function (main, { month, monthName, user, rerender }) {
     h('h2', {}, 'Statements'), uploadHost,
     h('h2', {}, 'Accounts'), cardsHost,
     reviewHost,
-    h('h2', {}, 'Adjustments'), autoAdjHost, h('h3', {}, 'Other adjustments'), adjHost,
+    h('h2', {}, 'Adjustments'), stripeHost, autoAdjHost, h('h3', {}, 'Other adjustments'), adjHost,
     h('h2', {}, 'Timing'), ditHost, timingHost,
     h('h2', {}, 'GL (statement of activities)'), glHost,
     h('h2', {}, 'Notes'),
