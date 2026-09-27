@@ -122,18 +122,21 @@ export default async function (main, { user, rerender }) {
   for (const { c } of cols.filter((x) => x.c)) for (const a of c.adjustments) { const k = adjKey(a); if (!adjLabels.includes(k)) adjLabels.push(k); }
   const adjFor = (k) => (c) => { const list = c.adjustments.filter((a) => adjKey(a) === k); return list.length ? round2(sum(list, (a) => a.amount)) : null; };
 
-  const adjRows = () => adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
-    meta: k === 'Stripe Transfers' ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Matches the Stripe CSV payouts' } : null) } : null }));
+  // Deposits in transit sit with the other adjustments: this month's in transit, less last month's
+  // that reached the bank this month. Opening it lists both, from the GL.
+  const ditMeta = { rev: (c) => (c.priorDitMissing ? { mark: '?', title: 'Last month’s deposits in transit aren’t known, so this month’s count in full — open to see' } : c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open to see` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) };
+  const adjRows = () => [...adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
+    meta: k === 'Stripe Transfers' ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Matches the Stripe CSV payouts' } : null) } : null })),
+    { label: 'Deposits in transit (change)', rev: (c) => c.ditChange, indent: true, ditDetail: true, meta: ditMeta }];
+  const withDit = (c) => round2(c.adjTotal + (c.ditChange || 0));
   const screenRows = [
     { section: 'Per Bank Statement' },
     ...bankRows,
-    { label: `${adjOpen ? '▾' : '▸'} Total Adjustments (all accounts)`, rev: (c) => c.adjTotal, toggle: true, hint: 'Click to open up what’s being adjusted',
+    { label: `${adjOpen ? '▾' : '▸'} Total Adjustments (all accounts)`, rev: withDit, toggle: true, hint: 'Click to open up what’s being adjusted, deposits in transit included',
       meta: { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : null) } },
     ...(adjOpen ? adjRows() : []),
-    { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + c.adjTotal), int: (c) => c.bankInt, strong: true },
+    { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + withDit(c)), int: (c) => c.bankInt, strong: true },
     { section: 'Adjustments for Timing' },
-    { label: 'Plus Deposit in Transit (change)', rev: (c) => c.ditChange, dit: true,
-      meta: { rev: (c) => (c.priorDitMissing ? { mark: '?', title: 'Last month’s deposits in transit aren’t known, so this month’s count in full — open the month' } : c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open the month` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) } },
     { label: 'Plus Accrued Interest', int: (c) => c.timing.accrued || 0 },
     { label: 'Less realized accrued interest from prior period', int: (c) => -(c.timing.realizedPrior || 0) },
     { label: 'Change in Restricted Revenue', rev: (c) => c.timing.restricted || null },
@@ -158,6 +161,7 @@ export default async function (main, { user, rerender }) {
     if (r.account) return () => openAccount(r.account, m);
     if (r.toggle) return () => { store.set(ADJ_OPEN_KEY, adjOpen ? '' : '1'); rerender(); };
     if (r.adjKey) return () => openAdjustments(r.adjKey, m);
+    if (r.ditDetail) return () => openDit(m);
     if (r.dit) return () => { location.hash = `#/poc/${m}`; };
     if (r.gl) return () => openGl(m);
     void kind;
@@ -484,17 +488,66 @@ export default async function (main, { user, rerender }) {
     await panel(`${key} — ${monthName(m)}`, (body) => {
       // Detail lines carry the transaction's own (positive) amount; show them with the adjustment's sign.
       const items = list.flatMap((a) => (a.detail?.length ? a.detail.map((d) => ({ ...d, a, shown: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, note: a.note, a, shown: a.amount }]));
+      // Say what each item was, and who: a sweep between our own Cass accounts ("Trnsfr from
+      // Checking Acct Ending in 3410") tells you nothing, so what landed there is shown instead.
+      const plumbing = /^Trnsfr (from|to) Checking Acct/i;
+      // Without the Outgoing statement, the GL says what landed there: money into Cass it booked on
+      // or just before the sweep that isn't a deposit on Operating or Incoming (Fidelity, WEX COBRA).
+      const glOnly = (col.c.deposits?.glOnly || []).map((g) => g.receipt).filter((r) => r.kind !== 'revenue');
+      const fromGl = (x) => {
+        if (!plumbing.test(x.desc || '') || x.note || !x.date) return '';
+        const near = glOnly.filter((r) => r.date <= x.date && (Date.parse(x.date) - Date.parse(r.date)) / 864e5 <= 3);
+        return near.length ? `Per the GL: ${near.map((r) => `${r.desc} ${money(r.amount)} (${r.batch})`).join('; ')}` : '';
+      };
+      for (const x of items) if (!x.note) x.note = fromGl(x) || x.note;
+      const what = (x) => (plumbing.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
+      const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
       mount(body,
         h('p', { class: 'muted' }, list[0]?.why || 'Each item comes out of bank deposits because it isn’t revenue.'),
         table([
           { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
           { label: 'Type', cell: (x) => ADJUSTMENT_TYPES[x.a.type] || (x.a.auto ? 'From the statements' : 'Entered') },
           { label: 'Date', cell: (x) => x.date || '' },
-          { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.desc) },
+          { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, what(x)) },
           { label: 'Amount', num: true, cell: (x) => money(x.shown) },
-          { label: 'Note / who', cell: (x) => h('span', { class: 'small' }, [x.note || x.a.note, x.a.enteredBy ? `${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ')) },
+          ...(items.some((x) => extra(x)) ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small' }, extra(x)) }] : []),
         ], items, { foot: (c) => (c.label === 'Amount' ? money(round2(sum(list, (a) => a.amount))) : c.label === 'Account' ? 'Total' : '') }),
         h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, `Change these on the ${monthName(m)} page →`)));
+    }, { wide: true });
+  }
+
+  // ---- Deposits in transit panel -------------------------------------------------------------
+  // This month's deposits in transit, less last month's (which reached the bank this month): the
+  // change that goes into adjusted bank revenue. From the GL where it has the month.
+  async function openDit(m) {
+    const col = cols.find((x) => x.m === m);
+    if (!col?.c) return;
+    const c = col.c;
+    const prev = addMonths(m, -1);
+    const listOf = (dit, rec) => (dit
+      ? [...dit.rows.filter((r) => r.counts).map((r) => ({ date: r.date, desc: r.desc, why: r.evidence, amount: round2(r.sign * r.amount), from: r.settled ? 'Statement' : r.choice ? `Confirmed · ${r.choice.by}` : r.flagged ? 'To confirm' : 'From the GL' })),
+        ...dit.manual.filter((x) => !x.duplicate).map((x) => ({ date: x.d.date || '', desc: x.d.note || 'Typed', why: 'Typed on the month page', amount: x.d.amount, from: x.d.enteredBy ? `Typed · ${x.d.enteredBy}` : 'Typed' }))]
+      : (rec?.dit || []).map((d) => ({ date: d.date || '', desc: d.note || '', why: String(d.id || '').startsWith('imp-') ? 'From the workbook' : 'Typed', amount: d.amount, from: '' })));
+    const thisList = listOf(c.deposits?.dit, byMonth[m]);
+    const priorList = c.priorDitMissing ? null : listOf(depChecks[prev]?.dit, byMonth[prev]);
+    const tableOf = (list, empty) => table([
+      { label: 'GL date', cell: (x) => x.date },
+      { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.desc) },
+      { label: 'Why it’s in transit', cell: (x) => h('span', { class: 'small wrap' }, x.why) },
+      { label: 'Amount', num: true, cell: (x) => money(x.amount) },
+      { label: '', cell: (x) => (x.from === 'To confirm' ? statusPill('To confirm', 'warn') : x.from === 'Statement' ? statusPill('Statement', 'good') : h('span', { class: 'small muted' }, x.from)) },
+    ], list, { empty, foot: (col_) => (col_.label === 'Amount' ? money(round2(sum(list, (x) => x.amount))) : col_.label === 'GL date' ? 'Total' : '') });
+    await panel(`Deposits in transit — ${monthName(m)}`, (body) => {
+      mount(body,
+        h('p', { class: 'muted' }, `Money the GL booked as revenue in one month that reached the bank in the next. The change is ${monthName(m)}’s in transit less ${monthName(prev)}’s, which reached the bank in ${monthName(m)}. The GL names the bank date in each batch (“3.3.2026 February Deposit”); the next month’s statement confirms it.`),
+        h('h3', {}, `In transit at the end of ${monthName(m)} (plus)`), tableOf(thisList, 'None.'),
+        h('h3', {}, `In transit at the end of ${monthName(prev)}, reached the bank in ${monthName(m)} (less)`),
+        priorList ? tableOf(priorList, 'None.') : h('p', { class: 'small warn-text' }, `Not known — ${monthName(prev)} isn’t in the GL and none were entered for it, so nothing comes off. Its deposits that reached the bank in ${monthName(m)} are marked “Recognized in another month” on the deposit list instead.`),
+        h('div', { class: 'recon', style: { marginTop: '.75rem' } },
+          rowKV(`${monthName(m)} in transit`, money(c.ditTotal)),
+          rowKV(`Less ${monthName(prev)} in transit`, c.priorDit == null ? 'not known' : money(-c.priorDit)),
+          rowKV('Change, into adjusted bank revenue', money(c.ditChange ?? 0))),
+        h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, `Confirm or change these on the ${monthName(m)} page →`)));
     }, { wide: true });
   }
 

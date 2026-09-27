@@ -268,7 +268,9 @@ export function statementAdjustments(rec, deposits = null) {
       adj.push({ id: 'auto-outgoing', account: 'cassOp', type: 'refund', label: 'Outgoing Wires — swept back into Operating', amount: -round2(sum(back, (t) => t.amount)) || 0, auto: true,
         detail: back.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc,
           note: landed.filter((x) => x.date <= t.date && daysApart(x.date, t.date) <= 3).map((x) => `${x.desc} ${money2(x.amount)}`).join(', ') })),
-        why: `${money2(sum(landed, (t) => t.amount))} landed in Outgoing${landed.length ? ` (${landed.map((x) => `${x.date} ${x.desc} ${money2(x.amount)}`).join('; ')})` : ''}. Only ${money2(sum(back, (t) => t.amount))} of it swept back into Operating’s credits; the rest reduced Operating’s transfers out.` });
+        why: st.outgoing
+          ? `${money2(sum(landed, (t) => t.amount))} landed in Outgoing${landed.length ? ` (${landed.map((x) => `${x.date} ${x.desc} ${money2(x.amount)}`).join('; ')})` : ''}. Only ${money2(sum(back, (t) => t.amount))} of it swept back into Operating’s credits; the rest reduced Operating’s transfers out.`
+          : `${money2(sum(back, (t) => t.amount))} swept back into Operating from Outgoing. The Outgoing statement isn’t attached, so what landed there is taken from the GL where it can be.` });
     }
   }
   const reviewable = reviewableDeposits(rec);
