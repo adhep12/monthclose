@@ -63,5 +63,8 @@ export async function render() {
 }
 
 window.addEventListener('hashchange', render);
+// A file dropped anywhere that isn't a drop target shouldn't make the browser open it and leave
+// the app.
+for (const ev of ['dragover', 'drop']) window.addEventListener(ev, (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
 await Promise.all([greet(), initStore()]);
 render();

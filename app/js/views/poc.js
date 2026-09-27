@@ -1,4 +1,4 @@
-import { h, mount, table, toast, statusPill, select, ask, notify } from '../ui.js';
+import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } from '../ui.js';
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa } from '../data.js';
 import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest } from '../poc/calc.js';
 import { attachFiles } from '../poc/attach.js';
@@ -155,8 +155,7 @@ export default async function (main, { month, monthName, user, rerender }) {
     const input = h('input', { type: 'file', accept: ACCEPT, multiple: true, class: 'visually-hidden', onchange: (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); } });
     const list = attachedList();
     mount(uploadHost,
-      h('div', { class: 'row' }, h('label', { class: 'btn primary' }, 'Attach statements…', input),
-        h('span', { class: 'muted small' }, 'Cass (Operating, Incoming, Outgoing), Stripe CSV, ICS, CDARS, Wise, PayPal, KeyBank — any number at once. Read in your browser.')),
+      dropTarget(h('label', { class: 'drop-zone' }, h('strong', {}, 'Drop statements here'), h('span', { class: 'drop-hint' }, ' or click to choose — Cass (Operating, Incoming, Outgoing), Stripe CSV, ICS, CDARS, Wise, PayPal, KeyBank, any number at once'), input), onFiles),
       list.length ? table([
         { label: 'Statement', cell: (x) => x.label },
         { label: 'File', cell: (x) => h('span', { class: 'break' }, x.s.fileName || '') },

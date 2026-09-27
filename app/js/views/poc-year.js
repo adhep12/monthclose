@@ -3,7 +3,7 @@
 // account's cell for a month to attach its statement or type its figures; click Total
 // Adjustments to open up what's being taken out; click GL to load Acumatica's numbers.
 
-import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill } from '../ui.js';
+import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES } from '../poc/calc.js';
@@ -34,6 +34,10 @@ export function adjKey(a) {
   if (a.id?.startsWith('auto-ex-')) return 'Deposits that aren’t revenue';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
 }
+
+// Where the sheet was scrolled (sideways and down), per fiscal year. Kept for the whole visit so
+// attaching a statement, or going to a month and back, returns you to the same spot.
+const scrollMemory = {};
 
 function blank(month) {
   return { month, bank: {}, statements: {}, bankStatements: {}, excluded: {}, adjustments: [], dit: [], timing: {}, gl: {}, notes: '', log: [], autoConfirm: {} };
@@ -177,14 +181,16 @@ export default async function (main, { user, rerender }) {
             showInt ? valueCell(r.int ? ytd(r.int) : null, { strong: true, diff: r.diff, extra: 'ytd' }) : null,
             cols.map(({ m, c, rec }) => {
               const click = onCell(r, m);
+              // Files dropped on an account's cell attach to that account and month.
+              const droppable = (td) => (td && r.account && ACCOUNT_FILES[r.account]?.accept ? dropTarget(td, (files) => openAccount(r.account, m, files)) : td);
               const intExtra = span > 1 ? 'int' : '';
               if (!c) {
-                return [showRev ? valueCell(null, { onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' }) : null,
-                  showInt ? valueCell(null, { onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', extra: intExtra }) : null];
+                return [showRev ? droppable(valueCell(null, { onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' })) : null,
+                  showInt ? droppable(valueCell(null, { onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', extra: intExtra })) : null];
               }
               return [
-                showRev ? valueCell(r.rev ? r.rev(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.rev?.(c, rec), onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' }) : null,
-                showInt ? valueCell(r.int ? r.int(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.int?.(c, rec), onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', extra: intExtra }) : null,
+                showRev ? droppable(valueCell(r.rev ? r.rev(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.rev?.(c, rec), onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' })) : null,
+                showInt ? droppable(valueCell(r.int ? r.int(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.int?.(c, rec), onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', extra: intExtra })) : null,
               ];
             }));
         })))));
@@ -196,7 +202,7 @@ export default async function (main, { user, rerender }) {
     await savePocMonth(rec);
   }
 
-  async function openAccount(id, m) {
+  async function openAccount(id, m, droppedFiles = null) {
     let dirty = false;
     const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
     const prior = (await loadPocMonth(addMonths(m, -1))) || byMonth[addMonths(m, -1)] || null;
@@ -204,7 +210,21 @@ export default async function (main, { user, rerender }) {
     const src = BANK_SOURCES.find((s) => s.id === id);
 
     await panel(`${label(id)} — ${monthName(m)}`, (body) => {
-      const draw = () => {
+      let draw = () => {};
+      const doAttach = async (list) => {
+        if (!list.length) return;
+        const res = await attachFiles({ files: list, rec, cds, month: m, user, expectAccount: id, ask, saveCd });
+        if (res.changed) {
+          try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+        }
+        const bad = res.messages.filter((x) => x.bad);
+        if (bad.length) notify('Please check', bad.map((x) => x.text));
+        else if (res.messages.length) toast(res.messages.map((x) => x.text).join(' · '));
+        draw();
+      };
+      // Drop statements anywhere in the panel.
+      dropTarget(body, doAttach);
+      draw = () => {
         const c = computePoc(rec, { prior, gl: glFor(m), cd: cdFor(m) });
         const l = line(c, id);
         const b = rec.bank[id] || (rec.bank[id] = {});
@@ -214,21 +234,12 @@ export default async function (main, { user, rerender }) {
         const inp = (k) => (fields[k] = h('input', { class: 'num', inputmode: 'decimal', value: b[k] ?? '', size: 16 }));
 
         const input = h('input', { type: 'file', accept: files.accept || '', multiple: !!files.multiple, class: 'visually-hidden',
-          onchange: async (e) => {
-            const list = [...e.target.files]; e.target.value = '';
-            const res = await attachFiles({ files: list, rec, cds, month: m, user, expectAccount: id, ask, saveCd });
-            if (res.changed) {
-              try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
-            }
-            const bad = res.messages.filter((x) => x.bad);
-            if (bad.length) notify('Please check', bad.map((x) => x.text));
-            else if (res.messages.length) toast(res.messages.map((x) => x.text).join(' · '));
-            draw();
-          } });
+          onchange: (e) => { const list = [...e.target.files]; e.target.value = ''; doAttach(list); } });
 
         mount(body,
           h('p', { class: 'muted' }, files.hint || '', ` GL cash account ${src.gl}.`),
-          files.accept ? h('div', { class: 'row' }, h('label', { class: 'btn primary' }, attached.length ? 'Attach another / replace…' : 'Attach statement…', input)) : null,
+          files.accept ? h('label', { class: 'drop-zone' },
+            h('strong', {}, attached.length ? 'Drop another statement here' : 'Drop the statement here'), h('span', { class: 'drop-hint' }, ' or click to choose'), input) : null,
           attached.length ? table([
             { label: 'Statement', cell: (x) => x.label },
             { label: 'File', cell: (x) => h('span', { class: 'break' }, x.s.fileName || '') },
@@ -288,6 +299,7 @@ export default async function (main, { user, rerender }) {
           h('p', { style: { marginTop: '1.25rem' } }, h('a', { href: `#/poc/${m}` }, `Open all of ${monthName(m)} →`)));
       };
       draw();
+      if (droppedFiles?.length) doAttach(droppedFiles);
     }, { wide: id === 'cassOp' });
     if (dirty) rerender();
   }
@@ -379,10 +391,14 @@ export default async function (main, { user, rerender }) {
     } catch (err) { notify('Couldn’t load the GL register', [explain(err, '')]); return false; }
   }
 
+  const remember = () => {
+    scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.sheet')].map((el) => el.scrollLeft) };
+  };
+
   mount(main,
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, `FY${fy} Proof of Cash`),
-        h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Click an account’s cell to attach its statement or type its figures; click a month to open all of it. `,
+        h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Click an account’s cell — or drop its statement on the cell — to attach it or type its figures; click a month to open all of it. `,
           'Dots: green reviewed, blue prepared, amber in progress, grey from the workbook. ✓ confirmed, ! changed since confirmed.')),
       h('div', { class: 'actions' },
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),
@@ -395,8 +411,24 @@ export default async function (main, { user, rerender }) {
         h('button', { class: v === show ? 'active' : '', onclick: () => { store.set(SHOW_KEY, v); rerender(); } }, l)))),
     show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')],
   );
+
+  const saved = scrollMemory[fy];
+  if (saved) {
+    main.querySelectorAll('.sheet').forEach((el, i) => { el.scrollLeft = saved.x[i] ?? saved.x[0] ?? 0; });
+    window.scrollTo(0, saved.y);
+    requestAnimationFrame(() => window.scrollTo(0, saved.y));
+  }
+  // Keep the memory current as you scroll, and keep the two stacked sheets side-scrolled together.
+  const sheets = [...main.querySelectorAll('.sheet')];
+  sheets.forEach((el) => el.addEventListener('scroll', () => {
+    for (const other of sheets) if (other !== el && other.scrollLeft !== el.scrollLeft) other.scrollLeft = el.scrollLeft;
+    remember();
+  }, { passive: true }));
+  const onWinScroll = () => { if (main.isConnected) remember(); else window.removeEventListener('scroll', onWinScroll); };
+  window.addEventListener('scroll', onWinScroll, { passive: true });
 }
 
+// Statements attached to one account
 // Statements attached to one account for a month, with a way to detach each.
 function attachedFor(rec, id) {
   const out = [];

@@ -133,7 +133,7 @@ export default async function (main, { user, rerender }) {
       h('div', {}, h('h1', {}, `CD schedule — FY${fy}`), h('p', { class: 'muted' }, 'CDARS ladder, interest earned each month, interest paid at maturity, and the GL 1150 tie-out.')),
       h('div', { class: 'actions' },
         h('label', { class: 'month-pick' }, h('span', {}, 'Month'), h('input', { type: 'month', value: month, onchange: (e) => e.target.value && pickMonth(e.target.value) })),
-        fileButton('Upload CDARS statements / IntraFi export…', ACCEPT, onUpload, { class: 'primary' }),
+        fileButton('Upload CDARS statements / IntraFi export…', ACCEPT, async (files) => { for (const f of files) await onUpload(f); }, { class: 'primary', multiple: true }),
         fileButton('Import CDARS workbook…', '.xlsx', onWorkbook))),
 
     h('div', { class: 'cards wide' },

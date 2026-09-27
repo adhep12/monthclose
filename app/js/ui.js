@@ -56,14 +56,34 @@ export function table(columns, rows, { empty = 'Nothing here yet.', foot = null,
   ));
 }
 
+// A file button that also takes files dropped on it. onFile gets one file, or with
+// { multiple: true } an array.
 export function fileButton(label, accept, onFile, props = {}) {
-  const input = h('input', { type: 'file', accept, class: 'visually-hidden' });
+  const input = h('input', { type: 'file', accept, class: 'visually-hidden', multiple: !!props.multiple });
+  const give = (files) => { if (files.length) onFile(props.multiple ? files : files[0]); };
   input.addEventListener('change', () => {
-    const f = input.files[0];
+    const files = [...input.files];
     input.value = '';
-    if (f) onFile(f);
+    give(files);
   });
-  return h('label', { class: `btn ${props.class || ''}` }, label, input);
+  return dropTarget(h('label', { class: `btn ${props.class || ''}`, title: 'Click to choose, or drop a file here' }, label, input), give);
+}
+
+// Let files be dropped onto an element. Highlights while files are dragged over it.
+export function dropTarget(el, onFiles) {
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  let depth = 0;
+  el.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; el.classList.add('drop-over'); });
+  el.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  el.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) el.classList.remove('drop-over'); });
+  el.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    depth = 0; el.classList.remove('drop-over');
+    const files = [...e.dataTransfer.files];
+    if (files.length) onFiles(files);
+  });
+  return el;
 }
 
 export function statusPill(text, kind) {

@@ -251,3 +251,8 @@ main.content { margin: 0 auto; }
 .panel-body td.num, .panel-body th.num { white-space: nowrap; }
 .panel-body .table-wrap { overflow-x: visible; }
 .panel-body td .break { overflow-wrap: anywhere; }
+.drop-over { outline: 2px dashed var(--accent) !important; outline-offset: 2px; background: var(--accent-soft) !important; }
+.drop-hint { font-size: .8rem; color: var(--muted); }
+.drop-zone { display: block; border: 2px dashed var(--line); border-radius: var(--radius); padding: 1.1rem 1rem; text-align: center; cursor: pointer; margin: .5rem 0; background: color-mix(in srgb, var(--bg) 50%, var(--panel)); }
+.drop-zone:hover { border-color: var(--accent); }
+.drop-zone strong { color: var(--accent); }
