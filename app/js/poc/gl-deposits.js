@@ -39,6 +39,27 @@ const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 
 // Money leaving Cass (not the sweeps between its own accounts), for matching a chargeback.
 const cassDebits = (rec) => ['operating', 'incoming', 'outgoing'].flatMap((k) => (rec?.statements?.[k]?.transactions || []).filter((t) => t.section !== 'credit' && !isSweep(t)));
 
+// What a bank's wording for a deposit usually means, in plain words, for a deposit a person has to
+// look at. Empty when there's nothing to add to the bank's own description.
+const HINTS = [
+  [/^PAYPAL/i, 'Likely a PayPal Giving Fund grant (a donor-advised gift through PayPal); the GL books these as “DAF Gifts - PayPal Grant(s)”, often several in one entry'],
+  [/DIVVY\/?REWARDS|DIVVY.*CASH ?BACK/i, 'Divvy card rewards (cash back), counted as revenue'],
+  [/DIVVY REIMBURSEM/i, 'Divvy paying us back (a card reimbursement) — usually not revenue; check what it was for'],
+  [/DEPOSIT CONNECTION/i, 'Check deposit made at the bank'],
+  [/MOBILE DEPOSIT/i, 'Check deposited by phone'],
+  [/WEX COBRA/i, 'WEX COBRA refund — benefits, not revenue'],
+  [/ADP (WAGE|TAX)/i, 'ADP payroll refund — not revenue'],
+  [/CIGNA/i, 'Cigna insurance refund — not revenue'],
+  [/IRS TREAS|US TREASURY|TAX ?REFUND/i, 'Tax refund — not revenue'],
+  [/FIDELITY|FID BKG SVC/i, 'Fidelity: a Fidelity Charitable grant, or money from our own Fidelity account'],
+  [/NCF/i, 'National Christian Foundation grant (a donor-advised gift)'],
+  [/WISE/i, 'From Wise — our own account, or a donor paying through Wise'],
+  [/^ORIG:|WIRE|FEDWIRE/i, 'Wire transfer'],
+];
+export function depositHint(desc) {
+  return (HINTS.find(([re]) => re.test(String(desc || ''))) || [, ''])[1];
+}
+
 // What the GL booked a batch to, in proof of cash terms.
 export function glKind(r, config = DEFAULT_POC_CONFIG, names = {}) {
   const credited = Object.entries(r.accounts || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
@@ -165,19 +186,31 @@ function matchMonth(month, lines, receiptsBy, used) {
     for (const [x, part] of plan) take(x, part);
   }
 
-  // Everything else: one to one, then one batch for several lines within a day or two.
+  // Everything else: one to one, closest pairs first — so a 500 grant on 10/15 takes the 500 batch
+  // booked 10/15, not one a week away that another 500 needed (October: 500 + 15 were one 515
+  // batch on 10/7, and a second 500 was its own batch on 10/15).
+  // Then one batch for several lines. The GL books PayPal grants a few at a time ("PayPal Grants
+  // (2)"), and the grants in one batch can reach the bank up to a week apart.
+  // Close matches go first — one to one, then groups, within a day or two — and only what's left is
+  // tried across the wider window, so a batch can't take a grant another batch booked the day it
+  // arrived (November: 15 + 300 were one batch on 11/7, and another 300 was 150 + 150 on 11/14).
   const left = () => lines.filter((l) => !byLine.has(l));
-  for (const l of left()) {
-    const x = all.filter((y) => open(y) && fits(y, l) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 7)).sort(order(l.date))[0];
-    if (x) take(x, [l]);
-  }
-  for (const x of [...all].sort((a, b) => RANK[a.when] - RANK[b.when] || b.r.amount - a.r.amount)) {
-    if (!open(x) || x.r.ap) continue;
-    const cand = left().filter((l) => fits(x, l) && near(x, l.date, x.w.named ? 1 : 2));
-    for (const set of [cand.filter((l) => l.kind === 'operating'), cand.filter((l) => l.kind === 'incoming'), cand.filter((l) => l.kind === 'outgoing'), cand]) {
-      if (set.length < 2) continue;
-      const found = subsetSum(set.slice(0, 40).map((l) => ({ line: l, c: cents(l.amount) })), cents(x.r.amount));
-      if (found) { take(x, found); break; }
+  const grants = (x) => /paypal grant/i.test(x.r.desc) && x.when === 'this';
+  for (const wide of [false, true]) {
+    const pairs = [];
+    left().forEach((l, i) => {
+      for (const y of all) if (open(y) && fits(y, l) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, wide ? 7 : 2)) pairs.push({ l, y, i, d: distance(l.date, y.w) });
+    });
+    pairs.sort((a, b) => RANK[a.y.when] - RANK[b.y.when] || a.d - b.d || a.i - b.i);
+    for (const p of pairs) if (!byLine.has(p.l) && open(p.y)) take(p.y, [p.l]);
+    for (const x of [...all].sort((a, b) => RANK[a.when] - RANK[b.when] || b.r.amount - a.r.amount)) {
+      if (!open(x) || x.r.ap || (wide && !grants(x))) continue;
+      const cand = left().filter((l) => fits(x, l) && near(x, l.date, wide ? 7 : x.w.named ? 1 : 2));
+      for (const set of [cand.filter((l) => l.kind === 'operating'), cand.filter((l) => l.kind === 'incoming'), cand.filter((l) => l.kind === 'outgoing'), cand]) {
+        if (set.length < 2) continue;
+        const found = subsetSum(set.slice(0, 40).map((l) => ({ line: l, c: cents(l.amount) })), cents(x.r.amount));
+        if (found) { take(x, found); break; }
+      }
     }
   }
   // One deposit, several batches of the same kind: two receivable payments in one wire (Koorong

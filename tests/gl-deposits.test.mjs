@@ -284,3 +284,20 @@ test('GL helpers: bank dates in batch names, what a batch was booked to, duplica
   // A reclass out of revenue (same description, different accounts) isn't a duplicate.
   assert.equal(pairDuplicates([gl('A', 'd', 100000, { 4017: 100000 }, 'X'), gl('B', 'd', -100000, { 4017: -100000, 1020: 100000, 2041: -100000 }, 'X')]).size, 0);
 });
+
+test('PayPal grants booked together match the deposits they came in as, closest first', () => {
+  // October: 500 + 15 were one 515 batch on 10/7, and another 500 was its own batch on 10/15.
+  // The 10/8 500 mustn't take the 10/15 batch, leaving the 15 and the 10/15 500 with nothing.
+  const pp = (id, date, amount) => cr(id, date, amount, `PAYPAL INC./PAYMENT 0000${id}`);
+  const rec = { month: '2025-10', statements: { operating: { transactions: [pp('1', '2025-10-08', 500), pp('2', '2025-10-08', 15), pp('3', '2025-10-15', 500), pp('4', '2025-10-20', 25), pp('5', '2025-10-24', 100)] } } };
+  const g = { '2025-10': { receipts: [
+    gl('P515', '2025-10-07', 515, { 4018: 515 }, 'DAF Gifts - PayPal Grants (2)'),
+    gl('P500', '2025-10-15', 500, { 4018: 500 }, 'DAF Gifts - PayPal Grant'),
+    // Grants in one batch can reach the bank days apart.
+    gl('P125', '2025-10-19', 125, { 4018: 125 }, 'DAF Gifts - PayPal Grants (2)'),
+  ] } };
+  const d = depositChecks({ recs: { '2025-10': rec }, glBy: g })['2025-10'];
+  const batch = (id) => d.lines.find((x) => x.line.id === id).match?.batch;
+  assert.deepEqual(['1', '2', '3', '4', '5'].map(batch), ['P515', 'P515', 'P500', 'P125', 'P125']);
+  assert.deepEqual(d.noGl, []);
+});

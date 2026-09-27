@@ -8,7 +8,7 @@ import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivi
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
-import { depositChecks } from '../poc/gl-deposits.js';
+import { depositChecks, depositHint } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
@@ -65,6 +65,24 @@ export function adjGroup(a) {
   return ADJ_GROUPS[3];
 }
 export const adjKey = adjGroup;
+
+// Say what each item of an adjustment was, and who: a sweep between our own Cass accounts
+// ("Trnsfr from Checking Acct Ending in 3410") tells you nothing, so what landed there is shown
+// instead. Without the Outgoing statement the GL says what landed there: money into Cass it
+// booked on or just before the sweep that isn't a deposit on Operating or Incoming (Fidelity,
+// WEX COBRA). Items are { date, desc, note, a }; their notes are filled in from the GL where
+// the statement had none. Returns the text to show for an item.
+const PLUMBING = /^Trnsfr (from|to) Checking Acct/i;
+function whatLanded(c, items) {
+  const glOnly = (c.deposits?.glOnly || []).map((g) => g.receipt).filter((r) => r.kind !== 'revenue');
+  const fromGl = (x) => {
+    if (!PLUMBING.test(x.desc || '') || x.note || !x.date) return '';
+    const near = glOnly.filter((r) => r.date <= x.date && (Date.parse(x.date) - Date.parse(r.date)) / 864e5 <= 3);
+    return near.length ? `Per the GL: ${near.map((r) => `${r.desc} ${money(r.amount)} (${r.batch})`).join('; ')}` : '';
+  };
+  for (const x of items) if (!x.note) x.note = fromGl(x) || x.note;
+  return (x) => (PLUMBING.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
+}
 
 // Where the sheet was scrolled (sideways and down), per fiscal year. Kept for the whole visit so
 // attaching a statement, or going to a month and back, returns you to the same spot.
@@ -506,6 +524,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const noGl = (dep?.noGl || []).filter((x) => !x.covered && !x.decided);
     const decidedNoGl = (dep?.noGl || []).filter((x) => x.decided);
     const typeName = (t) => (REVIEW_TYPES.find((x) => x[0] === t) || [, t])[1];
+    // Deposits a statement rule already takes out (a Divvy reimbursement): confirming says so.
+    const ruleOut = new Map(c.adjustments.filter((a) => /^auto-(tr|ex)-/.test(a.id || '')).map((a) => [a.id.replace(/^auto-(tr|ex)-/, ''), a]));
+    const noGlRevenue = noGl.filter((x) => !ruleOut.has(x.line.id));
     return h('div', {},
       conflicts.length ? h('div', { class: 'notice warn' }, h('h3', {}, 'To decide: a rule says it isn’t revenue, the GL booked it as revenue'),
         table([
@@ -518,27 +539,35 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             h('button', { class: 'small-btn', onclick: () => treatAs(m, x.line, 'revenue', '', again, close) }, 'It’s revenue')) },
         ], conflicts)) : null,
       noGl.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have'),
-        h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side. Usually revenue booked in another month. Counted as revenue until you say otherwise.'),
+        h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side matches it — often revenue booked in another month, or several deposits booked as one entry that doesn’t add up the same way. Counted as revenue until you say otherwise: confirm it, or choose what else it is.'),
+        noGlRevenue.length > 1 ? h('div', { class: 'row' }, h('button', { onclick: () => confirmRevenue(m, noGlRevenue.map((x) => x.line), again, close) }, `Confirm all ${noGlRevenue.length} counted as revenue`)) : null,
         table([
           { label: 'Date', cell: (x) => x.line.date },
-          { label: 'Deposit', cell: (x) => h('span', { class: 'wrap' }, `${x.line.desc}${x.line.detail ? ` — ${x.line.detail}` : ''}`) },
+          { label: 'Deposit', cell: (x) => depositCell(x.line) },
           { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
-          { label: 'Treat as', cell: (x) => treatSelect(m, x.line, 'revenue', again, close) },
+          { label: 'Treat as', cell: (x) => { const o = ruleOut.get(x.line.id); return h('div', { class: 'stack' },
+            o ? h('button', { class: 'small-btn', title: o.note || '', onclick: () => treatAs(m, x.line, o.type, `Confirmed: ${o.note || typeName(o.type)}`, again, close) }, `Confirm: ${typeName(o.type).toLowerCase()}`)
+              : h('button', { class: 'small-btn', onclick: () => confirmRevenue(m, [x.line], again, close) }, 'Confirm revenue'),
+            treatSelect(m, x.line, o?.type || 'revenue', again, close)); } },
         ], noGl)) : null,
       decidedNoGl.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have — decided'),
         h('p', { class: 'muted small' }, 'No GL batch for these either, but someone has said how each counts. Change it here if that was wrong.'),
         table([
           { label: 'Date', cell: (x) => x.line.date },
-          { label: 'Deposit', cell: (x) => h('span', { class: 'wrap' }, `${x.line.desc}${x.line.detail ? ` — ${x.line.detail}` : ''}`) },
+          { label: 'Deposit', cell: (x) => depositCell(x.line) },
           { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
           { label: 'Counts as', cell: (x) => h('div', { class: 'stack' },
-            h('span', {}, statusPill(typeName(x.decided.type), x.decided.type === 'revenue' ? 'info' : 'good'), x.decided.by ? h('span', { class: 'small muted' }, ` ${x.decided.by} · ${when(x.decided.at)}`) : null),
+            h('span', {}, statusPill(x.decided.type === 'revenue' ? 'Revenue — confirmed' : typeName(x.decided.type), x.decided.type === 'revenue' ? 'info' : 'good'), x.decided.by ? h('span', { class: 'small muted' }, ` ${x.decided.by} · ${when(x.decided.at)}`) : null),
             x.decided.note ? h('span', { class: 'small' }, x.decided.note) : null) },
           { label: 'Change', cell: (x) => treatSelect(m, x.line, x.decided.type, again, close) },
         ], decidedNoGl)) : null,
       h('h3', {}, 'Taken out of Cass deposits'),
       cassAdj.length ? table([
-        { label: 'What', cell: (a) => h('div', {}, adjDetail(a), a.detail?.length ? h('div', { class: 'muted small wrap' }, a.detail.slice(0, 6).map((d) => `${d.date} ${d.desc} ${money(d.amount)}`).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null) },
+        { label: 'What', cell: (a) => {
+          const items = (a.detail || []).slice(0, 6).map((d) => ({ ...d, a }));
+          const what = whatLanded(c, items);
+          return h('div', {}, adjDetail(a), items.length ? h('div', { class: 'muted small wrap' }, items.map((x) => (what(x) === x.desc ? `${x.date} ${x.desc} ${money(x.amount)}` : `${x.date} swept ${money(x.amount)}: ${what(x)}`)).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null);
+        } },
         { label: 'Type', cell: (a) => ADJUSTMENT_TYPES[a.type] || '' },
         { label: 'Amount', num: true, cell: (a) => money(a.amount) },
       ], cassAdj) : h('p', { class: 'muted' }, 'Nothing yet — attach the Cass statements.'),
@@ -674,6 +703,19 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       else { rec.excluded[line.id] = { type, note: note || '', by: user, at: nowIso() }; if (rec.dismissed) delete rec.dismissed[line.id]; }
     }, `${line.date} ${line.desc} ${money(line.amount)}: ${type === 'revenue' ? 'counted as revenue' : `marked as ${name}`} (from the fiscal year sheet)`, again, close);
   }
+  // A deposit someone has checked and says is revenue: no longer flagged.
+  function confirmRevenue(m, lines, again, close) {
+    return decide(m, (rec) => {
+      rec.dismissed ||= {};
+      for (const l of lines) { rec.dismissed[l.id] = { by: user, at: nowIso() }; if (rec.excluded) delete rec.excluded[l.id]; }
+    }, lines.length === 1 ? `${lines[0].date} ${lines[0].desc} ${money(lines[0].amount)}: confirmed as revenue (no GL batch matched it)`
+      : `Confirmed ${lines.length} deposits the GL doesn’t match as revenue: ${lines.map((l) => `${l.date} ${money(l.amount)}`).join(', ')}`, again, close);
+  }
+  // The bank's description, and what it usually means.
+  function depositCell(line) {
+    const hint = depositHint(line.desc);
+    return h('div', {}, h('span', { class: 'wrap' }, `${line.desc}${line.detail ? ` — ${line.detail}` : ''}`), hint ? h('div', { class: 'small muted wrap' }, hint) : null);
+  }
   function treatSelect(m, line, current, again, close) {
     return h('select', { onchange: (e) => treatAs(m, line, e.target.value, '', again, close) }, REVIEW_TYPES.map(([v, t]) => h('option', { value: v, selected: v === current }, t)));
   }
@@ -746,19 +788,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     await panel(`${key} — ${monthName(m)}`, (body, close) => {
       // Detail lines carry the transaction's own (positive) amount; show them with the adjustment's sign.
       const items = list.flatMap((a) => (a.detail?.length ? a.detail.map((d) => ({ ...d, a, shown: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, note: a.note, a, shown: a.amount }]));
-      // Say what each item was, and who: a sweep between our own Cass accounts ("Trnsfr from
-      // Checking Acct Ending in 3410") tells you nothing, so what landed there is shown instead.
-      const plumbing = /^Trnsfr (from|to) Checking Acct/i;
-      // Without the Outgoing statement, the GL says what landed there: money into Cass it booked on
-      // or just before the sweep that isn't a deposit on Operating or Incoming (Fidelity, WEX COBRA).
-      const glOnly = (col.c.deposits?.glOnly || []).map((g) => g.receipt).filter((r) => r.kind !== 'revenue');
-      const fromGl = (x) => {
-        if (!plumbing.test(x.desc || '') || x.note || !x.date) return '';
-        const near = glOnly.filter((r) => r.date <= x.date && (Date.parse(x.date) - Date.parse(r.date)) / 864e5 <= 3);
-        return near.length ? `Per the GL: ${near.map((r) => `${r.desc} ${money(r.amount)} (${r.batch})`).join('; ')}` : '';
-      };
-      for (const x of items) if (!x.note) x.note = fromGl(x) || x.note;
-      const what = (x) => (plumbing.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
+      const what = whatLanded(c, items);
       const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
       const withNotes = items.some((x) => extra(x));
       // What can be decided here: how a deposit counts, or leaving out something the GL found.
