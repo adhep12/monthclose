@@ -137,6 +137,39 @@ covers most of these with one screen.
 - Two people may close together → handle `err.conflict` on shared close records.
 - Hash routing (`#/proof-of-cash/2026-07`), never path routing.
 
+## Decisions so far (Sept 27)
+
+- Data access: collections are `shared` (anyone signed in at BibleProject) — no group restriction.
+- JE export mirrors Acumatica's Journal Transactions grid (Department ID, Grant / Program ID,
+  Account, Description, Subaccount, Ref. Number, Quantity, UOM, Debit Amount, Credit Amount,
+  Transaction Description, Inventory ID, Customer/Vendor, DTF Anchor, Redistribution, DTF Entry,
+  Indirect Expense). Department is written like `013 - Finance`.
+- New assets default to the **month-after** convention; full-month and mid-month are options per
+  asset. Methods: straight-line, 200% and 150% declining balance (switching to SL).
+- Trial Balance Summary works for opening balances: its Beginning Balance column is always the
+  prior period's close, whenever it's run. The FA import ties to the 12-2026 TB within a cent on
+  every account except CIP 1552 ($48,381.49 on the listing, $0 in the GL — expensed to 8041 in
+  period 07-2026). The old $128,811 NBV gap no longer exists against the current TB.
+- Bank statements: Cass e-statement PDFs are text-based; pdf.js extracts every transaction and the
+  totals tie to the statement header (checks are listed separately on operating).
+
+## Cass statements → Proof of Cash (as described, Aug 2026 test)
+
+Three Cass accounts: Operating (…5884), Incoming Wires (…5892), Outgoing Wires (…3410).
+Incoming and Outgoing sweep to/from Operating daily and end each month at $0.
+
+- **Incoming**: all deposits are treated as revenue deposits. Anything leaving Incoming that is
+  *not* the sweep to Operating reduces deposits. (Aug: 120 deposits, $2,291,334.14; all 21
+  withdrawals were sweeps.)
+- **Outgoing**: anything coming *into* Outgoing that is not the sweep from Operating isn't
+  revenue (usually a refund) and reduces deposits. (Aug: $385.00 Plane refund + $630.52 WEX COBRA
+  = $1,015.52.)
+- **Stripe → Cass** transfers come from the Operating statement (Aug: 5 transfers,
+  $1,883,519.85) and go on the Supporting Details page with the deposits in transit.
+- Other Operating credits in Aug: check deposits (Deposit Connection) $227,499.18, mobile
+  deposits $950, counter deposit $20,000, PayPal $6,141, Paramount $600.
+- Worth confirming: a $400.03 State of Ohio tax refund landed in Incoming — not revenue.
+
 ## Open questions
 
 1. What's the BibleProject group name for accounting (for `group:` access)?

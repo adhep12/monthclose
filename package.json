@@ -1,0 +1,12 @@
+{
+  "name": "monthclose",
+  "private": true,
+  "type": "module",
+  "description": "BibleProject accounting month close — a bp-vibes static app (deployable files live in app/).",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/package.mjs --check",
+    "package": "node scripts/package.mjs",
+    "serve": "python3 -m http.server 8765 --directory app"
+  }
+}

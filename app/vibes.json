@@ -1,0 +1,9 @@
+{
+  "platform": 1,
+  "collections": {
+    "fa-assets": { "access": "shared" },
+    "fa-closes": { "access": "shared" },
+    "trial-balances": { "access": "shared" },
+    "settings": { "access": "shared" }
+  }
+}

@@ -1,0 +1,8 @@
+dist/
+node_modules/
+.DS_Store
+# Never commit exports with real financial data
+*.xlsx
+*.xls
+*.pdf
+!app/**/*.pdf
