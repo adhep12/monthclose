@@ -206,6 +206,22 @@ test('matching across month end: a check booked on the last day and deposited a 
   assert.match(d.exclusions['5884-b'].note, /AR1 \+ AR2/);
 });
 
+test('first month of the GL: last month’s deposits in transit unknown, so this month’s count in full', () => {
+  // October 2025: September isn't in this GL. Its deposits clearing in October are marked by hand.
+  const rec = { month: '2025-10', statements: { operating: { summary: { credits: { total: 133829.22 }, ending: 0 }, transactions: [
+    cr('5884-1', '2025-10-02', 12090, 'DEPOSIT CONNECTION DEPOSIT'), cr('5884-2', '2025-10-07', 96730.72, 'DEPOSIT CONNECTION DEPOSIT'), cr('5884-3', '2025-10-08', 25008.5, 'DEPOSIT CONNECTION DEPOSIT')] } },
+    excluded: { '5884-1': { type: 'prior-period', note: 'September Deposit' }, '5884-2': { type: 'prior-period', note: 'September Deposit' }, '5884-3': { type: 'prior-period', note: 'September Deposit' } } };
+  const c = computePoc(rec, { deposits: { dit: { total: 152862.12, rows: [] } }, priorDeposits: null });
+  assert.equal(c.ditChange, 152862.12);
+  assert.ok(c.priorDitMissing);
+  assert.match(c.warnings.find((w) => w.kind === 'prior-dit').text, /3 are, 133,829\.22/);
+  assert.equal(c.revAdjusted, 152862.12); // 133,829.22 deposited − 133,829.22 marked + 152,862.12 in transit
+  // September's list entered later as well: the marked deposits would come out twice.
+  const again = computePoc(rec, { deposits: { dit: { total: 152862.12, rows: [] } }, prior: { dit: [{ amount: 12090 }, { amount: 96730.72 }, { amount: 25008.5 }] } });
+  assert.equal(again.ditChange, 19032.9);
+  assert.equal(again.warnings.find((w) => w.kind === 'dit-twice').text.split(';').length, 3);
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

@@ -106,7 +106,8 @@ export default async function (main, { user, rerender }) {
       const l = line(c, id);
       if (id === 'stripe' && k === 'rev' && c.stripeCheck?.state === 'mismatch') return { mark: '⚠', title: stripeFlagText(c.stripeCheck) };
       if (id === 'wise' && k === 'rev' && rec && wiseOutgoingCheck(rec).some((x) => x.state === 'missing')) return { mark: '⚠', title: 'Money sent from Wise to one of our accounts hasn’t turned up as a deposit — open to check' };
-      if (id === 'cassOp' && k === 'rev' && c.warnings?.length) return { mark: '⚠', title: c.warnings.map((w) => w.text).join('\n') };
+      const missing = (c.warnings || []).filter((w) => ['operating', 'incoming', 'outgoing'].includes(w.kind));
+      if (id === 'cassOp' && k === 'rev' && missing.length) return { mark: '⚠', title: missing.map((w) => w.text).join('\n') };
       if (id === 'cassOp' && k === 'rev' && c.deposits?.conflicts?.length) return { mark: '⚠', title: `${c.deposits.conflicts.length} deposits a rule takes out but the GL booked as revenue — open the month to decide` };
       if (id === 'keyOp' && k === 'rev' && l.rev != null && c.deposits?.keyBank && Math.abs(l.rev - c.deposits.keyBank.glIn) >= 0.005) return { mark: '⚠', title: `KeyBank deposits ${money(l.rev || 0, { dash: false })}; the GL booked ${money(c.deposits.keyBank.glIn, { dash: false })} into 1061 — open the month to check` };
       if (id === 'cassOp' && k === 'rev' && c.deposits?.noGl?.some((x) => !x.covered)) return { mark: '⚠', title: `${c.deposits.noGl.filter((x) => !x.covered).length} deposits the GL doesn’t have — open the month to check` };
@@ -132,7 +133,7 @@ export default async function (main, { user, rerender }) {
     { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + c.adjTotal), int: (c) => c.bankInt, strong: true },
     { section: 'Adjustments for Timing' },
     { label: 'Plus Deposit in Transit (change)', rev: (c) => c.ditChange, dit: true,
-      meta: { rev: (c) => (c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open the month` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) } },
+      meta: { rev: (c) => (c.priorDitMissing ? { mark: '?', title: 'Last month’s deposits in transit aren’t known, so this month’s count in full — open the month' } : c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open the month` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) } },
     { label: 'Plus Accrued Interest', int: (c) => c.timing.accrued || 0 },
     { label: 'Less realized accrued interest from prior period', int: (c) => -(c.timing.realizedPrior || 0) },
     { label: 'Change in Restricted Revenue', rev: (c) => c.timing.restricted || null },
@@ -596,7 +597,7 @@ export default async function (main, { user, rerender }) {
       if (rec) for (const w of wiseOutgoingCheck(rec).filter((x) => x.state !== 'paid')) {
         checks.push([monthName(m), 'Money out of Wise', { transfer: 'Matched — transfer', counted: 'Found, still counted as revenue', missing: 'NO MATCHING DEPOSIT' }[w.state], `${w.date} ${w.desc} ${money(w.amount, { dash: false })}`]);
       }
-      for (const w of c.warnings || []) checks.push([monthName(m), 'Statement missing', 'MISSING', w.text]);
+      for (const w of c.warnings || []) checks.push([monthName(m), ['operating', 'incoming', 'outgoing'].includes(w.kind) ? 'Statement missing' : 'Deposits in transit', w.kind === 'dit-twice' ? 'COUNTED TWICE' : w.kind === 'prior-dit' ? 'LAST MONTH NOT KNOWN' : 'MISSING', w.text]);
       const dep = c.deposits;
       if (dep?.available && dep.hasStatements) {
         const open = dep.noGl.filter((x) => !x.covered);

@@ -391,7 +391,21 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
 
   const ditTotal = deposits?.dit ? deposits.dit.total : round2(sum(rec.dit || [], (d) => d.amount));
   const priorDit = priorDeposits?.dit ? priorDeposits.dit.total : prior ? round2(sum(prior.dit || [], (d) => d.amount)) : null;
-  const ditChange = priorDit == null ? null : round2(ditTotal - priorDit);
+  // Last month's deposits in transit unknown (the first month of the GL, with nothing entered for
+  // the month before): this month's count in full, and the deposits that cleared last month's are
+  // marked "Recognized in another month" on the deposit list instead. Said so, either way.
+  const priorDitMissing = priorDit == null && ditTotal !== 0;
+  const ditChange = priorDit == null ? (priorDitMissing ? ditTotal : null) : round2(ditTotal - priorDit);
+  const markedPrior = reviewableDeposits(rec).filter((d) => exclusionInfo(manualExclusions(rec)[d.id])?.type === 'prior-period');
+  const ditNotes = [];
+  if (priorDitMissing) {
+    ditNotes.push({ kind: 'prior-dit', text: `Last month’s deposits in transit aren’t known (that month isn’t in the GL, and none were entered for it), so this month’s ${money2(ditTotal)} counts in full. Deposits early this month that belong to last month have to be marked “Recognized in another month” on the deposit list${markedPrior.length ? ` — ${markedPrior.length} are, ${money2(sum(markedPrior, (d) => d.amount))}` : ' — none are yet'}.` });
+  } else if (priorDit != null && markedPrior.length) {
+    // Both at once would take last month's deposits out twice.
+    const priorAmounts = [...(priorDeposits?.dit?.rows || []).filter((r) => r.counts).map((r) => r.sign * r.amount), ...(prior?.dit || []).map((d) => d.amount)];
+    const twice = markedPrior.filter((d) => priorAmounts.some((a) => Math.abs(a - d.amount) < 0.005));
+    if (twice.length) ditNotes.push({ kind: 'dit-twice', text: `${twice.map((d) => `${d.date} ${d.desc} ${money2(d.amount)}`).join('; ')}: marked “Recognized in another month”, but also on last month’s deposits in transit, which the change already takes out — so it comes out twice. Count it as revenue, or take it off last month’s list.` });
+  }
 
   // Accrued and realized CD interest come from the CD schedule when it has the month.
   const t = { ...(rec.timing || {}) };
@@ -417,7 +431,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
     revAdjusted, intAdjusted,
     glRev, glInt, glSource, gl, workbookGl,
     stripeCheck: stripePayoutCheck(rec),
-    warnings: missingStatements(rec), deposits, ditFromGl: !!deposits?.dit, waiting,
+    warnings: [...missingStatements(rec), ...ditNotes], deposits, ditFromGl: !!deposits?.dit, waiting, priorDitMissing,
     diffRev, diffInt,
     pctRev: diffRev == null || !glRev ? null : diffRev / glRev,
     pctInt: diffInt == null || !glInt ? null : diffInt / glInt,

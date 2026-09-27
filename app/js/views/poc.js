@@ -135,7 +135,7 @@ export default async function (main, { month, monthName, user, rerender }) {
         h('div', { class: 'recon' },
           row('Bank activity', money(c.bankRev)),
           row('Adjustments', money(c.adjTotal)),
-          row('Change in deposits in transit', c.ditChange == null ? h('span', { class: 'muted' }, 'no prior month') : money(c.ditChange)),
+          row(c.priorDitMissing ? 'Deposits in transit (last month’s not known)' : 'Change in deposits in transit', c.ditChange == null ? h('span', { class: 'muted' }, 'no prior month') : money(c.ditChange)),
           c.timing.restricted ? row('Change in restricted revenue', money(c.timing.restricted)) : null,
           c.timing.merchAR ? row('Merchandise AR', money(c.timing.merchAR)) : null,
           row('Bank revenue, adjusted', money(c.revAdjusted), 'total'),
@@ -463,7 +463,7 @@ export default async function (main, { month, monthName, user, rerender }) {
   }
 
   function drawTiming(c) {
-    ditTotals.textContent = `This month ${money(c.ditTotal, { dash: false })} · ${monthName(prevMonth)} ${c.priorDit == null ? 'not entered' : money(c.priorDit, { dash: false })} · change ${c.ditChange == null ? '—' : money(c.ditChange, { dash: false })}`;
+    ditTotals.textContent = `This month ${money(c.ditTotal, { dash: false })} · ${monthName(prevMonth)} ${c.priorDit == null ? 'not known — counted as none' : money(c.priorDit, { dash: false })} · change ${c.ditChange == null ? '—' : money(c.ditChange, { dash: false })}`;
     const mode = c.timing.fromSchedule ? 'schedule' : 'typed';
     if (timingHost.dataset.mode === mode) return; // inputs already built — don't steal focus
     timingHost.dataset.mode = mode;

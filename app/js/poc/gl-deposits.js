@@ -106,17 +106,18 @@ function matchMonth(month, lines, receiptsBy, used) {
   const byLine = new Map();
   const RANK = { this: 0, prior: 1, next: 2 };
   const all = [[month, 'this'], [addMonths(month, -1), 'prior'], [addMonths(month, 1), 'next']]
-    .flatMap(([m, when]) => (receiptsBy[m] || []).filter((r) => r.amount > 0).map((r) => ({ r, when, w: bankWindow(r), stripe: glKind(r).kind === 'stripe' })));
+    .flatMap(([m, when]) => (receiptsBy[m] || []).filter((r) => r.amount > 0).map((r) => { const kind = glKind(r).kind; return { r, when, w: bankWindow(r), kind, stripe: kind === 'stripe' }; }));
   const open = (x) => !used.has(x.r.batch);
   const take = (x, ls) => { used.add(x.r.batch); for (const l of ls) byLine.set(l, { r: x.r, when: x.when, group: ls.length, batches: [x.r] }); };
   // Last or next month's batch has to be close: it's borrowing across the month end.
-  // A batch from last month without a bank date in its name is usually dated the last day of the
-  // month, and the deposit can take a week or so to reach the bank (the Cigna check: booked 12/31,
-  // deposited 1/7), so it gets longer early in the month.
+  // A refund or reimbursement check booked last month (no bank date in its name) can take a week or
+  // so to reach the bank (the Cigna check: booked 12/31, deposited 1/7), so it gets longer early in
+  // the month. Gifts and grants are booked the day the money arrives, so they don't: a same-amount
+  // grant last month isn't this month's (a 2,000 PayPal grant 4/27 vs 5/8).
   const near = (x, date, days) => {
     const d = distance(date, x.w);
     if (x.when === 'this') return d <= days;
-    if (x.when === 'prior' && !x.w.named && Number(String(date).slice(8, 10)) <= 12) return d <= 12;
+    if (x.when === 'prior' && !x.w.named && x.kind !== 'revenue' && Number(String(date).slice(8, 10)) <= 12) return d <= 12;
     return d <= Math.min(days, 3);
   };
   const order = (date) => (a, b) => RANK[a.when] - RANK[b.when] || distance(date, a.w) - distance(date, b.w);
