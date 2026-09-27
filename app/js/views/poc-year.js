@@ -797,7 +797,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
             } }, 'Remove'))
           : null;
-        return h('div', { class: 'row' }, decideCell, confirmCell(x));
+        return h('div', { class: 'stack' }, confirmCell(x), decideCell);
       };
       // Adding (or editing) an adjustment typed by hand, in this row.
       const DEFAULT_TYPE = { [ADJ_GROUPS[0]]: 'transfer', [ADJ_GROUPS[1]]: 'transfer', [ADJ_GROUPS[2]]: 'not-revenue', [ADJ_GROUPS[3]]: 'other', [ADJ_GROUPS[4]]: 'timing' };
@@ -857,7 +857,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           h('button', { class: 'small-btn', onclick: () => openDit(m) }, `${monthName(addMonths(m, -1))}’s list too`)),
         h('h4', {}, `In transit at the end of ${monthName(m)}`),
         ditBlock(m, c, close, again)) : null;
+      // Everything in this pop-up at once.
+      const topConfirm = items.length ? h('div', { class: 'row', style: { marginBottom: '.5rem' } }, confirmAll(items, key), h('span', { class: 'muted small' }, 'or confirm each line below')) : null;
       mount(body,
+        topConfirm,
         dit, kinds.map(section),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } }, rowKV(`${key}, total`, h('strong', {}, money(round2(sum(list, (a) => a.amount) + (dit ? c.ditChange : 0)))))),
         evidenceSummary(list),

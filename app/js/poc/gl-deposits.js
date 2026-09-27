@@ -374,7 +374,7 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         amount: round2(sum(wiseFees, (x) => x.fee)),
         note: wiseFees.map((x) => `GL ${x.r.batch}: ${x.r.desc} — received ${money2(x.r.amount)}, booked ${money2(x.r.amount + x.fee)}`).join('; '),
         why: 'Wise pays out an incoming wire less its fee; the GL books the gift in full and the fee as an expense, so the fee is added back.',
-        detail: wiseFees.map((x) => ({ date: x.r.date, amount: x.fee, desc: x.r.desc })) });
+        detail: wiseFees.map((x) => ({ date: x.r.date, amount: x.fee, desc: x.r.desc, note: `GL ${x.r.batch}: received ${money2(x.r.amount)}, booked ${money2(x.r.amount + x.fee)}` })) });
     }
     // Money given back to donors out of PayPal, from the GL's "Payment Refund" lines.
     for (const r of glBy[m]?.paypalRefunds || []) {
