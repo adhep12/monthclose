@@ -78,6 +78,14 @@ test('PayPal, KeyBank and Wise statements', () => {
   assert.equal(w.interest, 633.06);
 });
 
+test('Wise statements with day-first dates', () => {
+  const w = parseWise(L(['USD statement', '1 June 2026 [GMT-06:00] - 30 June 2026 [GMT-06:00]', 'USD on 30 June 2026 [GMT-06:00] 248,500.88 USD',
+    'Description Incoming Outgoing Amount', 'Interest payment', '1,272.00 248,500.88', '1 June 2026 Transaction: BALANCE_INTEREST-x']));
+  assert.equal(w.month, '2026-06');
+  assert.equal(w.interest, 1272);
+  assert.equal(w.items[0].date, '2026-06-01');
+});
+
 test('Delap/Tschetter gain = change in value less money moved in', () => {
   assert.equal(balanceMethodInterest({ ending: 5186270.92 }, { ending: 5161886.70 }), 24384.22);
   assert.equal(balanceMethodInterest({ ending: 5084983.41, netDeposits: -84706.53 }, { ending: 5145263.38 }), 24426.56);

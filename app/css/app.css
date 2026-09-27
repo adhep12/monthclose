@@ -244,6 +244,8 @@ main.content { margin: 0 auto; }
 .sheet td.clickable-cell:hover { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 .sheet .add-hint { color: var(--muted); opacity: .45; font-weight: 600; }
 .sheet td.clickable-cell:hover .add-hint { opacity: 1; color: var(--accent); }
+.sheet .remove-hint { color: var(--muted); font-weight: 700; padding: 0 .45rem; border-radius: 4px; cursor: pointer; }
+.sheet .remove-hint:hover { color: var(--bad, #b42318); background: color-mix(in srgb, currentColor 12%, transparent); }
 .sheet tr.detail-row td { background: color-mix(in srgb, var(--accent-soft) 25%, var(--panel)); font-size: .74rem; }
 .sheet tr.detail-row td.label-col { padding-left: 1.4rem; }
 .tab-sub { font-weight: 400; opacity: .75; font-size: .78em; }

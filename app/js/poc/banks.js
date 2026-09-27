@@ -17,13 +17,21 @@ export function detectBank(lines) {
   return null;
 }
 
+const WISE_DATE = '(?:[A-Za-z]+ \\d{1,2}, \\d{4}|\\d{1,2} [A-Za-z]+ \\d{4})';
+function wiseDate(text) {
+  const md = text.match(/([A-Za-z]+) (\d{1,2}), (\d{4})/);
+  const dm = text.match(/(\d{1,2}) ([A-Za-z]+) (\d{4})/);
+  const [mon, day, year] = md ? [md[1], md[2], md[3]] : [dm[2], dm[1], dm[3]];
+  return iso(Number(year), MONTHS.indexOf(mon.toLowerCase()) + 1, Number(day));
+}
+
 export function parseWise(lines) {
   const all = lines.map((l) => l.text);
   const j = all.join('\n');
-  const period = j.match(/(\w+) (\d{1,2}), (\d{4}) \[[^\]]*\] - (\w+) (\d{1,2}), (\d{4})/);
+  // Wise writes dates either way round depending on the account's locale: "July 1, 2026" or "1 June 2026".
+  const period = j.match(new RegExp(`${WISE_DATE} \\[[^\\]]*\\] - ${WISE_DATE}`));
   if (!period) throw new Error('Couldn’t find the Wise statement period.');
-  const endMonth = MONTHS.indexOf(period[4].toLowerCase()) + 1;
-  const date = iso(Number(period[6]), endMonth, Number(period[5]));
+  const date = wiseDate(period[0].split(' - ')[1]);
   const ending = amt((j.match(new RegExp(`USD on [^\\n]*? (${AMT}) USD`)) || [])[1]);
 
   // Each transaction: a description, its amount and running balance (on the same line or the
@@ -35,9 +43,9 @@ export function parseWise(lines) {
     const m = all[i].match(bothRe);
     if (!m) continue;
     const desc = m[1].trim() || (all[i - 1] || '').trim();
-    const dm = (all[i + 1] || '').match(/^(\w+) (\d{1,2}), (\d{4})/);
+    const dm = (all[i + 1] || '').match(new RegExp(`^${WISE_DATE}`));
     if (!dm) continue;
-    items.push({ id: `wise-${items.length}`, desc, amount: amt(m[2]), balance: amt(m[3]), date: iso(Number(dm[3]), MONTHS.indexOf(dm[1].toLowerCase()) + 1, Number(dm[2])) });
+    items.push({ id: `wise-${items.length}`, desc, amount: amt(m[2]), balance: amt(m[3]), date: wiseDate(dm[0]) });
   }
   // Newest first. Direction from the running balance where we can, else from the wording.
   for (let i = 0; i < items.length; i++) {

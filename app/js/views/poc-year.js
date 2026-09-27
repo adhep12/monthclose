@@ -19,6 +19,9 @@ import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 const FY_KEY = 'monthclose:poc-fy';
 const SHOW_KEY = 'monthclose:poc-show';
 const ADJ_OPEN_KEY = 'monthclose:poc-adj-open';
+// Accounts whose empty cells turn into an undo "−" once something is attached or typed.
+const UNDOABLE = ['ics', 'cd', 'delap', 'tschetter'];
+const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits'];
 // Row order of the workbook's "Per Bank Statement" block.
 const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp'];
 const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
@@ -135,12 +138,17 @@ export default async function (main, { user, rerender }) {
     return null;
   }
 
-  function valueCell(v, { strong, diff, meta, onclick, empty, extra = '' } = {}) {
+  // An empty cell shows "+" (nothing there yet — click to add), or for the accounts in UNDOABLE
+  // "−" once a statement is attached or figures typed for the month: clicking the "−" undoes that.
+  function valueCell(v, { strong, diff, meta, onclick, empty, onEmpty, extra = '' } = {}) {
     const cls = ['num', extra];
     if (diff && v != null && Math.abs(v) >= 1) cls.push(v < 0 ? 'neg' : 'pos');
     if (onclick) cls.push('clickable-cell');
+    const hint = () => (onEmpty
+      ? h('span', { class: 'remove-hint', role: 'button', title: 'Undo — take the statement or typed figures back out', onclick: (e) => { e.stopPropagation(); onEmpty(); } }, '−')
+      : h('span', { class: 'add-hint' }, empty));
     return h('td', { class: cls.join(' '), title: meta?.title || (onclick ? 'Click to open' : ''), onclick },
-      v == null ? (onclick && empty ? h('span', { class: 'add-hint' }, empty) : '') : strong ? h('strong', {}, money(v)) : money(v),
+      v == null ? (onclick && empty ? hint() : '') : strong ? h('strong', {}, money(v)) : money(v),
       meta?.mark ? h('span', { class: meta.mark === '✓' ? 'good-text' : meta.mark === '⚠' ? 'error' : 'warn-text' }, ` ${meta.mark}`) : null);
   }
 
@@ -188,16 +196,54 @@ export default async function (main, { user, rerender }) {
               // Files dropped on an account's cell attach to that account and month.
               const droppable = (td) => (td && r.account && ACCOUNT_FILES[r.account]?.accept ? dropTarget(td, (files) => quickAttach(r.account, m, files, td)) : td);
               const intExtra = span > 1 ? 'int' : '';
+              const undo = r.account && hasEntry(r.account, m) ? () => undoAccount(r.account, m) : null;
               if (!c) {
-                return [showRev ? droppable(valueCell(null, { onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' })) : null,
-                  showInt ? droppable(valueCell(null, { onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', extra: intExtra })) : null];
+                return [showRev ? droppable(valueCell(null, { onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '', onEmpty: undo })) : null,
+                  showInt ? droppable(valueCell(null, { onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', onEmpty: undo, extra: intExtra })) : null];
               }
               return [
-                showRev ? droppable(valueCell(r.rev ? r.rev(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.rev?.(c, rec), onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' })) : null,
-                showInt ? droppable(valueCell(r.int ? r.int(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.int?.(c, rec), onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', extra: intExtra })) : null,
+                showRev ? droppable(valueCell(r.rev ? r.rev(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.rev?.(c, rec), onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '', onEmpty: undo })) : null,
+                showInt ? droppable(valueCell(r.int ? r.int(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.int?.(c, rec), onclick: r.int ? click : null, empty: r.account || r.gl ? '+' : '', onEmpty: undo, extra: intExtra })) : null,
               ];
             }));
         })))));
+  }
+
+  // ---- Undo ("−") for ICS, CDARS, Delap and Tschetter ------------------------------------
+  // Has someone attached a statement or typed a figure for this account and month? Figures that
+  // came in with the workbook import don't count, and neither does saving every field blank.
+  function hasEntry(id, m) {
+    if (!UNDOABLE.includes(id)) return false;
+    const rec = byMonth[m];
+    const b = rec?.bank?.[id];
+    if (b?.enteredAt && TYPED_FIELDS.some((k) => b[k] != null)) return true;
+    if (id === 'ics') return !!rec?.ics;
+    if (id === 'cd') return cdSourcesFor(cds, m).length > 0;
+    return false;
+  }
+
+  async function undoAccount(id, m) {
+    if (!(await ask(`Undo ${label(id)} — ${monthName(m)}?`,
+      `${id === 'cd' ? 'Detaches the CD statements for the month and takes their interest back out of the CD schedule' : 'Detaches the statement'} and clears any figures typed for ${label(id)}. Workbook figures come back, if there were any.`,
+      { ok: 'Undo', danger: true }))) return;
+    try {
+      const saved = await loadPocMonth(m);
+      const rec = Object.assign(blank(m), structuredClone(saved || {}));
+      const what = [];
+      if (id === 'cd') {
+        for (const x of cdAttached(m)) { await x.detach(); what.push(x.s.fileName || x.label); }
+      } else {
+        for (const x of attachedFor(rec, id)) { x.detach(); what.push(x.s.fileName || x.label); }
+      }
+      const b = rec.bank[id];
+      if (b?.enteredAt) { rec.bank[id] = { ...(b.before || {}) }; what.push('typed figures'); }
+      if (saved) {
+        logChange(rec, user, `Undid ${label(id)}${what.length ? `: ${what.join(', ')}` : ''}`);
+        await saveRec(rec);
+      }
+      toast(`${label(id)} — ${monthName(m)} undone.`);
+    } catch (err) { toast(explain(err, 'Couldn’t undo that.'), 'error'); }
+    rerender();
   }
 
   // ---- Account panel: attach a statement or type figures, confirm -----------------------
@@ -308,12 +354,15 @@ export default async function (main, { user, rerender }) {
               h('div', { class: 'row', style: { marginTop: '.5rem' } },
                 h('button', { class: 'primary', onclick: async () => {
                   const changes = [];
+                  const before = { ...b };
                   for (const [k, el] of Object.entries(fields)) {
                     const t = el.value.trim(); const v = t === '' ? null : parseAmount(t);
                     if (t !== '' && !Number.isFinite(v)) { toast(`“${t}” isn’t a number.`, 'error'); return; }
                     if ((b[k] ?? null) !== v) { changes.push(`${k} ${b[k] == null ? '(blank)' : money(b[k], { dash: false })} → ${v == null ? '(blank)' : money(v, { dash: false })}`); b[k] = v; }
                   }
                   if (!changes.length) { toast('Nothing changed.'); return; }
+                  // What was there before anything was typed (workbook figures), for undo.
+                  if (!b.enteredAt && !b.before) b.before = Object.fromEntries(TYPED_FIELDS.filter((k) => before[k] != null).map((k) => [k, before[k]]));
                   stampEntered(b, user); logChange(rec, user, `${label(id)}: ${changes.join(', ')}`);
                   try { await saveRec(rec); dirty = true; toast('Saved.'); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
                   draw();

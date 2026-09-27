@@ -13,6 +13,8 @@ export async function readStatementFile(file) {
   const name = file.name.toLowerCase();
   if (name.endsWith('.pdf')) {
     const lines = await pdfLines(await file.arrayBuffer());
+    // A scanned statement is just pictures of pages — there's no text in it to read.
+    if (!lines.length) throw new Error('This PDF is a scanned image, so there’s no text in it to read. Download the statement again from online banking (the electronic statement, not a scan or an image copy), or type the figures in.');
     if (looksLikeCass(lines)) return { type: 'cass', data: parseCassStatement(lines) };
     const k = detectIntrafi(lines);
     if (k === 'cdars') return { type: 'cdars', data: parseCdarsStatement(lines) };
