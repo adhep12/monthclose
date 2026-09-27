@@ -260,6 +260,20 @@ test('a Stripe transfer that’s a gift through someone else’s Stripe stays in
   assert.ok(c.stripeCheck.ignored[0].ignored.gift);
 });
 
+test('a deposit the GL doesn’t have, once someone decides, is shown as decided', () => {
+  // November 2025: a 324.08 Divvy reimbursement with no GL batch, marked not revenue.
+  const rec = feb();
+  rec.excluded = { '5884-6': { type: 'not-revenue', note: 'Divvy reimbursement', by: 'A', at: 'x' } };
+  const d = depositChecks({ recs: { '2026-02': rec }, glBy: glBy() })['2026-02'];
+  const x = d.noGl.find((n) => n.line.id === '5884-6');
+  assert.equal(x.decided.type, 'not-revenue');
+  assert.equal(x.decided.by, 'A');
+  const c = computePoc(rec, { deposits: d });
+  assert.ok(c.adjustments.some((a) => a.id === 'auto-ex-5884-6' && a.amount === -10479.69)); // and it's taken out
+  rec.excluded = {}; rec.dismissed = { '5884-6': { by: 'B', at: 'y' } };
+  assert.deepEqual(depositChecks({ recs: { '2026-02': rec }, glBy: glBy() })['2026-02'].noGl.find((n) => n.line.id === '5884-6').decided, { type: 'revenue', by: 'B', at: 'y' });
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

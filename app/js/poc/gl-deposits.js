@@ -288,7 +288,9 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       res.lines.push({ line: l, match: x ? { ...x.r, when: x.when, group: x.group, ...k } : null });
       if (x && STRIPE.test(l.desc) && k.kind === 'revenue') (res.stripeGifts ||= []).push({ id: l.id, batch: x.r.batch, desc: x.r.desc, label: k.label });
       if (!x) {
-        if (!STRIPE.test(l.desc) && l.kind !== 'outgoing') res.noGl.push({ line: l, covered: coveredBy(l.amount) });
+        // Someone may already have said how it counts (revenue, or taken out and why).
+        const decided = manual[l.id] ? exclusionInfo(manual[l.id]) : dismissed[l.id] ? { type: 'revenue', ...(typeof dismissed[l.id] === 'object' ? dismissed[l.id] : {}) } : null;
+        if (!STRIPE.test(l.desc) && l.kind !== 'outgoing') res.noGl.push({ line: l, covered: decided ? null : coveredBy(l.amount), decided });
         continue;
       }
       if (k.kind === 'revenue' && rules[l.id] && !manual[l.id]) {

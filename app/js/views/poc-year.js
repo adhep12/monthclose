@@ -133,7 +133,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (id === 'cassOp' && k === 'rev' && missing.length) return { mark: '⚠', title: missing.map((w) => w.text).join('\n') };
       if (id === 'cassOp' && k === 'rev' && c.deposits?.conflicts?.length) return { mark: '⚠', title: `${c.deposits.conflicts.length} deposits a rule takes out but the GL booked as revenue — open the month to decide` };
       if (id === 'keyOp' && k === 'rev' && l.rev != null && c.deposits?.keyBank && Math.abs(l.rev - c.deposits.keyBank.glIn) >= 0.005) return { mark: '⚠', title: `KeyBank deposits ${money(l.rev || 0, { dash: false })}; the GL booked ${money(c.deposits.keyBank.glIn, { dash: false })} into 1061 — open the month to check` };
-      if (id === 'cassOp' && k === 'rev' && c.deposits?.noGl?.some((x) => !x.covered)) return { mark: '⚠', title: `${c.deposits.noGl.filter((x) => !x.covered).length} deposits the GL doesn’t have — open the month to check` };
+      if (id === 'cassOp' && k === 'rev' && c.deposits?.noGl?.some((x) => !x.covered && !x.decided)) return { mark: '⚠', title: `${c.deposits.noGl.filter((x) => !x.covered && !x.decided).length} deposits the GL doesn’t have, not decided yet — open to check` };
       if (id === 'wise' && k === 'rev' && rec?.bankStatements?.wise && !statementTies(rec, 'wise')) return { mark: '⚠', title: 'The Wise statement doesn’t tie to its own balances — attach it again' };
       if (l[k] == null) return null;
       const st = confirmationState(rec.bank?.[id], l.values);
@@ -503,7 +503,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const dep = c.deposits;
     const again = { kind: 'account', id: 'cassOp', m };
     const conflicts = dep?.conflicts || [];
-    const noGl = (dep?.noGl || []).filter((x) => !x.covered);
+    const noGl = (dep?.noGl || []).filter((x) => !x.covered && !x.decided);
+    const decidedNoGl = (dep?.noGl || []).filter((x) => x.decided);
+    const typeName = (t) => (REVIEW_TYPES.find((x) => x[0] === t) || [, t])[1];
     return h('div', {},
       conflicts.length ? h('div', { class: 'notice warn' }, h('h3', {}, 'To decide: a rule says it isn’t revenue, the GL booked it as revenue'),
         table([
@@ -523,6 +525,17 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
           { label: 'Treat as', cell: (x) => treatSelect(m, x.line, 'revenue', again, close) },
         ], noGl)) : null,
+      decidedNoGl.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have — decided'),
+        h('p', { class: 'muted small' }, 'No GL batch for these either, but someone has said how each counts. Change it here if that was wrong.'),
+        table([
+          { label: 'Date', cell: (x) => x.line.date },
+          { label: 'Deposit', cell: (x) => h('span', { class: 'wrap' }, `${x.line.desc}${x.line.detail ? ` — ${x.line.detail}` : ''}`) },
+          { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
+          { label: 'Counts as', cell: (x) => h('div', { class: 'stack' },
+            h('span', {}, statusPill(typeName(x.decided.type), x.decided.type === 'revenue' ? 'info' : 'good'), x.decided.by ? h('span', { class: 'small muted' }, ` ${x.decided.by} · ${when(x.decided.at)}`) : null),
+            x.decided.note ? h('span', { class: 'small' }, x.decided.note) : null) },
+          { label: 'Change', cell: (x) => treatSelect(m, x.line, x.decided.type, again, close) },
+        ], decidedNoGl)) : null,
       h('h3', {}, 'Taken out of Cass deposits'),
       cassAdj.length ? table([
         { label: 'What', cell: (a) => h('div', {}, adjDetail(a), a.detail?.length ? h('div', { class: 'muted small wrap' }, a.detail.slice(0, 6).map((d) => `${d.date} ${d.desc} ${money(d.amount)}`).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null) },
@@ -657,8 +670,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     return decide(m, (rec) => {
       rec.excluded ||= {};
       delete rec.excluded[line.id];
-      if (type === 'revenue') rec.dismissed = { ...(rec.dismissed || {}), [line.id]: true };
-      else { rec.excluded[line.id] = { type, note: note || '' }; if (rec.dismissed) delete rec.dismissed[line.id]; }
+      if (type === 'revenue') rec.dismissed = { ...(rec.dismissed || {}), [line.id]: { by: user, at: nowIso() } };
+      else { rec.excluded[line.id] = { type, note: note || '', by: user, at: nowIso() }; if (rec.dismissed) delete rec.dismissed[line.id]; }
     }, `${line.date} ${line.desc} ${money(line.amount)}: ${type === 'revenue' ? 'counted as revenue' : `marked as ${name}`} (from the fiscal year sheet)`, again, close);
   }
   function treatSelect(m, line, current, again, close) {
@@ -1066,7 +1079,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       for (const w of c.warnings || []) checks.push([monthName(m), ['operating', 'incoming', 'outgoing'].includes(w.kind) ? 'Statement missing' : 'Deposits in transit', w.kind === 'dit-twice' ? 'COUNTED TWICE' : w.kind === 'prior-dit' ? 'LAST MONTH NOT KNOWN' : 'MISSING', w.text]);
       const dep = c.deposits;
       if (dep?.available && dep.hasStatements) {
-        const open = dep.noGl.filter((x) => !x.covered);
+        const open = dep.noGl.filter((x) => !x.covered && !x.decided);
         checks.push([monthName(m), 'Deposits vs GL', open.length ? `${open.length} NOT IN THE GL` : 'All matched',
           `${dep.lines.filter((x) => x.match).length} of ${dep.lines.length} matched; ${Object.keys(dep.exclusions).length} not revenue per the GL${open.length ? `; not in the GL: ${open.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join(', ')}` : ''}`]);
       }
