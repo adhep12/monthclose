@@ -58,7 +58,7 @@ export function applyCdarsStatement(cds, stmt, { user = '', file = '' } = {}) {
   const touched = [];
   for (const a of stmt.accounts) {
     const id = normalizeId(a.accountId);
-    const cd = byId.get(id) || { id, last4: id.slice(-4), earned: {}, stmtEarned: {}, status: 'active' };
+    const cd = byId.get(id) || { id, last4: id.slice(-4), earned: {}, stmtEarned: {}, status: 'active', createdFrom: stmt.date };
     if (!byId.has(id)) { cds.push(cd); byId.set(id, cd); }
     cd.effective = a.effective || cd.effective;
     cd.maturity = a.maturity || cd.maturity;
@@ -68,9 +68,15 @@ export function applyCdarsStatement(cds, stmt, { user = '', file = '' } = {}) {
     if (principal) cd.principal = principal;
     cd.stmtEarned = { ...(cd.stmtEarned || {}), [stmt.date]: a.earnedSinceLast || 0 };
     const m = stmt.month;
+    // Keep what was there before statements took over the month, so detaching can put it back.
+    if (cd.earned?.[m] && cd.earned[m].source !== 'statement') cd.earnedBefore = { ...(cd.earnedBefore || {}), [m]: cd.earned[m] };
     const fromStatements = round2(sum(Object.entries(cd.stmtEarned).filter(([d]) => d.startsWith(m)), ([, v]) => v));
     cd.earned = { ...(cd.earned || {}), [m]: { amount: fromStatements, source: 'statement', by: user, at: new Date().toISOString(), file } };
-    if (a.matured) { cd.status = 'matured'; cd.interestPaid = a.interestPaid || a.ytdPaid || cd.interestPaid || 0; }
+    if (a.matured) {
+      if (!cd.maturedBy) cd.maturityBefore = { status: cd.status || 'active', interestPaid: cd.interestPaid || 0 };
+      cd.maturedBy = stmt.date;
+      cd.status = 'matured'; cd.interestPaid = a.interestPaid || a.ytdPaid || cd.interestPaid || 0;
+    }
     touched.push(cd);
   }
   return touched;
@@ -86,7 +92,8 @@ export function applyIntrafiExport(cds, exp, month, { user = '' } = {}) {
     if (row.status === 'Active') {
       if (!cd) { notes.push(`CD …${row.last4} (${money2(row.principal)}, matures ${row.maturity}) isn’t in the schedule yet — upload its CDARS statement or add it.`); continue; }
       const prior = earnedThrough({ ...cd, earned: Object.fromEntries(Object.entries(cd.earned || {}).filter(([m]) => m < month)) }, addMonths(month, -1));
-      cd.earned = { ...(cd.earned || {}), [month]: { amount: round2(row.accrued - prior), source: 'export', by: user, at: new Date().toISOString() } };
+      if (cd.earned?.[month] && cd.earned[month].source !== 'export') cd.earnedBefore = { ...(cd.earnedBefore || {}), [month]: cd.earned[month] };
+      cd.earned = { ...(cd.earned || {}), [month]: { amount: round2(row.accrued - prior), source: 'export', by: user, at: new Date().toISOString(), file: exp.fileName || '' } };
       if (!cd.principal) cd.principal = row.principal;
     } else if (cd && row.maturity && monthOfDate(row.maturity) === month && !cd.earned?.[month]) {
       notes.push(`CD …${row.last4} matured ${row.maturity}. Its final interest isn’t in the export — upload the maturity statement.`);
@@ -94,6 +101,62 @@ export function applyIntrafiExport(cds, exp, month, { user = '' } = {}) {
   }
   return notes;
 }
+// Take a CDARS statement (by its date) back out of the schedule. Returns the CDs it changed and
+// any it had created that are now empty (the caller deletes those).
+export function detachCdarsStatement(cds, date) {
+  const m = date.slice(0, 7);
+  const changed = [], removed = [];
+  for (const cd of cds) {
+    if (cd.stmtEarned?.[date] == null && !cd.files?.[date]) continue;
+    if (cd.stmtEarned) delete cd.stmtEarned[date];
+    if (cd.files) delete cd.files[date];
+    const left = Object.entries(cd.stmtEarned || {}).filter(([d]) => d.startsWith(m));
+    if (left.length) cd.earned[m] = { ...cd.earned[m], amount: round2(sum(left, ([, v]) => v)) };
+    else restoreMonth(cd, m);
+    if (cd.maturedBy === date) {
+      cd.status = cd.maturityBefore?.status || 'active';
+      cd.interestPaid = cd.maturityBefore?.interestPaid || 0;
+      delete cd.maturedBy; delete cd.maturityBefore;
+    }
+    const empty = !Object.keys(cd.stmtEarned || {}).length && !Object.keys(cd.earned || {}).length;
+    if (cd.createdFrom === date && empty) removed.push(cd); else changed.push(cd);
+  }
+  return { changed, removed };
+}
+
+// Take an IntraFi export's accruals for a month back out.
+export function detachExport(cds, month) {
+  const changed = [];
+  for (const cd of cds) if (cd.earned?.[month]?.source === 'export') { restoreMonth(cd, month); changed.push(cd); }
+  return changed;
+}
+
+function restoreMonth(cd, m) {
+  if (cd.earnedBefore?.[m]) { cd.earned[m] = cd.earnedBefore[m]; delete cd.earnedBefore[m]; }
+  else if (cd.earned) delete cd.earned[m];
+}
+
+// Everything applied to a month: one entry per CDARS statement (by date) and one for an export.
+export function cdSourcesFor(cds, month) {
+  const byDate = new Map();
+  let exp = null;
+  for (const cd of cds) {
+    for (const [date, f] of Object.entries(cd.files || {})) {
+      if (!date.startsWith(month)) continue;
+      const e = byDate.get(date) || { kind: 'cdars', date, name: f.name, key: f.key, by: f.by, at: f.at, cds: [] };
+      e.cds.push(cd.last4);
+      byDate.set(date, e);
+    }
+    for (const date of Object.keys(cd.stmtEarned || {})) {
+      if (!date.startsWith(month) || byDate.has(date)) continue;
+      byDate.set(date, { kind: 'cdars', date, name: cd.earned?.[month]?.file || `CDARS statement ${date}`, by: cd.earned?.[month]?.by, at: cd.earned?.[month]?.at, cds: [cd.last4] });
+    }
+    const e = cd.earned?.[month];
+    if (e?.source === 'export') { exp ||= { kind: 'export', name: e.file || 'IntraFi export', by: e.by, at: e.at, cds: [] }; exp.cds.push(cd.last4); }
+  }
+  return [...[...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)), ...(exp ? [exp] : [])];
+}
+
 const money2 = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 
 // ---- Import from "CDARS Interest Calculation - Rolling" -------------------------------------

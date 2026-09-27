@@ -4,8 +4,8 @@
 // Adjustments to open up what's being taken out; click GL to load Acumatica's numbers.
 
 import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
-import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, listSoa, saveSoa } from '../data.js';
-import { monthSummary } from '../cd/schedule.js';
+import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
+import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
@@ -263,7 +263,7 @@ export default async function (main, { user, rerender }) {
         const c = computePoc(rec, { prior, gl: glFor(m), cd: cdFor(m) });
         const l = line(c, id);
         const b = rec.bank[id] || (rec.bank[id] = {});
-        const attached = attachedFor(rec, id);
+        const attached = id === 'cd' ? cdAttached(m) : attachedFor(rec, id);
         const auto = l.from && l.from !== 'typed' && src.method !== 'balance';
         const fields = {};
         const inp = (k) => (fields[k] = h('input', { class: 'num', inputmode: 'decimal', value: b[k] ?? '', size: 16 }));
@@ -284,7 +284,7 @@ export default async function (main, { user, rerender }) {
               x.s.fileKey ? h('button', { class: 'small-btn', onclick: async () => { const u = await fileUrl('statements', x.s.fileKey).catch(() => null); if (u) window.open(u, '_blank', 'noopener'); } }, 'View') : null,
               h('button', { class: 'small-btn danger', onclick: async () => {
                 if (!(await ask('Detach statement', `Detach ${x.s.fileName || x.label}? Its figures come out of ${monthName(m)}.`, { ok: 'Detach', danger: true }))) return;
-                x.detach(); logChange(rec, user, `Detached ${x.label} ${x.s.fileName || ''}`);
+                await x.detach(); logChange(rec, user, `Detached ${x.label} ${x.s.fileName || ''}`);
                 try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
                 draw();
               } }, 'Detach')) },
@@ -338,6 +338,27 @@ export default async function (main, { user, rerender }) {
       if (droppedFiles?.length) doAttach(droppedFiles);
     }, { wide: id === 'cassOp' });
     if (dirty) rerender();
+  }
+
+  // CD statements live in the CD schedule, so "attached to this month" means the CDARS
+  // statements dated in it (and an IntraFi export applied to it). Detaching takes their interest
+  // back out of each CD.
+  function cdAttached(m) {
+    return cdSourcesFor(cds, m).map((src) => ({
+      label: src.kind === 'export' ? `IntraFi export (…${src.cds.join(', …')})` : `CDARS ${src.date} (…${src.cds.join(', …')})`,
+      s: { fileName: src.name, fileKey: src.key, attachedBy: src.by, attachedAt: src.at },
+      detach: async () => {
+        try {
+          if (src.kind === 'export') {
+            for (const cd of detachExport(cds, m)) await saveCd(cd);
+          } else {
+            const { changed, removed } = detachCdarsStatement(cds, src.date);
+            for (const cd of changed) await saveCd(cd);
+            for (const cd of removed) { await deleteCd(cd.id); cds.splice(cds.indexOf(cd), 1); }
+          }
+        } catch (err) { toast(explain(err, 'Couldn’t update the CD schedule.'), 'error'); }
+      },
+    }));
   }
 
   function cassSummary(c, m) {

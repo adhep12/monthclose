@@ -86,11 +86,11 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
       messages.push({ text: `${label(d.source)}: revenue ${money(d.revenue)}, interest ${money(d.interest)}, ending ${money(d.ending)}` });
     } else if (r.type === 'cdars') {
       const touched = applyCdarsStatement(cds, d, { user, file: file.name });
-      for (const cd of touched) { cd.files = { ...(cd.files || {}), [d.date]: { name: file.name, key: fileKey } }; await saveCd(cd); }
+      for (const cd of touched) { cd.files = { ...(cd.files || {}), [d.date]: { name: file.name, key: fileKey, by: user, at: nowIso() } }; await saveCd(cd); }
       logChange(rec, user, `Attached CDARS statement ${file.name} (${touched.map((c) => `…${c.last4}`).join(', ')})`);
       messages.push({ text: `CD schedule: ${touched.map((c) => `…${c.last4} ${money(c.earned?.[d.month]?.amount || 0)}`).join(', ')}` });
     } else if (r.type === 'intrafi-export') {
-      const notes = applyIntrafiExport(cds, d, month, { user });
+      const notes = applyIntrafiExport(cds, { ...d, fileName: file.name }, month, { user });
       for (const cd of cds.filter((c) => c.earned?.[month]?.source === 'export')) await saveCd(cd);
       logChange(rec, user, `Applied IntraFi export ${file.name} to ${monthName(month)} CD accruals`);
       messages.push({ text: `IntraFi export applied to ${monthName(month)}` }, ...notes.map((n) => ({ bad: true, text: n })));

@@ -93,3 +93,30 @@ test('a confirmation goes stale when the number changes', () => {
   assert.equal(confirmationState(o, { rev: 11 }), 'stale');
   assert.equal(confirmationState({}, { rev: 10 }), 'none');
 });
+
+test('detaching a CDARS statement puts the schedule back the way it was', async () => {
+  const { applyCdarsStatement, detachCdarsStatement, cdSourcesFor } = await import('../app/js/cd/schedule.js');
+  const cds = [{ id: '1000000001', last4: '0001', principal: 1000000, effective: '2026-06-25', maturity: '2026-07-23', status: 'active',
+    earned: { '2026-07': { amount: 2100, source: 'workbook' } }, stmtEarned: {} }];
+  const stmt = parseCdarsStatement(L(['Date', '07/23/2026', 'Summary of Accounts',
+    '1000000001 06/25/2026 07/23/2026 3.50% $1,000,000.00 $0.00',
+    '1000000002 07/23/2026 08/20/2026 3.50% $0.00 $1,002,685.00',
+    'Account ID: 1000000001', 'Account Balance $0.00 YTD Interest Paid $2,685.00', 'Annual Percentage Yield 3.56% Interest Earned Since Last Statement 2,110.00',
+    '07/23/2026 Interest Payment 2,685.00', '07/23/2026 Maturity Payout - Funds To (1,002,685.00)',
+    'Account ID: 1000000002', 'Account Balance $1,002,685.00 YTD Interest Paid $0.00', 'Annual Percentage Yield 3.56% Interest Accrued 100.00', 'Interest Earned Since Last Statement 100.00']));
+  const touched = applyCdarsStatement(cds, stmt, { user: 'A' });
+  touched.forEach((cd) => { cd.files = { [stmt.date]: { name: 'cdars.pdf', by: 'A' } }; });
+  assert.equal(cds[0].earned['2026-07'].amount, 2110);
+  assert.equal(cds[0].status, 'matured');
+  assert.equal(cds.length, 2);
+  const src = cdSourcesFor(cds, '2026-07');
+  assert.equal(src.length, 1);
+  assert.deepEqual(src[0].cds, ['0001', '0002']);
+
+  const { changed, removed } = detachCdarsStatement(cds, stmt.date);
+  assert.equal(changed.length, 1);
+  assert.equal(removed.length, 1); // the CD this statement created
+  assert.deepEqual(cds[0].earned['2026-07'], { amount: 2100, source: 'workbook' }); // workbook figure back
+  assert.equal(cds[0].status, 'active');
+  assert.equal(cds[0].interestPaid, 0);
+});

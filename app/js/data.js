@@ -151,6 +151,10 @@ export async function saveCd(cd) {
   await store.upsert('cds', cd.id, data, { tag: cd.status || 'active' });
 }
 
+export async function deleteCd(id) {
+  await store.remove('cds', id);
+}
+
 export async function loadSoa(month) {
   return store.get('soa', month);
 }
