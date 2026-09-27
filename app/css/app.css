@@ -157,3 +157,12 @@ td.wrap { white-space: normal; min-width: 14rem; }
 details summary { cursor: pointer; font-weight: 600; margin: .5rem 0; }
 .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
 .spacer { flex: 1; }
+
+.recon { display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
+.recon-row { display: flex; justify-content: space-between; gap: 1rem; padding: .22rem 0; }
+.recon-row.total { font-weight: 650; border-top: 1px solid var(--line); margin-top: .15rem; padding-top: .4rem; }
+.card.dashed { border-style: dashed; background: transparent; }
+.good-text { color: var(--good); }
+textarea { font: inherit; }
+.cards.wide { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.break { overflow-wrap: anywhere; }

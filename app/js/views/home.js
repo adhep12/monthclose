@@ -1,12 +1,15 @@
 import { h, mount, statusPill } from '../ui.js';
-import { loadAssets, loadClose, loadConfig } from '../data.js';
+import { loadAssets, loadClose, loadConfig, loadPocMonth, loadGlActivity, loadPocConfig } from '../data.js';
+import { computePoc, glFigures } from '../poc/calc.js';
 import { buildDepreciationJE } from '../fa/je.js';
 import { priorMonthTB } from './fa-je.js';
 import { money } from '../money.js';
 import { addMonths, toPeriod } from '../fiscal.js';
 
 export default async function (main, { month, monthName }) {
-  const [assets, cfg, close, tbInfo] = await Promise.all([loadAssets(), loadConfig(), loadClose(month), priorMonthTB(month)]);
+  const [assets, cfg, close, tbInfo, poc, pocPrior, glAct, pocCfg] = await Promise.all([loadAssets(), loadConfig(), loadClose(month), priorMonthTB(month),
+    loadPocMonth(month), loadPocMonth(addMonths(month, -1)), loadGlActivity(month), loadPocConfig()]);
+  const pc = poc ? computePoc(poc, { prior: pocPrior, gl: glFigures({ glActivity: glAct, month, config: pocCfg }) }) : null;
   const je = assets.length ? buildDepreciationJE({ month, assets, config: cfg }) : null;
 
   const faStatus = close?.status === 'posted' ? statusPill('Posted', 'good')
@@ -33,7 +36,12 @@ export default async function (main, { month, monthName }) {
           : h('p', { class: 'muted' }, 'Import the FA listing to get started.'),
         assets.length ? '#/fa/je' : '#/fa/import', assets.length ? 'Open the JE' : 'Import FA listing'),
       card('CD interest', statusPill('Coming next', 'neutral'), h('p', { class: 'muted' }, 'CDARS ladder, monthly accrued and realized interest, and the 1150/4050 entry.')),
-      card('Proof of cash', statusPill('Coming next', 'neutral'), h('p', { class: 'muted' }, 'Bank activity vs GL revenue, with the Cass statements read from PDF.')),
+      card('Proof of cash',
+        poc?.reviewedBy ? statusPill('Reviewed', 'good') : poc?.preparedBy ? statusPill('Prepared', 'info') : poc ? statusPill('In progress', 'warn') : statusPill('To do', 'warn'),
+        pc && pc.diffRev != null
+          ? h('p', {}, h('span', { class: 'big' }, money(pc.diffRev)), h('br'), h('span', { class: 'muted small' }, `revenue difference · ${Object.keys(poc.statements || {}).length}/3 Cass statements`))
+          : h('p', { class: 'muted' }, poc ? `${Object.keys(poc.statements || {}).length}/3 Cass statements attached${glAct ? '' : ' · GL not uploaded'}` : 'Attach the Cass statements and fill in the other bank lines.'),
+        '#/poc', 'Open proof of cash'),
       card('Inventory', statusPill('Later', 'neutral'), h('p', { class: 'muted' }, 'Cost of goods by department.')),
     ),
   );

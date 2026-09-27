@@ -9,15 +9,19 @@ const routes = [
   [/^#\/fa\/asset\/(.+)$/, () => import('./views/fa-asset.js')],
   [/^#\/fa\/import$/, () => import('./views/fa-import.js')],
   [/^#\/fa\/je$/, () => import('./views/fa-je.js')],
+  [/^#\/poc$/, () => import('./views/poc.js')],
+  [/^#\/poc\/ytd$/, () => import('./views/poc-ytd.js')],
+  [/^#\/poc\/import$/, () => import('./views/poc-import.js')],
   [/^#\/tb$/, () => import('./views/tb.js')],
   [/^#\/settings$/, () => import('./views/settings.js')],
 ];
 
 const NAV = [
   ['#/', 'Close overview'],
+  ['#/poc', 'Proof of cash'],
   ['#/fa', 'Fixed assets'],
   ['#/fa/je', 'Depreciation JE'],
-  ['#/tb', 'Trial balances'],
+  ['#/tb', 'Acumatica uploads'],
   ['#/settings', 'Settings'],
 ];
 
@@ -71,7 +75,7 @@ export async function render() {
   mount(root, header, h('div', { class: 'layout' }, nav, h('div', { class: 'main-col' }, banner, main)));
   for (const a of nav.querySelectorAll('a')) {
     const href = a.dataset.href;
-    const active = href === '#/' ? hash === '#/' || hash === '' : hash === href || (href === '#/fa' && /^#\/fa\/(asset|new|import)/.test(hash));
+    const active = href === '#/' ? hash === '#/' || hash === '' : hash === href || (href === '#/fa' && /^#\/fa\/(asset|new|import)/.test(hash)) || (href === '#/poc' && /^#\/poc\//.test(hash));
     if (active) a.classList.add('active');
   }
 
@@ -81,7 +85,8 @@ export async function render() {
   try {
     const mod = await match[1]();
     if (seq !== renderSeq) return;
-    await mod.default(main, { month: closeMonth(), params, rerender: render, monthName, user: currentUser() });
+    await mod.default(main, { month: closeMonth(), params, rerender: render, monthName, user: currentUser(),
+      setMonth: (m) => { setCloseMonth(m); render(); } });
   } catch (err) {
     console.error(err);
     if (seq !== renderSeq) return;

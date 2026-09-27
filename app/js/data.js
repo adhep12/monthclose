@@ -2,10 +2,14 @@
 //   fa-assets       one record per asset, key = asset id
 //   fa-closes       saved monthly depreciation JEs, key = 'YYYY-MM'
 //   trial-balances  uploaded Trial Balance Summary exports, key = 'YYYY-MM' (the TB's period)
-//   settings        app configuration, key = 'fa-config'
+//   settings        app configuration, keys 'fa-config', 'poc-config'
+//   poc-months      proof of cash, key = 'YYYY-MM'
+//   gl-activity     net activity per account from a GL register upload, key = 'YYYY-MM'
+//   statements      (files) the bank statement PDFs behind each proof of cash
 
 import * as store from './store.js';
 import { DEFAULT_FA_CONFIG } from './fa/je.js';
+import { DEFAULT_POC_CONFIG } from './poc/calc.js';
 
 let assetsCache = null;
 let configCache = null;
@@ -90,4 +94,46 @@ export async function saveTrialBalance(tb) {
 
 export async function removeTrialBalance(month) {
   await store.remove('trial-balances', month);
+}
+
+// ---- Proof of cash ------------------------------------------------------------------------
+
+export async function loadPocConfig() {
+  const saved = await store.get('settings', 'poc-config');
+  return { ...DEFAULT_POC_CONFIG, ...(saved || {}) };
+}
+
+export async function savePocConfig(cfg) {
+  await store.upsert('settings', 'poc-config', cfg);
+}
+
+export async function loadPocMonth(month) {
+  return store.get('poc-months', month);
+}
+
+export async function loadPocMonths() {
+  return store.listAll('poc-months');
+}
+
+// Plain put, not upsert: the page read this record when it opened, so if someone else saved it
+// since, the platform rejects this write (err.conflict) instead of silently overwriting them.
+export async function savePocMonth(rec) {
+  await store.put('poc-months', rec.month, rec);
+}
+
+// For imports, where overwriting what's there is the point.
+export async function replacePocMonth(rec) {
+  await store.upsert('poc-months', rec.month, rec);
+}
+
+export async function loadGlActivity(month) {
+  return store.get('gl-activity', month);
+}
+
+export async function listGlActivity() {
+  return store.listAll('gl-activity');
+}
+
+export async function saveGlActivity(rec) {
+  await store.upsert('gl-activity', rec.month, rec);
 }

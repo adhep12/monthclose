@@ -170,6 +170,34 @@ Incoming and Outgoing sweep to/from Operating daily and end each month at $0.
   deposits $950, counter deposit $20,000, PayPal $6,141, Paramount $600.
 - Worth confirming: a $400.03 State of Ohio tax refund landed in Incoming — not revenue.
 
+## Proof of cash in the app (built Sept 27)
+
+Verified against the FY26 workbook: importing it and recalculating gives the same monthly
+revenue difference as row 31 for every month Oct–Jul, and interest ties to 0 each month.
+
+- **Cass Operating** = total credits on the Operating statement (July: 2,082,931.58 — exactly the
+  workbook's figure).
+- **Stripe transfers** = STRIPE/TRANSFER credits on Operating (July 1,491,737.76 ✓).
+- **Outgoing** non-sweep credits reduce deposits (July 7,487.06 in the workbook; the statement
+  also has two PEOPLE CENTER credits of $0.15 and $0.21 that the workbook left out).
+- **Incoming** non-sweep withdrawals reduce deposits.
+- **Tax refunds** (e.g. State of Ohio $400.03 in Aug) are excluded automatically; any other
+  deposit can be marked "not revenue" with a note.
+- **GL revenue** = credits less debits in 4010, 4012, 4015, 4017, 4018, 4075, 4077, 4081, 4083,
+  4084, 4085; **GL interest** = 4050 + 8999. From the GL Register upload (or a same-period TB).
+  The GL has moved since the workbook was tied out: Jan revenue −3,018.68, May −65.69,
+  Apr interest +9,697.84.
+
+## CD interest — IntraFi "accounts" export (candidate source)
+
+A point-in-time snapshot: every CDARS CD (last 4, term, principal, accrued interest, status,
+maturity) plus the ICS balance. Matured CDs show $0. What it gives us:
+- Accrued interest on active CDs *as of the export date* (the 9/26 file accrues through 9/25).
+- Interest realized at maturity = next CD's principal − matured CD's principal (3763→6786:
+  15,170.45; 3465→4502: 19,394.14).
+Not in it: rates, effective dates (= prior CD's maturity), or history — so the app keeps the CD
+ladder itself and takes a snapshot at each month end.
+
 ## Open questions
 
 1. What's the BibleProject group name for accounting (for `group:` access)?

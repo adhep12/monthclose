@@ -1,5 +1,6 @@
 import { h, mount, table, toast, fileButton } from '../ui.js';
-import { loadTrialBalances, saveTrialBalance, removeTrialBalance } from '../data.js';
+import { loadTrialBalances, saveTrialBalance, removeTrialBalance, listGlActivity, saveGlActivity } from '../data.js';
+import { parseGlRegister } from '../gl.js';
 import { readWorkbook } from '../xlsx-io.js';
 import { parseTrialBalance } from '../tb.js';
 import { money, round2, sum } from '../money.js';
@@ -7,8 +8,37 @@ import { addMonths, monthName } from '../fiscal.js';
 import { explain } from '../store.js';
 
 export default async function (main, { user, rerender }) {
-  const tbs = (await loadTrialBalances()).sort((a, b) => b.month.localeCompare(a.month));
+  const [tbsRaw, glActs] = await Promise.all([loadTrialBalances(), listGlActivity()]);
+  const tbs = tbsRaw.sort((a, b) => b.month.localeCompare(a.month));
   const out = h('div');
+  const glOut = h('div');
+
+  async function onGlFile(file) {
+    mount(glOut, h('p', { class: 'muted' }, `Reading ${file.name}… (a full year takes a few seconds)`));
+    try {
+      const { XLSX, wb } = await readWorkbook(file);
+      const res = parseGlRegister(XLSX, wb);
+      const save = h('button', { class: 'primary' }, `Save ${res.periods.length} months`);
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        let n = 0;
+        try {
+          for (const p of res.periods) {
+            await saveGlActivity({ ...p, fileName: file.name, runAt: res.runAt, uploadedBy: user, uploadedAt: new Date().toISOString() });
+            n++;
+          }
+          toast(`Saved GL activity for ${n} months.`);
+          rerender();
+        } catch (err) { toast(explain(err, `Stopped after ${n} months.`), 'error'); save.disabled = false; }
+      });
+      mount(glOut, h('div', { class: 'card' },
+        h('h3', {}, `${res.fromPeriod || ''} to ${res.toPeriod || ''}`),
+        h('p', {}, `${res.lines.toLocaleString()} journal lines across ${res.periods.length} months${res.runAt ? `, run ${res.runAt.slice(0, 16)}` : ''}. Each month replaces any earlier upload for that month.`),
+        h('div', { class: 'row' }, save)));
+    } catch (err) {
+      mount(glOut, h('div', { class: 'notice bad' }, err.message || String(err)));
+    }
+  }
 
   async function onFile(file) {
     mount(out, h('p', { class: 'muted' }, `Reading ${file.name}…`));
@@ -46,7 +76,18 @@ export default async function (main, { user, rerender }) {
   }
 
   mount(main,
-    h('h1', {}, 'Trial balances'),
+    h('h1', {}, 'Acumatica uploads'),
+    h('h2', {}, 'GL register'),
+    h('p', { class: 'muted' }, 'Upload the GL Register Detailed export (any range of periods). Proof of cash reads each month’s revenue and interest from it. Re-upload after late postings to refresh.'),
+    h('div', { class: 'row' }, fileButton('Upload GL register…', '.xlsx,.xls', onGlFile, { class: 'primary' })),
+    glOut,
+    table([
+      { label: 'Month', cell: (g) => monthName(g.month) },
+      { label: 'Journal lines', num: true, cell: (g) => g.lines },
+      { label: 'From', cell: (g) => g.fileName || '' },
+      { label: 'Uploaded', cell: (g) => `${(g.uploadedAt || '').slice(0, 10)} · ${g.uploadedBy || ''}` },
+    ], glActs.sort((a, b) => b.month.localeCompare(a.month)), { empty: 'None yet.' }),
+    h('h2', {}, 'Trial balances'),
     h('p', { class: 'muted' }, 'Upload Acumatica’s Trial Balance Summary for the month you’re closing. Its Beginning Balance column is the prior month’s closing balance no matter when in the month it’s run, which is what the true-ups compare against. Re-upload any time to refresh it.'),
     h('div', { class: 'row' }, fileButton('Upload trial balance…', '.xlsx,.xls', onFile, { class: 'primary' })),
     out,

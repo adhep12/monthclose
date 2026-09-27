@@ -3,6 +3,7 @@
 // with a banner saying the data isn't saved anywhere else.
 
 let backend = null;
+let filesBackend = null;
 let mode = 'loading';
 
 const LOCAL_PREFIX = 'monthclose:local:';
@@ -36,6 +37,7 @@ export async function initStore() {
   try {
     const mod = await import('/_shared/data.js');
     backend = mod.records;
+    filesBackend = mod.files || null;
     mode = 'platform';
   } catch {
     backend = local;
@@ -76,6 +78,19 @@ export async function remove(col, key) {
 export async function upsert(col, key, data, extra = {}) {
   try { await backend.get(col, key); } catch { /* ignore — put will surface real errors */ }
   return put(col, key, data, extra);
+}
+
+// File storage (statement PDFs). Not available in local preview — callers carry on without it.
+export function filesAvailable() { return !!filesBackend; }
+
+export async function uploadFile(col, file) {
+  if (!filesBackend) return null;
+  return filesBackend.upload(col, file);
+}
+
+export async function fileUrl(col, key) {
+  if (!filesBackend || !key) return null;
+  return filesBackend.url(col, key);
 }
 
 export function explain(err, fallback = 'Something went wrong.') {
