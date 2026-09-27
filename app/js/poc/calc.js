@@ -11,6 +11,7 @@
 //   timing:      { accrued, realizedPrior, restricted, merchAR }
 //   gl:          { revenue, interest, note }        typed override of the GL figures
 
+import { classifyWiseItems, wiseTotals } from './banks.js';
 import { round2, sum } from '../money.js';
 
 // gl = the cash account in Acumatica whose month-end balance the statement's ending balance
@@ -75,6 +76,11 @@ export function exclusionInfo(v) {
 }
 
 // Accept either a month record or (older callers) its Cass statements object.
+// Wise items as they should be read — statements attached before the sign fix are re-read here.
+const wiseItems = (rec) => classifyWiseItems(structuredClone(rec.bankStatements?.wise?.items || []));
+// Money sent to, or received from, another of our own accounts.
+const OWN = /bible ?project|cass commercial|\bcass\b/i;
+
 const asRec = (x) => (x && (x.operating || x.incoming || x.outgoing) && !x.statements ? { statements: x } : x || {});
 
 // Money arriving that counts as revenue unless someone marks it: Cass Operating and Incoming
@@ -89,8 +95,7 @@ export function reviewableDeposits(recIn) {
     if (!s) continue;
     for (const t of s.transactions) if (t.section === 'credit' && !isSweep(t) && !STRIPE.test(t.desc)) out.push({ ...t, kind, account: 'cassOp' });
   }
-  const w = rec.bankStatements?.wise;
-  (w?.items || []).forEach((it, i) => {
+  wiseItems(rec).forEach((it, i) => {
     if (it.kind === 'received') out.push({ id: it.id || `wise-${i}`, date: it.date, amount: Math.abs(it.amount), desc: it.desc, kind: 'wise', account: 'wise' });
   });
   return out;
@@ -105,7 +110,7 @@ export function outgoingItems(recIn) {
   for (const kind of ['operating', 'incoming', 'outgoing']) {
     for (const t of st[kind]?.transactions || []) if (t.section !== 'credit' && !isSweep(t)) out.push({ ...t, account: 'cassOp', kind });
   }
-  (rec.bankStatements?.wise?.items || []).forEach((it) => { if (it.kind === 'sent') out.push({ date: it.date, amount: Math.abs(it.amount), desc: it.desc, account: 'wise' }); });
+  wiseItems(rec).forEach((it, i) => { if (it.kind === 'sent') out.push({ id: it.id || `wise-${i}`, date: it.date, amount: Math.abs(it.amount), desc: it.desc, account: 'wise' }); });
   (rec.ics?.items || []).forEach((it) => { if (it.withdrawal) out.push({ date: it.date, amount: it.amount, desc: `ICS ${it.type}`, account: 'ics' }); });
   return out;
 }
@@ -120,11 +125,26 @@ export function detectTransfers(recIn) {
   const found = {};
   for (const d of reviewableDeposits(rec)) {
     if (d.account === 'wise' && /bible ?project/i.test(d.desc)) { found[d.id] = { type: 'transfer', note: 'Sent from our own account', auto: true }; continue; }
-    if (d.amount < 1000) continue;
     const m = outs.find((o) => o.account !== d.account && Math.abs(o.amount - d.amount) < 0.005 && daysApart(o.date, d.date) <= 5);
-    if (m) found[d.id] = { type: 'transfer', note: `Matches ${m.date} ${m.desc} leaving ${m.account === 'cassOp' ? 'Cass' : m.account}`, auto: true };
+    // Under $1,000 a same-amount match could be coincidence, unless the money was sent to us by name.
+    if (m && (d.amount >= 1000 || OWN.test(m.desc))) found[d.id] = { type: 'transfer', note: `Matches ${m.date} ${m.desc} leaving ${m.account === 'cassOp' ? 'Cass' : m.account}`, auto: true };
   }
   return found;
+}
+
+// Every Wise payment out, and whether it turned up as a deposit in another of our accounts. Money
+// sent to ourselves should land somewhere; if it lands in Cass it's taken out of revenue there.
+export function wiseOutgoingCheck(recIn) {
+  const rec = asRec(recIn);
+  const deposits = reviewableDeposits(rec).filter((d) => d.account !== 'wise');
+  return wiseItems(rec).filter((it) => it.kind === 'sent').map((it) => {
+    const amount = Math.abs(it.amount);
+    const toOwn = OWN.test(it.desc);
+    const landed = deposits.find((d) => Math.abs(d.amount - amount) < 0.005 && daysApart(d.date, it.date) <= 5 && (amount >= 1000 || toOwn));
+    const excluded = landed ? rec.excluded?.[landed.id] : null;
+    const state = landed ? (excluded?.type === 'transfer' ? 'transfer' : 'counted') : toOwn ? 'missing' : 'paid';
+    return { ...it, amount, toOwn, landed, state };
+  });
 }
 
 export function defaultExclusions(recIn) {
@@ -220,7 +240,8 @@ export function autoFigures(rec, cd = null, prior = null) {
   const st = rec.statements || {};
   const auto = {};
   for (const [id, b] of Object.entries(rec.bankStatements || {})) {
-    auto[id] = { rev: b.revenue, int: b.interest, ending: b.ending, from: `${b.fileName || 'statement'}`, by: b.attachedBy, at: b.attachedAt };
+    const t = id === 'wise' && b.items?.length ? wiseTotals(wiseItems(rec)) : { revenue: b.revenue, interest: b.interest };
+    auto[id] = { rev: t.revenue, int: t.interest, ending: b.ending, from: `${b.fileName || 'statement'}`, by: b.attachedBy, at: b.attachedAt };
   }
   for (const s of BANK_SOURCES.filter((x) => x.method === 'balance')) {
     const b = rec.bank?.[s.id];

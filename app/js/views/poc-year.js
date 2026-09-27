@@ -6,7 +6,7 @@
 import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
 import { readWorkbook } from '../xlsx-io.js';
@@ -91,6 +91,7 @@ export default async function (main, { user, rerender }) {
     const mark = (k) => (c, rec) => {
       const l = line(c, id);
       if (id === 'stripe' && k === 'rev' && c.stripeCheck?.state === 'mismatch') return { mark: '⚠', title: stripeFlagText(c.stripeCheck) };
+      if (id === 'wise' && k === 'rev' && rec && wiseOutgoingCheck(rec).some((x) => x.state === 'missing')) return { mark: '⚠', title: 'Money sent from Wise to one of our accounts hasn’t turned up as a deposit — open to check' };
       if (l[k] == null) return null;
       const st = confirmationState(rec.bank?.[id], l.values);
       return { mark: st === 'confirmed' ? '✓' : st === 'stale' ? '!' : '', title: `${l.from === 'typed' ? 'Typed' : `From ${l.from || 'the workbook'}`}${st === 'confirmed' ? ` · confirmed by ${rec.bank[id].confirmation.by}` : st === 'stale' ? ' · changed since it was confirmed' : ' · not confirmed yet'}` };
@@ -371,6 +372,7 @@ export default async function (main, { user, rerender }) {
 
           id === 'cassOp' ? cassSummary(c, m) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
+          id === 'wise' ? wiseOutBox(rec) : null,
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('h3', {}, 'Confirmation'),
@@ -408,6 +410,29 @@ export default async function (main, { user, rerender }) {
         } catch (err) { toast(explain(err, 'Couldn’t update the CD schedule.'), 'error'); }
       },
     }));
+  }
+
+  // Money out of Wise is never revenue. Sent to one of our own accounts, it should land there — and
+  // if it lands in Cass it comes out of Cass deposits as a transfer.
+  function wiseOutBox(rec) {
+    const outs = wiseOutgoingCheck(rec);
+    if (!outs.length) return null;
+    const where = (x) => (x.landed ? `${x.landed.account === 'cassOp' ? `Cass ${x.landed.kind}` : label(x.landed.account)} ${x.landed.date}` : '');
+    const status = {
+      transfer: (x) => statusPill(`In ${where(x)} — taken out of revenue`, 'good'),
+      counted: (x) => statusPill(`In ${where(x)} — still counted as revenue there`, 'bad'),
+      missing: () => statusPill('Sent to our own account — no matching deposit found', 'bad'),
+      paid: () => statusPill('Paid out — not revenue', 'neutral'),
+    };
+    return h('div', {}, h('h3', {}, 'Money out of Wise'),
+      h('p', { class: 'muted small' }, 'None of this counts as Wise revenue. Money sent to one of our own accounts is matched to the deposit on the other side, so it isn’t counted as revenue there either.'),
+      table([
+        { label: 'Date', cell: (x) => x.date },
+        { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.desc) },
+        { label: 'Amount', num: true, cell: (x) => money(-x.amount) },
+        { label: '', cell: (x) => status[x.state](x) },
+      ], outs),
+      outs.some((x) => x.state !== 'paid' && x.state !== 'transfer') ? h('p', { class: 'small' }, h('a', { href: `#/poc/${rec.month}` }, 'Mark the deposit as a transfer on the month page →')) : null);
   }
 
   function cassSummary(c, m) {

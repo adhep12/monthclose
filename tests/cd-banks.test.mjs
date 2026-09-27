@@ -128,3 +128,31 @@ test('detaching a CDARS statement puts the schedule back the way it was', async 
   assert.equal(cds[0].status, 'active');
   assert.equal(cds[0].interestPaid, 0);
 });
+
+test('Wise money out is never revenue, even when the balance moves the same amount', async () => {
+  const { wiseOutgoingCheck, computePoc } = await import('../app/js/poc/calc.js');
+  const w = parseWise(L(['October 1, 2025 [GMT-07:00] - October 31, 2025 [GMT-07:00]', 'USD on October 31, 2025 [GMT-07:00] 237,727.08 USD',
+    'Description Incoming Outgoing Amount', 'Sent money to Timóteo Thober', '-39.26 237,727.08', 'October 31, 2025 Transaction: TRANSFER-1',
+    'Interest payment', '686.83 237,766.34', 'October 1, 2025 Transaction: BALANCE_INTEREST-x']));
+  assert.equal(w.revenue, 0);
+  assert.equal(w.interest, 686.83);
+  assert.equal(w.withdrawals, 39.26);
+  // A statement attached before the fix (item read as money in) is re-read correctly.
+  const stale = { ...w, revenue: 39.26, items: w.items.map((it) => ({ ...it, direction: 'in', kind: it.kind === 'sent' ? 'received' : it.kind })) };
+  const c = computePoc({ month: '2025-10', bankStatements: { wise: stale } });
+  assert.equal(c.lines.find((l) => l.id === 'wise').rev, 0);
+  assert.equal(wiseOutgoingCheck({ bankStatements: { wise: w } })[0].state, 'paid');
+});
+
+test('Wise money sent to our own account is matched to the Cass deposit, however small', async () => {
+  const { wiseOutgoingCheck, detectTransfers } = await import('../app/js/poc/calc.js');
+  const wise = { items: [{ id: 'wise-0', desc: 'Sent money to BibleProject', amount: -250, balance: 1000, date: '2025-10-10' }] };
+  const operating = { transactions: [{ id: '5884-0', section: 'credit', date: '2025-10-13', amount: 250, desc: 'ACH CREDIT WISE US INC' }] };
+  const rec = { bankStatements: { wise }, statements: { operating }, excluded: {} };
+  assert.equal(wiseOutgoingCheck(rec)[0].state, 'counted');
+  const found = detectTransfers(rec);
+  assert.equal(found['5884-0']?.type, 'transfer');
+  rec.excluded = found;
+  assert.equal(wiseOutgoingCheck(rec)[0].state, 'transfer');
+  assert.equal(wiseOutgoingCheck({ bankStatements: { wise } })[0].state, 'missing');
+});

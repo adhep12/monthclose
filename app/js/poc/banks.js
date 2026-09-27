@@ -47,18 +47,36 @@ export function parseWise(lines) {
     if (!dm) continue;
     items.push({ id: `wise-${items.length}`, desc, amount: amt(m[2]), balance: amt(m[3]), date: wiseDate(dm[0]) });
   }
-  // Newest first. Direction from the running balance where we can, else from the wording.
+  classifyWiseItems(items);
+  return { source: 'wise', date, month: date.slice(0, 7), ...wiseTotals(items), beginning: round(wiseBeginning(items, ending)), ending, items };
+}
+
+// Wise prints money out with a minus sign ("-39.26"); money in has none. Where the sign is missing
+// the running balance decides, then the wording. Items are newest first. Revenue is money received
+// that isn't interest; anything sent is never revenue.
+export function classifyWiseItems(items) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const older = items[i + 1];
-    if (older) it.direction = Math.abs(older.balance + it.amount - it.balance) < 0.005 ? 'in' : 'out';
-    else it.direction = it.amount < 0 || /^(sent|paid|sending|transfer to|withdraw)/i.test(it.desc) ? 'out' : 'in';
-    it.kind = /^interest/i.test(it.desc) ? 'interest' : it.direction === 'in' ? 'received' : 'sent';
+    const a = Math.abs(it.amount);
+    if (it.amount < 0 || OUT_WORDS.test(it.desc)) it.direction = 'out';
+    else if (older && Math.abs(older.balance + a - it.balance) < 0.005) it.direction = 'in';
+    else if (older && Math.abs(older.balance - a - it.balance) < 0.005) it.direction = 'out';
+    else it.direction = 'in';
+    it.kind = it.direction === 'out' ? 'sent' : /^interest/i.test(it.desc) ? 'interest' : 'received';
   }
-  const total = (k) => items.filter((x) => x.kind === k).reduce((s, x) => s + Math.abs(x.amount), 0);
-  const beginning = items.length ? items[items.length - 1].balance + (items[items.length - 1].direction === 'in' ? -1 : 1) * Math.abs(items[items.length - 1].amount) : ending;
-  return { source: 'wise', date, month: date.slice(0, 7), revenue: round(total('received')), interest: round(total('interest')),
-    withdrawals: round(total('sent')), beginning: round(beginning), ending, items };
+  return items;
+}
+const OUT_WORDS = /^(sent|paid|sending|transfer to|withdraw|card transaction)/i;
+
+export function wiseTotals(items) {
+  const total = (k) => round(items.filter((x) => x.kind === k).reduce((s, x) => s + Math.abs(x.amount), 0));
+  return { revenue: total('received'), interest: total('interest'), withdrawals: total('sent') };
+}
+
+function wiseBeginning(items, ending) {
+  const last = items[items.length - 1];
+  return last ? last.balance + (last.direction === 'in' ? -1 : 1) * Math.abs(last.amount) : ending;
 }
 
 export function parsePaypal(lines) {
