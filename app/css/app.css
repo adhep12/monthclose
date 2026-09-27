@@ -289,3 +289,5 @@ main.content { margin: 0 auto; }
 }
 .adj-section { margin-bottom: 1rem; }
 .adj-section .row h3 { margin: .75rem 0 .25rem; }
+.inline-form input, .inline-form select { width: auto; flex: 0 1 auto; }
+.inline-form input[type=text] { min-width: 9rem; }

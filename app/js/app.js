@@ -2,12 +2,12 @@ import { h, mount, toast } from './ui.js';
 import { initStore, storeMode } from './store.js';
 import { monthName } from './fiscal.js';
 
-// Two tabs: Proof of cash (the fiscal-year sheet, with a details page per month) and the CD
-// schedule. Months live in the URL hash (#/poc/2026-07) so a details page knows its month.
+// Two tabs: Proof of cash (the fiscal-year sheet; everything about a month opens in pop-ups on it)
+// and the CD schedule. An old month link (#/poc/2026-07) opens the sheet with that month open.
 const routes = [
   [/^#?\/?$/, () => import('./views/poc-year.js')],
   [/^#\/poc$/, () => import('./views/poc-year.js')],
-  [/^#\/poc\/(\d{4}-\d{2})$/, () => import('./views/poc.js')],
+  [/^#\/poc\/(\d{4}-\d{2})$/, () => import('./views/poc-year.js')],
   [/^#\/poc\/import$/, () => import('./views/poc-import.js')],
   [/^#\/cds$/, () => import('./views/cds.js')],
 ];

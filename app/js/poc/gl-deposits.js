@@ -427,11 +427,12 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     const nextIn = !!(recs[next]?.statements?.operating);
     const choices = rec.ditGl || {};
     const rows = [];
-    // settled: the statements say where it belongs, so there's nothing to decide.
+    // settled: the statements say where it belongs. A person can still override it (overridden).
     const add = (r, sign, suggested, evidence, { flagged = false, settled = false } = {}) => {
-      const choice = settled ? null : choices[r.batch];
+      const choice = choices[r.batch];
+      const counts = choice ? !!choice.in : suggested;
       rows.push({ batch: r.batch, glMonth: sign > 0 ? m : next, date: r.date, bank: bankWindow(r), desc: r.desc, amount: r.amount, sign,
-        suggested, evidence, settled, flagged: flagged && !choice, choice: choice || null, counts: choice ? !!choice.in : suggested });
+        suggested, evidence, settled, flagged: flagged && !choice, choice: choice || null, counts, overridden: !!choice && counts !== suggested });
     };
     for (const r of receipts) {
       if (r.amount <= 0) continue;

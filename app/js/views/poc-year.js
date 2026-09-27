@@ -3,10 +3,10 @@
 // account's cell for a month to attach its statement or type its figures; click Total
 // Adjustments to open up what's being taken out; click GL to load Acumatica's numbers.
 
-import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
+import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
@@ -78,7 +78,7 @@ function blank(month) {
   return { month, bank: {}, statements: {}, bankStatements: {}, excluded: {}, adjustments: [], dit: [], timing: {}, gl: {}, notes: '', log: [], autoConfirm: {} };
 }
 
-export default async function (main, { user, rerender }) {
+export default async function (main, { user, rerender, month: openMonthParam = null }) {
   const [recs, glActs, cfg, cds, soas] = await Promise.all([loadPocMonths(), listGlActivity(), loadPocConfig(), loadCds(), listSoa()]);
   const byMonth = Object.fromEntries(recs.map((r) => [r.month, r]));
   const glBy = Object.fromEntries(glActs.map((g) => [g.month, g]));
@@ -143,7 +143,7 @@ export default async function (main, { user, rerender }) {
   });
   // Timing includes the change in deposits in transit.
   const TIMING = ADJ_GROUPS[4];
-  const adjLabels = ADJ_GROUPS.filter((k) => cols.some((x) => x.c && (x.c.adjustments.some((a) => adjKey(a) === k) || (k === TIMING && x.c.ditChange))));
+  const adjLabels = ADJ_GROUPS;
   const adjFor = (k) => (c) => {
     const list = c.adjustments.filter((a) => adjKey(a) === k);
     const dit = k === TIMING && c.ditChange != null ? c.ditChange : null;
@@ -152,7 +152,8 @@ export default async function (main, { user, rerender }) {
 
   // Deposits in transit sit with the other adjustments: this month's in transit, less last month's
   // that reached the bank this month. Opening it lists both, from the GL.
-  const ditMeta = { rev: (c) => (c.priorDitMissing ? { mark: '?', title: 'Last month’s deposits in transit aren’t known, so this month’s count in full — open to see' } : c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open to see` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) };
+  const overrides = (c) => (c.deposits?.dit?.rows || []).filter((r) => r.overridden && r.settled);
+  const ditMeta = { rev: (c) => (overrides(c).length ? { mark: '*', title: `Overridden against the statement: ${overrides(c).map((r) => `${r.desc} ${money(r.amount)} — ${r.choice.note || 'no reason given'} (${r.choice.by})`).join('; ')}` } : c.priorDitMissing ? { mark: '?', title: 'Last month’s deposits in transit aren’t known, so this month’s count in full — open to see' } : c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open to see` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) };
   const adjRows = () => adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
     meta: k === ADJ_GROUPS[0] ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Stripe payouts match the Stripe CSV' } : null) }
       : k === TIMING ? ditMeta : null }));
@@ -190,7 +191,7 @@ export default async function (main, { user, rerender }) {
     if (r.toggle) return () => { store.set(ADJ_OPEN_KEY, adjOpen ? '' : '1'); rerender(); };
     if (r.adjKey) return () => openAdjustments(r.adjKey, m);
     if (r.ditDetail) return () => openDit(m);
-    if (r.dit) return () => { location.hash = `#/poc/${m}`; };
+    if (r.dit) return () => openDit(m);
     if (r.gl) return () => openGl(m);
     void kind;
     return null;
@@ -233,7 +234,7 @@ export default async function (main, { user, rerender }) {
           h('tr', {}, h('th', { class: 'label-col' }, ''),
             h('th', { class: 'num ytd', colspan: span }, 'YTD', h('div', { class: 'muted small' }, done.length ? `${range} · ${done.length} mo.` : range)),
             cols.map(({ m, rec }) => h('th', { class: 'num month', colspan: span },
-              h('a', { href: `#/poc/${m}`, title: `Open ${monthName(m)} details` }, short(m)), ' ', statusOf(rec)))),
+              h('a', { href: '#/poc', title: `Open ${monthName(m)}: statements, notes, sign-off, activity`, onclick: (e) => { e.preventDefault(); openMonth(m); } }, short(m)), ' ', statusOf(rec)))),
           span > 1 ? h('tr', {}, h('th', { class: 'label-col' }, ''),
             h('th', { class: 'num ytd sub' }, 'Revenue'), h('th', { class: 'num ytd sub' }, 'Interest'),
             months.map(() => [h('th', { class: 'num sub' }, 'Revenue'), h('th', { class: 'num sub int' }, 'Interest')])) : null),
@@ -434,7 +435,7 @@ export default async function (main, { user, rerender }) {
 
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
-          id === 'wise' ? wiseOutBox(rec) : null,
+          id === 'wise' ? wiseOutBox(rec, close) : null,
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('h3', {}, 'Confirmation'),
@@ -445,7 +446,7 @@ export default async function (main, { user, rerender }) {
               draw();
             },
             onUnconfirm: async () => { delete b.confirmation; logChange(rec, user, `Removed confirmation on ${label(id)}`); try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err), 'error'); } draw(); } }),
-          h('p', { style: { marginTop: '1.25rem' } }, h('a', { href: `#/poc/${m}` }, `Open all of ${monthName(m)} →`)));
+          h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
       };
       draw();
       if (droppedFiles?.length) doAttach(droppedFiles);
@@ -476,7 +477,7 @@ export default async function (main, { user, rerender }) {
 
   // Money out of Wise is never revenue. Sent to one of our own accounts, it should land there — and
   // if it lands in Cass it comes out of Cass deposits as a transfer.
-  function wiseOutBox(rec) {
+  function wiseOutBox(rec, close) {
     const outs = wiseOutgoingCheck(rec);
     if (!outs.length) return null;
     const where = (x) => (x.landed ? `${x.landed.account === 'cassOp' ? `Cass ${x.landed.kind}` : label(x.landed.account)} ${x.landed.date}` : '');
@@ -492,9 +493,9 @@ export default async function (main, { user, rerender }) {
         { label: 'Date', cell: (x) => x.date },
         { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.desc) },
         { label: 'Amount', num: true, cell: (x) => money(-x.amount) },
-        { label: '', cell: (x) => status[x.state](x) },
-      ], outs),
-      outs.some((x) => x.state !== 'paid' && x.state !== 'transfer') ? h('p', { class: 'small' }, h('a', { href: `#/poc/${rec.month}` }, 'Mark the deposit as a transfer on the month page →')) : null);
+        { label: '', cell: (x) => h('div', { class: 'row' }, status[x.state](x),
+          x.state === 'counted' && x.landed ? h('button', { class: 'small-btn', onclick: () => treatAs(x.landed.month || rec.month, x.landed, 'transfer', `Money from Wise: ${x.date} ${x.desc}`, { kind: 'account', id: 'wise', m: rec.month }, close) }, 'Take the deposit out as a transfer') : null) },
+      ], outs));
   }
 
   function cassSummary(c, m, close) {
@@ -528,11 +529,115 @@ export default async function (main, { user, rerender }) {
         { label: 'Type', cell: (a) => ADJUSTMENT_TYPES[a.type] || '' },
         { label: 'Amount', num: true, cell: (a) => money(a.amount) },
       ], cassAdj) : h('p', { class: 'muted' }, 'Nothing yet — attach the Cass statements.'),
-      h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, 'Review every deposit (revenue / transfer / not revenue) on the month page →')));
+      allDeposits(c, m, close));
+  }
+
+  // Every deposit on the Cass (and Wise) statements: how it counts, and what the GL booked it as.
+  function allDeposits(c, m, close) {
+    const rec = byMonth[m];
+    if (!rec) return null;
+    const dep = c.deposits;
+    const again = { kind: 'account', id: 'cassOp', m };
+    const glOf = new Map((dep?.lines || []).map((x) => [x.line.id, x.match]));
+    const out = new Map(c.adjustments.filter((a) => /^auto-(tr|ex)-/.test(a.id || '')).map((a) => [a.id.replace(/^auto-(tr|ex)-/, ''), a]));
+    const deps = reviewableDeposits(rec);
+    if (!deps.length) return null;
+    const kindName = { revenue: 'Revenue', stripe: 'Stripe', transfer: 'Transfer', 'prior-period': 'Earlier month', 'not-revenue': 'Not revenue' };
+    return h('details', { style: { marginTop: '1rem' } }, h('summary', {}, `Every deposit this month (${deps.length}) — how each counts, and what the GL booked it as`),
+      table([
+        { label: 'Treat as', cell: (t) => treatSelect(m, t, out.get(t.id)?.type || 'revenue', again, close) },
+        { label: 'Account', cell: (t) => (t.kind === 'incoming' ? 'Cass Incoming' : t.kind === 'wise' ? 'Wise' : 'Cass Operating') },
+        { label: 'Date', cell: (t) => t.date },
+        { label: 'Deposit', cell: (t) => h('span', { class: 'wrap', title: t.detail || '' }, t.desc) },
+        { label: 'Amount', num: true, cell: (t) => money(t.amount) },
+        { label: 'Per the GL', cell: (t) => { const x = glOf.get(t.id); return t.kind === 'wise' ? '' : x ? h('span', { class: 'small' }, `${kindName[x.kind] || x.kind} · ${x.batch} ${x.desc.slice(0, 50)}`) : dep?.available ? statusPill('No GL deposit', 'bad') : ''; } },
+        { label: 'Why', cell: (t) => h('span', { class: 'small muted wrap' }, out.get(t.id)?.note || '') },
+      ], deps));
+  }
+
+  // ---- A month: statements, timing, notes, sign-off, activity ----------------------------------
+  async function openMonth(m) {
+    const col = cols.find((x) => x.m === m);
+    const c = col?.c;
+    const rec = byMonth[m] || blank(m);
+    const again = { kind: 'month', m };
+    await panel(monthName(m), (body, close) => {
+      const attached = [
+        ...Object.entries(rec.statements || {}).map(([k, s]) => ({ label: `Cass ${k}`, s, ok: s.check?.creditsOk && s.check?.debitsOk && s.check?.balanceOk, detach: (r) => { delete r.statements[k]; } })),
+        ...(rec.stripe ? [{ label: 'Stripe', s: rec.stripe, ok: true, detach: (r) => { delete r.stripe; } }] : []),
+        ...(rec.ics ? [{ label: 'ICS', s: rec.ics, ok: rec.ics.ties !== false, detach: (r) => { delete r.ics; } }] : []),
+        ...Object.entries(rec.bankStatements || {}).map(([k, s]) => ({ label: label(k), s, ok: statementTies(rec, k), detach: (r) => { delete r.bankStatements[k]; } })),
+      ];
+      const onFiles = async (files) => {
+        try {
+          const r = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+          const res = await attachFiles({ files, rec: r, cds, month: m, user, ask, saveCd });
+          const bad = res.messages.filter((x) => x.bad);
+          if (bad.length) await notify('Please check', bad.map((x) => x.text));
+          else if (res.messages.length) toast(res.messages.map((x) => x.text).join(' · '));
+          if (res.changed) { await saveRec(r); reopenAfter = again; close(true); rerender(); }
+        } catch (err) { toast(explain(err, 'Couldn’t attach that.'), 'error'); }
+      };
+      const input = h('input', { type: 'file', accept: '.pdf,.csv,.xlsx', multiple: true, class: 'visually-hidden', onchange: (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); } });
+      const t = rec.timing || {};
+      const num = (v) => h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 14, value: v ?? '' });
+      const tf = { restricted: num(t.restricted), merchAR: num(t.merchAR), ...(c?.timing?.fromSchedule ? {} : { accrued: num(t.accrued), realizedPrior: num(t.realizedPrior) }) };
+      const notes = h('textarea', { rows: 3, style: { width: '100%' } }, rec.notes || '');
+      const snap = c ? { diffRev: c.diffRev, diffInt: c.diffInt } : null;
+      const same = (s) => s && snap && s.diffRev === snap.diffRev && s.diffInt === snap.diffInt;
+      const p = rec.signoff?.prepared, rv = rec.signoff?.reviewed;
+      const mark = (k) => decide(m, (r) => { r.signoff = { ...(r.signoff || {}), [k]: { by: user, at: nowIso(), ...snap } }; if (k === 'prepared') delete r.signoff.reviewed; },
+        `Marked ${k}: revenue difference ${money(snap?.diffRev, { dash: false })}, interest difference ${money(snap?.diffInt, { dash: false })}`, again, close);
+      mount(body,
+        c ? h('div', { class: 'recon' },
+          rowKV('Revenue difference', c.diffRev == null ? 'needs GL' : h('strong', { class: Math.abs(c.diffRev) < 1 ? 'good-text' : '' }, money(c.diffRev, { dash: false }))),
+          rowKV('Interest difference', c.diffInt == null ? 'needs GL' : h('strong', { class: Math.abs(c.diffInt) < 1 ? 'good-text' : '' }, money(c.diffInt, { dash: false })))) : null,
+        c?.warnings?.length ? h('div', { class: 'notice warn' }, h('ul', {}, c.warnings.map((w) => h('li', {}, w.text)))) : null,
+
+        h('h3', {}, 'Statements'),
+        dropTarget(h('label', { class: 'drop-zone' }, h('strong', {}, 'Drop statements here'), h('span', { class: 'drop-hint' }, ' or click to choose — Cass (Operating, Incoming, Outgoing), Stripe CSV, ICS, CDARS, Wise, PayPal, KeyBank, any number at once'), input), onFiles),
+        attached.length ? table([
+          { label: 'Statement', cell: (x) => x.label },
+          { label: 'File', cell: (x) => h('span', { class: 'break' }, x.s.fileName || '') },
+          { label: 'Attached', cell: (x) => `${x.s.attachedBy || ''} · ${when(x.s.attachedAt)}` },
+          { label: '', cell: (x) => h('div', { class: 'row' }, x.ok === false ? statusPill('Doesn’t tie — attach again', 'bad') : statusPill('Ties', 'good'),
+            x.s.fileKey ? h('button', { class: 'small-btn', onclick: async () => { const u = await fileUrl('statements', x.s.fileKey).catch(() => null); if (u) window.open(u, '_blank', 'noopener'); else toast('Couldn’t open the stored file.', 'error'); } }, 'View') : null,
+            h('button', { class: 'small-btn danger', onclick: async () => {
+              if (!(await ask('Detach statement', `Detach ${x.label} (${x.s.fileName || ''})? Its figures come out of ${monthName(m)}.`, { ok: 'Detach', danger: true }))) return;
+              decide(m, (r) => x.detach(r), `Detached ${x.label} statement ${x.s.fileName || ''}`, again, close);
+            } }, 'Detach')) },
+        ], attached) : h('p', { class: 'muted small' }, 'Nothing attached yet.'),
+
+        h('h3', {}, 'Timing'),
+        h('div', { class: 'form-grid' },
+          field('Change in restricted revenue', tf.restricted), field('Merchandise AR', tf.merchAR),
+          tf.accrued ? field('Plus accrued interest', tf.accrued) : null, tf.realizedPrior ? field('Less prior period accrual realized', tf.realizedPrior) : null),
+        c?.timing?.fromSchedule ? h('p', { class: 'muted small' }, `Accrued ${money(c.timing.accrued, { dash: false })} and realized ${money(c.timing.realizedPrior, { dash: false })} interest come from the CD schedule.`) : null,
+        h('div', { class: 'row' }, h('button', { onclick: () => {
+          const v = {};
+          for (const [k, el] of Object.entries(tf)) { const s_ = el.value.trim(); const n = s_ === '' ? null : parseAmount(s_); if (s_ !== '' && !Number.isFinite(n)) { toast(`“${s_}” isn’t a number.`, 'error'); return; } v[k] = n; }
+          decide(m, (r) => { r.timing = { ...(r.timing || {}), ...v }; }, `Timing: ${Object.entries(v).map(([k, n]) => `${k} ${n == null ? '(blank)' : money(n, { dash: false })}`).join(', ')}`, again, close);
+        } }, 'Save timing')),
+
+        h('h3', {}, 'Notes'), notes,
+        h('div', { class: 'row' }, h('button', { onclick: () => decide(m, (r) => { r.notes = notes.value; }, 'Changed the notes', again, close) }, 'Save notes')),
+
+        h('h3', {}, 'Sign-off'),
+        h('div', { class: 'row' },
+          p ? h('span', {}, statusPill(same(p) ? 'Prepared' : 'Prepared — numbers changed since', same(p) ? 'info' : 'warn'), ` ${p.by} · ${when(p.at)} · difference then ${money(p.diffRev, { dash: false })}`)
+            : h('button', { onclick: () => mark('prepared'), disabled: !c }, 'Mark prepared'),
+          p && !rv ? h('button', { class: 'primary', onclick: () => mark('reviewed'), title: p.by === user ? 'You prepared this — ideally someone else reviews it.' : '' }, 'Mark reviewed') : null,
+          rv ? h('span', {}, statusPill(same(rv) ? 'Reviewed' : 'Reviewed — numbers changed since', same(rv) ? 'good' : 'warn'), ` ${rv.by} · ${when(rv.at)}`) : null,
+          p && !same(p) ? h('button', { onclick: () => mark('prepared') }, 'Re-mark prepared') : null,
+          p ? h('button', { onclick: () => decide(m, (r) => { delete r.signoff; }, 'Reopened the month', again, close) }, 'Reopen') : null),
+
+        h('h3', {}, 'Activity'),
+        (rec.log || []).length ? h('ul', { class: 'log' }, [...rec.log].reverse().map((e) => h('li', {}, h('span', { class: 'muted' }, `${when(e.at)} · ${e.by} — `), e.what))) : h('p', { class: 'muted' }, 'Nothing yet.'));
+    }, { wide: true });
   }
 
   // ---- Decisions made from the fiscal year's pop-ups ----------------------------------------
-  // Saved to that month's record (logged, like on the month page); the sheet redraws and the pop-up
+  // Saved to that month's record and logged; the sheet redraws and the pop-up
   // reopens.
   async function decide(m, change, what, again, close) {
     try {
@@ -561,34 +666,61 @@ export default async function (main, { user, rerender }) {
   function leaveOut(m, a, again, close) {
     return decide(m, (rec) => { rec.dismissed = { ...(rec.dismissed || {}), [a.id]: true }; }, `Left out “${a.label}” ${money(a.amount)} (from the fiscal year sheet)`, again, close);
   }
-  // Deposits in transit for month m, with the same choices as the month page.
+  // Deposits in transit for month m: every row can be decided or overridden, even one a statement
+  // has settled; typed ones can be added and removed.
   function ditBlock(m, c, close, again) {
     const dit = c.deposits?.dit;
     const M = short(m), N = short(addMonths(m, 1));
-    if (!dit) {
-      return h('div', {}, table([
-        { label: 'Date', cell: (d) => d.date || '' }, { label: 'Description', cell: (d) => d.note || '' }, { label: 'Amount', num: true, cell: (d) => money(d.amount) },
-      ], byMonth[m]?.dit || [], { empty: 'None entered.' }), h('p', { class: 'muted small' }, 'Upload the GL register to work these out from the GL.'));
-    }
-    const rows = dit.rows.filter((r) => r.counts || r.flagged || r.choice);
-    const setIn = (r, inTransit) => decide(m, (rec) => { rec.ditGl = { ...(rec.ditGl || {}), [r.batch]: { in: inTransit, by: user, at: nowIso() } }; },
-      `${r.desc} ${money(r.amount)}: ${inTransit ? `in transit at the end of ${monthName(m)}` : 'not in transit'} (from the fiscal year sheet)`, again, close);
-    const todo = dit.rows.filter((r) => r.flagged);
+    // Going against what a statement shows needs a reason, and stays marked (*).
+    const setIn = async (r, inTransit) => {
+      let note = '';
+      if (r.settled && inTransit !== r.suggested) {
+        note = (await askValue('Override the statement?', `${r.desc} ${money(r.amount)}: ${r.evidence}. Say why it belongs the other way — it will be marked * wherever it shows.`, { ok: 'Override' }))?.trim();
+        if (!note) { toast('Not changed — an override needs a reason.'); rerender(); return; }
+      }
+      decide(m, (rec) => { rec.ditGl = { ...(rec.ditGl || {}), [r.batch]: { in: inTransit, by: user, at: nowIso(), ...(note ? { note } : {}) } }; },
+        `${r.desc} ${money(r.amount)}: ${inTransit ? `in transit at the end of ${monthName(m)}` : 'not in transit'}${note ? ` — overriding the statement: ${note}` : ''}`, again, close);
+    };
+    const clearChoice = (r) => decide(m, (rec) => { if (rec.ditGl) delete rec.ditGl[r.batch]; },
+      `${r.desc} ${money(r.amount)}: back to ${r.settled ? 'what the statement shows' : 'the GL’s suggestion'}`, again, close);
+    const rows = dit ? dit.rows.filter((r) => r.counts || r.flagged || r.choice) : [];
+    const todo = dit ? dit.rows.filter((r) => r.flagged) : [];
+    const typed = (byMonth[m]?.dit || []).filter((d) => !dit || !String(d.id || '').startsWith('imp-'));
+    const dup = new Set((dit?.manual || []).filter((x) => x.duplicate).map((x) => x.d.id));
+    // Typed deposits in transit.
+    const f = { date: h('input', { type: 'date' }), note: h('input', { type: 'text', placeholder: 'Donor / reference', size: 28 }), amount: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 12, placeholder: 'Amount' }) };
+    const addTyped = () => {
+      const amount = parseAmount(f.amount.value);
+      if (!Number.isFinite(amount) || !amount) { toast('Type the amount.', 'error'); return; }
+      decide(m, (rec) => { rec.dit = [...(rec.dit || []), stampEntered({ id: Math.random().toString(36).slice(2, 9), date: f.date.value, note: f.note.value.trim(), amount }, user)]; },
+        `Added a deposit in transit: ${f.note.value.trim() || 'deposit'} ${money(amount)}`, again, close);
+    };
+    const removeTyped = (d) => decide(m, (rec) => { rec.dit = (rec.dit || []).filter((x) => x.id !== d.id); }, `Removed deposit in transit ${d.note || ''} ${money(d.amount)}`, again, close);
     return h('div', {},
-      table([
-        { label: 'Hit the bank in', cell: (r) => (r.settled ? h('span', {}, r.counts ? (r.sign > 0 ? `${N} — in transit` : `${M}, booked ${N}`) : r.sign > 0 ? M : N)
-          : h('select', { onchange: (e) => setIn(r, e.target.value === 'in') },
-            ...(r.sign > 0 ? [['in', `${N} — in transit`], ['out', M]] : [['in', `${M} — booked in ${N}`], ['out', N]]).map(([v, t]) => h('option', { value: v, selected: (r.counts ? 'in' : 'out') === v }, t)))) },
+      dit ? table([
+        { label: 'Hit the bank in', cell: (r) => h('select', { onchange: (e) => setIn(r, e.target.value === 'in') },
+          ...(r.sign > 0 ? [['in', `${N} — in transit`], ['out', M]] : [['in', `${M} — booked in ${N}`], ['out', N]]).map(([v, t]) => h('option', { value: v, selected: (r.counts ? 'in' : 'out') === v }, t))) },
         { label: 'GL date', cell: (r) => r.date },
         { label: 'Description', cell: (r) => h('span', { class: 'wrap' }, r.desc) },
         { label: 'Why', cell: (r) => h('span', { class: 'small wrap' }, r.evidence) },
         { label: 'Amount', num: true, cell: (r) => (r.counts ? money(r.sign * r.amount) : h('s', { class: 'muted' }, money(r.sign * r.amount))) },
-        { label: '', cell: (r) => (r.settled ? statusPill('Statement', 'good') : r.choice ? h('span', { class: 'small muted' }, `${r.choice.by} · ${when(r.choice.at)}`) : r.flagged ? statusPill('To confirm', 'warn') : '') },
-      ], rows, { empty: 'Nothing near month end.', foot: (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Hit the bank in' ? 'In transit, from the GL' : '') }),
-      dit.manual.length ? h('p', { class: 'small' }, `Typed on the month page: ${dit.manual.map((x) => `${x.d.note || 'deposit'} ${money(x.d.amount)}${x.duplicate ? ' (also on the GL’s list — not counted twice)' : ''}`).join('; ')}.`) : null,
+        { label: '', cell: (r) => h('div', { class: 'row' },
+          r.overridden ? h('span', { title: r.choice.note || '' }, statusPill(`Overridden* · ${r.choice.by}`, 'bad'), r.settled && r.choice.note ? h('div', { class: 'small' }, `* ${r.choice.note}`) : null) : r.choice ? h('span', { class: 'small muted' }, `${r.choice.by} · ${when(r.choice.at)}`) : r.settled ? statusPill('Statement', 'good') : r.flagged ? statusPill('To confirm', 'warn') : '',
+          r.choice ? h('button', { class: 'small-btn', title: r.settled ? 'Go back to what the statement shows' : 'Go back to the GL’s suggestion', onclick: () => clearChoice(r) }, 'Undo') : null) },
+      ], rows, { empty: 'Nothing near month end.', foot: (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Hit the bank in' ? 'In transit, from the GL' : '') })
+        : h('p', { class: 'muted small' }, 'No GL register for this month — deposits in transit are the typed ones below.'),
       todo.length ? h('div', { class: 'row', style: { marginTop: '.5rem' } }, h('button', { onclick: () => decide(m, (rec) => {
         rec.ditGl = { ...(rec.ditGl || {}), ...Object.fromEntries(todo.map((r) => [r.batch, { in: r.suggested, by: user, at: nowIso() }])) };
-      }, `Confirmed ${todo.length} deposits in transit as suggested (from the fiscal year sheet)`, again, close) }, `Confirm ${todo.length} as suggested`)) : null);
+      }, `Confirmed ${todo.length} deposits in transit as suggested`, again, close) }, `Confirm ${todo.length} as suggested`)) : null,
+      h('h4', {}, 'Typed deposits in transit'),
+      typed.length ? table([
+        { label: 'Date', cell: (d) => d.date || '' },
+        { label: 'Description', cell: (d) => h('span', { class: 'wrap' }, d.note || '') },
+        { label: 'Amount', num: true, cell: (d) => (dup.has(d.id) ? h('span', { title: 'Also on the GL’s list — not counted twice' }, h('s', { class: 'muted' }, money(d.amount))) : money(d.amount)) },
+        { label: '', cell: (d) => h('div', { class: 'row' }, h('span', { class: 'small muted' }, d.enteredBy ? `${d.enteredBy} · ${when(d.enteredAt)}` : String(d.id || '').startsWith('imp-') ? 'From the workbook' : ''),
+          h('button', { class: 'small-btn danger', onclick: () => removeTyped(d) }, 'Remove')) },
+      ], typed) : null,
+      h('div', { class: 'row inline-form', style: { marginTop: '.4rem' } }, f.date, f.note, f.amount, h('button', { onclick: addTyped }, 'Add deposit in transit')));
   }
 
   // ---- Adjustment detail panel -------------------------------------------------------------
@@ -617,15 +749,63 @@ export default async function (main, { user, rerender }) {
       const withNotes = items.some((x) => extra(x));
       // What can be decided here: how a deposit counts, or leaving out something the GL found.
       const lineOf = (a) => (/^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null);
+      const again_ = { kind: 'adjustments', key, m };
+      const saved = byMonth[m] || {};
+      // Confirmed: who checked this item, at this amount (goes stale if the amount changes).
+      const confirmCell = (a) => {
+        const o = a.auto ? saved.autoConfirm?.[a.id] : (saved.adjustments || []).find((x) => x.id === a.id);
+        const st = o ? confirmationState(o, { amount: a.amount }) : 'none';
+        if (st === 'confirmed') return h('span', { class: 'small good-text', title: when(o.confirmation.at) }, `✓ ${o.confirmation.by}`);
+        return h('button', { class: 'small-btn', title: st === 'stale' ? 'Changed since it was confirmed' : 'Mark as checked', onclick: () => decide(m, (rec) => {
+          if (a.auto) { rec.autoConfirm ||= {}; confirmValues(rec.autoConfirm[a.id] ||= {}, user, { amount: a.amount }); }
+          else { const t = (rec.adjustments || []).find((x) => x.id === a.id); if (t) confirmValues(t, user, { amount: a.amount }); }
+        }, `Confirmed “${a.label}” ${money(a.amount)}`, again_, close) }, st === 'stale' ? 'Confirm again' : 'Confirm');
+      };
       const action = (x) => {
         const id = lineOf(x.a);
-        if (id) {
-          const line = { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) };
-          return treatSelect(m, line, x.a.type || 'not-revenue', { kind: 'adjustments', key, m }, close);
-        }
-        if (/^auto-gl/.test(x.a.id || '')) return h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, { kind: 'adjustments', key, m }, close) }, 'Leave out');
-        return '';
+        const decideCell = id
+          ? treatSelect(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, x.a.type || 'not-revenue', again_, close)
+          : /^auto-gl/.test(x.a.id || '') ? h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, again_, close) }, 'Leave out')
+          : !x.a.auto ? h('div', { class: 'row' },
+            h('button', { class: 'small-btn', onclick: () => fillForm(x.a) }, 'Edit'),
+            h('button', { class: 'small-btn danger', onclick: async () => {
+              if (!(await ask('Remove adjustment', `Remove “${x.a.label}” (${money(x.a.amount)})?`, { ok: 'Remove', danger: true }))) return;
+              decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
+            } }, 'Remove'))
+          : null;
+        return h('div', { class: 'row' }, decideCell, confirmCell(x.a));
       };
+      // Adding (or editing) an adjustment typed by hand, in this row.
+      const DEFAULT_TYPE = { [ADJ_GROUPS[0]]: 'transfer', [ADJ_GROUPS[1]]: 'transfer', [ADJ_GROUPS[2]]: 'not-revenue', [ADJ_GROUPS[3]]: 'other', [ADJ_GROUPS[4]]: 'timing' };
+      const formHost = h('div');
+      let editing = null;
+      const fillForm = (a = null) => {
+        editing = a;
+        const fx = {
+          account: h('select', {}, BANK_SOURCES.map((s_) => h('option', { value: s_.id, selected: (a?.account || 'cassOp') === s_.id }, s_.label))),
+          type: h('select', {}, Object.entries(ADJUSTMENT_TYPES).map(([v, t]) => h('option', { value: v, selected: (a?.type || DEFAULT_TYPE[key]) === v }, t))),
+          date: h('input', { type: 'date', value: a?.date || '' }),
+          label: h('input', { type: 'text', size: 28, placeholder: 'What it is, and who', value: a?.label || (key === ADJ_GROUPS[1] ? 'Wire sweep adjustment' : '') }),
+          amount: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 12, placeholder: 'Amount', value: a ? String(a.amount) : '' }),
+          note: h('input', { type: 'text', size: 28, placeholder: 'Why (for anyone checking)', value: a?.note || '' }),
+        };
+        const save = () => {
+          const amount = parseAmount(fx.amount.value);
+          if (!Number.isFinite(amount) || !amount) { toast('Type the amount (money that isn’t revenue is negative).', 'error'); return; }
+          if (!fx.label.value.trim()) { toast('Say what it is.', 'error'); return; }
+          const v = { account: fx.account.value, type: fx.type.value, date: fx.date.value, label: fx.label.value.trim(), amount, note: fx.note.value.trim() };
+          decide(m, (rec) => {
+            rec.adjustments ||= [];
+            const t = editing && rec.adjustments.find((y) => y.id === editing.id);
+            if (t) { Object.assign(t, v); stampEntered(t, user); } else rec.adjustments.push(stampEntered({ id: Math.random().toString(36).slice(2, 9), ...v }, user));
+          }, `${editing ? 'Changed' : 'Added'} adjustment “${v.label}” ${money(amount)}`, again_, close);
+        };
+        mount(formHost, h('h4', {}, editing ? `Change “${editing.label}”` : 'Add an adjustment here'),
+          h('div', { class: 'row inline-form' }, fx.account, fx.type, fx.date, fx.label, fx.amount, fx.note,
+            h('button', { class: 'primary', onclick: save }, editing ? 'Save' : 'Add'), editing ? h('button', { onclick: () => fillForm(null) }, 'Cancel') : null),
+          h('p', { class: 'muted small' }, 'Enter the amount as it affects bank revenue: money that isn’t revenue is negative.'));
+      };
+      fillForm(null);
       const cols_ = [
         { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
         { label: 'Date', cell: (x) => x.date || '' },
@@ -657,7 +837,7 @@ export default async function (main, { user, rerender }) {
         dit, kinds.map(section),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } }, rowKV(`${key}, total`, h('strong', {}, money(round2(sum(list, (a) => a.amount) + (dit ? c.ditChange : 0)))))),
         evidenceSummary(list),
-        h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, `Change these on the ${monthName(m)} page →`)));
+        formHost);
     }, { wide: true });
   }
 
@@ -708,7 +888,7 @@ export default async function (main, { user, rerender }) {
     const prev = addMonths(m, -1);
     const listOf = (dit, rec) => (dit
       ? [...dit.rows.filter((r) => r.counts).map((r) => ({ date: r.date, desc: r.desc, why: r.evidence, amount: round2(r.sign * r.amount), from: r.settled ? 'Statement' : r.choice ? `Confirmed · ${r.choice.by}` : r.flagged ? 'To confirm' : 'From the GL' })),
-        ...dit.manual.filter((x) => !x.duplicate).map((x) => ({ date: x.d.date || '', desc: x.d.note || 'Typed', why: 'Typed on the month page', amount: x.d.amount, from: x.d.enteredBy ? `Typed · ${x.d.enteredBy}` : 'Typed' }))]
+        ...dit.manual.filter((x) => !x.duplicate).map((x) => ({ date: x.d.date || '', desc: x.d.note || 'Typed', why: 'Typed', amount: x.d.amount, from: x.d.enteredBy ? `Typed · ${x.d.enteredBy}` : 'Typed' }))]
       : (rec?.dit || []).map((d) => ({ date: d.date || '', desc: d.note || '', why: String(d.id || '').startsWith('imp-') ? 'From the workbook' : 'Typed', amount: d.amount, from: '' })));
     const thisList = listOf(c.deposits?.dit, byMonth[m]);
     const priorList = c.priorDitMissing ? null : listOf(depChecks[prev]?.dit, byMonth[prev]);
@@ -724,19 +904,19 @@ export default async function (main, { user, rerender }) {
         h('p', { class: 'muted' }, `Money the GL booked as revenue in one month that reached the bank in the next. The change is ${monthName(m)}’s in transit less ${monthName(prev)}’s, which reached the bank in ${monthName(m)}. The GL names the bank date in each batch (“3.3.2026 February Deposit”); the next month’s statement confirms it.`),
         h('h3', {}, `In transit at the end of ${monthName(m)} (plus)`), c.deposits?.dit ? ditBlock(m, c, close, { kind: 'dit', m }) : tableOf(thisList, 'None.'),
         h('h3', {}, `In transit at the end of ${monthName(prev)}, reached the bank in ${monthName(m)} (less)`),
-        priorList ? tableOf(priorList, 'None.') : h('p', { class: 'small warn-text' }, `Not known — ${monthName(prev)} isn’t in the GL and none were entered for it, so nothing comes off. Its deposits that reached the bank in ${monthName(m)} are marked “Recognized in another month” on the deposit list instead.`),
+        priorList ? (cols.find((x) => x.m === prev)?.c?.deposits?.dit ? ditBlock(prev, cols.find((x) => x.m === prev).c, close, { kind: 'dit', m }) : tableOf(priorList, 'None.')) : h('p', { class: 'small warn-text' }, `Not known — ${monthName(prev)} isn’t in the GL and none were entered for it, so nothing comes off. Its deposits that reached the bank in ${monthName(m)} are marked “Recognized in another month” on the deposit list instead.`),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } },
           rowKV(`${monthName(m)} in transit`, money(c.ditTotal)),
           rowKV(`Less ${monthName(prev)} in transit`, c.priorDit == null ? 'not known' : money(-c.priorDit)),
           rowKV('Change, into adjusted bank revenue', money(c.ditChange ?? 0))),
-        h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, `Confirm or change these on the ${monthName(m)} page →`)));
+        null);
     }, { wide: true });
   }
 
   // ---- GL panel: statement of activities or GL register, or typed --------------------------
   async function openGl(m) {
     let dirty = false;
-    await panel(`GL — ${monthName(m)}`, (body) => {
+    await panel(`GL — ${monthName(m)}`, (body, close) => {
       const draw = () => {
         const gl = glFor(m);
         const soa = soaBy[m];
@@ -753,6 +933,7 @@ export default async function (main, { user, rerender }) {
               : h('p', { class: 'small muted' }, 'Matches the figures from the old workbook (to the dollar).');
           })(),
           soa && !gl?.soaOnly ? h('p', { class: 'small' }, `Statement of activities: revenue ${money(soa.revenueTotal)}, interest ${money(soa.interestTotal)} — ${Math.abs(soa.revenueTotal - (gl?.revenueTotal || 0)) < 1 && Math.abs(soa.interestTotal - (gl?.interestTotal || 0)) < 1 ? 'matches the GL register' : 'differs from the GL register'}.`) : null,
+          glOverride(m, close),
           h('div', { class: 'row', style: { marginTop: '.75rem' } },
             fileButton('Upload statement of activities…', '.xlsx,.xls', async (file) => {
               try {
@@ -770,6 +951,29 @@ export default async function (main, { user, rerender }) {
       draw();
     });
     if (dirty) rerender();
+  }
+
+  // Typed GL figures, when Acumatica's aren't loaded or aren't right yet. A typed figure wins until
+  // it's cleared, and says so if Acumatica moves after it was typed.
+  function glOverride(m, close) {
+    const g = byMonth[m]?.gl || {};
+    const typed = g.typedAt ? g : {};
+    const rev = h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 16, value: typed.revenue ?? '' });
+    const int = h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 16, value: typed.interest ?? '' });
+    const gl = glFor(m);
+    const differs = gl && g.typedAt && ((g.revenue != null && round2(g.revenue - gl.revenueTotal) !== 0) || (g.interest != null && round2(g.interest - gl.interestTotal) !== 0));
+    const again = { kind: 'gl', m };
+    return h('div', { style: { marginTop: '1rem' } }, h('h3', {}, 'Typed figures (override)'),
+      differs ? h('div', { class: 'notice warn' }, `The typed figures differ from Acumatica now (revenue ${money(gl.revenueTotal)}, interest ${money(gl.interestTotal)}). Clear them to use Acumatica’s.`) : null,
+      h('div', { class: 'form-grid' }, field('Revenue', rev), field('Interest', int)),
+      h('div', { class: 'row' },
+        h('button', { onclick: () => {
+          const v = (el) => { const t = el.value.trim(); return t === '' ? null : parseAmount(t); };
+          const r_ = v(rev), i_ = v(int);
+          if ((r_ != null && !Number.isFinite(r_)) || (i_ != null && !Number.isFinite(i_))) { toast('Those aren’t numbers.', 'error'); return; }
+          decide(m, (r) => { r.gl = { ...(r.gl || {}), revenue: r_, interest: i_, typedAt: nowIso(), typedBy: user }; }, `GL override: revenue ${r_ == null ? '(blank)' : money(r_, { dash: false })}, interest ${i_ == null ? '(blank)' : money(i_, { dash: false })}`, again, close);
+        } }, 'Save override'),
+        g.typedAt ? h('button', { onclick: () => decide(m, (r) => { r.gl = {}; }, 'Cleared GL overrides', again, close) }, 'Clear override') : null));
   }
 
   async function uploadGlRegister(file) {
@@ -843,6 +1047,7 @@ export default async function (main, { user, rerender }) {
         if (glOnly.length) checks.push([monthName(m), 'Evidence: GL only', money(round2(sum(glOnly, (a) => Math.abs(a.amount))), { dash: false }), `${glOnly.length} adjustments no statement shows: ${glOnly.map((a) => `${adjDetail(a)} ${money(a.amount, { dash: false })}`).join('; ')}`]); }
       if (dep?.conflicts?.length) checks.push([monthName(m), 'Rule vs GL', `${dep.conflicts.length} TO DECIDE`, dep.conflicts.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}: rule says ${x.rule.type}, GL ${x.match.batch} says revenue`).join('; ')]);
       if (dep?.keyBank) { const kl = c.lines.find((x) => x.id === 'keyOp'); if (kl?.rev != null) checks.push([monthName(m), 'KeyBank deposits vs GL', Math.abs((kl?.rev || 0) - dep.keyBank.glIn) < 0.005 ? 'Match' : 'DIFFERENT', `Statement ${money(kl?.rev || 0, { dash: false })}; GL into 1061 ${money(dep.keyBank.glIn, { dash: false })}`]); }
+      for (const r of (dep?.dit?.rows || []).filter((x) => x.overridden && x.settled)) checks.push([monthName(m), 'Deposit in transit overridden*', 'AGAINST THE STATEMENT', `${r.desc} ${money(r.amount, { dash: false })}: ${r.evidence}; set ${r.counts ? 'in transit' : 'not in transit'} by ${r.choice.by} — ${r.choice.note || ''}`]);
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
       if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
     }
@@ -891,10 +1096,16 @@ export default async function (main, { user, rerender }) {
       sheet(true, false, 'Revenue', { expand: true }), sheet(false, true, 'Interest', { expand: true })),
   );
 
+  // An old month link: show that month's fiscal year with the month open.
+  if (openMonthParam && !reopenAfter) {
+    history.replaceState(null, '', '#/poc');
+    reopenAfter = { kind: 'month', m: openMonthParam };
+    if (fiscalYear(openMonthParam) !== fy) { store.set(FY_KEY, String(fiscalYear(openMonthParam))); rerender(); return; }
+  }
   // A decision was just saved from a pop-up: open it again with the new numbers.
   if (reopenAfter) {
     const r = reopenAfter; reopenAfter = null;
-    setTimeout(() => (r.kind === 'adjustments' ? openAdjustments(r.key, r.m) : r.kind === 'dit' ? openDit(r.m) : r.kind === 'account' ? openAccount(r.id, r.m) : null), 0);
+    setTimeout(() => (r.kind === 'adjustments' ? openAdjustments(r.key, r.m) : r.kind === 'dit' ? openDit(r.m) : r.kind === 'account' ? openAccount(r.id, r.m) : r.kind === 'month' ? openMonth(r.m) : r.kind === 'gl' ? openGl(r.m) : null), 0);
   }
   const saved = scrollMemory[fy];
   if (saved) {

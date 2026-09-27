@@ -23,7 +23,7 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - On ICS, CDARS, Delap and Tschetter cells, "−" undoes an attachment or typed entry.
   - Buttons: **Export Excel** (4 tabs: the sheet, adjustment detail, sources, checks) and
     **Print / PDF**.
-- **Month page (`#/poc/YYYY-MM`)** has everything for one month:
+- **Month pop-up** (click the month name) — replaced the month page:
   - deposits to review (revenue / transfer / not revenue)
   - automatic and manual adjustments
   - deposits in transit
@@ -44,7 +44,7 @@ its tests still run.
 | --- | --- |
 | Routing, top tabs | `app/js/app.js` |
 | FY sheet (most UI work happens here) | `app/js/views/poc-year.js` |
-| Month page | `app/js/views/poc.js` |
+| Month pop-up (statements, timing, notes, sign-off, activity) and every other pop-up | `app/js/views/poc-year.js` (there is no separate month page any more; `#/poc/YYYY-MM` opens the sheet with that month's pop-up) |
 | Stripe payout check UI | `app/js/views/stripe-check.js` |
 | CD schedule UI | `app/js/views/cds.js` |
 | Workbook import UI + merge | `app/js/views/poc-import.js` |
@@ -87,9 +87,10 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **What the GL booked it to decides.** Revenue accounts → revenue. Another of our cash/investment accounts (10xx, 1150–1171) → transfer. Receivable (1210, 1220) → recognized in another month. Anything else (7220 COBRA, 8039, 2041 agency, 2042 tax) → not revenue. Stripe (1200) is left to the Stripe rule; Outgoing credits to the sweep rule. | Workbook hand lines all have a GL reason: Dec 100k agency (1020/2041), Mar 750k Murdock grant (1220), Jan 733.86 tax refund (7215), Jan 400 returned ACH (8036), Aug 7,100 Imago (8039). |
 | **A hand adjustment covers the GL finding of the same amount**, so imported workbook lines and GL findings never both come out. | Merge import brings in Dec −100k, Mar −750k, etc. |
 | **Revenue the GL took back** (a batch crediting cash and debiting revenue: chargebacks, a deposit reclassed) is an adjustment. A reversal with the same description, amount and accounts as another batch is a duplicate: both are dropped before matching. | Nov: three DAF batches posted twice and reversed. Dec GL017613 reclassed the 100k agency deposit. |
-| **When a statement rule and the GL disagree, a person decides.** A deposit a rule takes out (a matching payment out of another account, a tax refund, Fidelity wording) that the GL booked as revenue is listed under "to decide" on the month page (⚠ on the FY sheet), counted as revenue meanwhile. "It's a transfer" stores it in `rec.excluded`; "It's revenue" in `rec.dismissed`. Automatic findings stored on older records (`auto: true`) are ignored and worked out fresh. | User rule: the GL is booked by people, a coincidence of amounts isn't proof. None in the FY2026 months with statements. |
+| **When a statement rule and the GL disagree, a person decides.** A deposit a rule takes out (a matching payment out of another account, a tax refund, Fidelity wording) that the GL booked as revenue is listed under "to decide" in the Cass Operating pop-up (⚠ on the FY sheet), counted as revenue meanwhile. "It's a transfer" stores it in `rec.excluded`; "It's revenue" in `rec.dismissed`. Automatic findings stored on older records (`auto: true`) are ignored and worked out fresh. | User rule: the GL is booked by people, a coincidence of amounts isn't proof. None in the FY2026 months with statements. |
 | **KeyBank Operating deposits are cash giving** unless the GL booked a KeyBank (1061) deposit from another of our accounts (taken out as a transfer). A statement total that differs from what the GL put into 1061 is flagged, with a button to take the difference out as a transfer. | User rule. Nov 155 and Apr 945 = GL. |
 | **PayPal, Tschetter, Delap: transfers are called out by hand** until better statements are available. PayPal money in isn't revenue unless it's a payment received; Tschetter/Delap net deposits are typed (Delap's Fidelity transfers into Cass fill in automatically). | User. |
+| **Everything is done from the fiscal-year sheet's pop-ups; the month page is gone.** Month name → statements (drop any), restricted revenue / merchandise AR, notes, sign-off, activity. Cass Operating → every deposit (Treat as, per the GL), to decide, GL doesn't have. Each adjustment row → its items (Treat as / Leave out / Confirm) and adding, editing, removing typed adjustments. Timing / DIT → every row decidable, including statement-settled ones (override needs a reason, shown with *, listed in Checks), typed DIT add/remove. GL → typed overrides. | User: imports and documents live on the sheet, so decisions do too. |
 | **Decisions can be made from the fiscal-year pop-ups** (saved to the month, logged "from the fiscal year sheet", pop-up reopens): deposits in transit (hit the bank in / confirm all), how a deposit counts (Treat as), leaving out a GL finding, and in the Cass Operating pop-up the "to decide" and "GL doesn't have" deposits. | User: control without going to each month page. |
 | **A Stripe transfer that isn't one of our payouts and that the GL books as a gift stays in revenue** (someone else's Stripe account paying us), and is left out of the payout check as a gift. | Oct 2025 9.43: GL017137 "DAF Gifts – Every.org via Stripe Transfer" (Cr 4018). That was October's whole remaining difference. |
 | **The sheet shows five adjustment rows by what they are** — Transfers between our accounts · Wire sweeps · Deposits that aren't revenue · Fees, refunds & reclasses · Timing (deposits in transit included) — whichever account or report they came from (`adjGroup`). Opening one lists every item under a subheading per kind (`adjDetail`), each with its reason, subtotal, evidence and note. The export keeps both (Group, Line). | User: fewer, clearer rows; detail on click. |

@@ -1,4 +1,4 @@
-// The Stripe payouts vs Cass check, as shown in the account panels and on the month page.
+// The Stripe payouts vs Cass check, as shown in the Cass Operating and Stripe pop-ups.
 
 import { h, table, askValue } from '../ui.js';
 import { money } from '../money.js';
