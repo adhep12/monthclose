@@ -207,3 +207,14 @@ td.indent { padding-left: 1.5rem; }
 .sheet td.neg { color: var(--bad); }
 .sheet td.pos { color: var(--warn); }
 .sheet tr.pct-row td { color: var(--muted); font-size: .76rem; }
+.content.wide-page { max-width: none; padding-right: 1.25rem; padding-left: 1.25rem; }
+.sheet table { font-size: .76rem; }
+.sheet th, .sheet td { padding: .28rem .4rem; }
+.sheet .label-col { min-width: 12.5rem; max-width: 15rem; box-shadow: 1px 0 0 var(--line); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: .3rem .8rem; font-size: .82rem; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.active { background: var(--accent-soft); color: var(--accent); }
+.dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; vertical-align: middle; margin-left: .15rem; }
+.dot.good { background: var(--good); } .dot.info { background: var(--accent); } .dot.warn { background: var(--warn); } .dot.neutral { background: var(--muted); }
+.sheet-block h2 { margin-top: 1rem; }

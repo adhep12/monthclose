@@ -13,6 +13,7 @@ import { fiscalYear, fyStart, addMonths, monthName } from '../fiscal.js';
 import { explain } from '../store.js';
 
 const FY_KEY = 'monthclose:poc-fy';
+const SHOW_KEY = 'monthclose:poc-show';
 // Row order of the workbook's "Per Bank Statement" block.
 const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp'];
 
@@ -37,6 +38,10 @@ export default async function (main, { month, setMonth, rerender }) {
   let fy;
   try { fy = Number(localStorage.getItem(FY_KEY)) || fiscalYear(month); } catch { fy = fiscalYear(month); }
   if (!years.includes(fy)) fy = fiscalYear(month);
+  let show = 'stacked';
+  try { show = localStorage.getItem(SHOW_KEY) || 'stacked'; } catch { /* ignore */ }
+  const pickShow = (v) => { try { localStorage.setItem(SHOW_KEY, v); } catch { /* ignore */ } rerender(); };
+  main.classList.add('wide-page');
   const pickFy = (y) => { try { localStorage.setItem(FY_KEY, String(y)); } catch { /* ignore */ } rerender(); };
 
   async function addYear() {
@@ -103,50 +108,73 @@ export default async function (main, { month, setMonth, rerender }) {
       v == null ? '' : strong ? h('strong', {}, money(v)) : money(v),
       meta?.mark ? h('span', { class: meta.mark === '✓' ? 'good-text' : 'warn-text' }, ` ${meta.mark}`) : null);
   };
-  const statusOf = (rec) => (rec?.signoff?.reviewed ? statusPill('Reviewed', 'good') : rec?.signoff?.prepared ? statusPill('Prepared', 'info') : rec?.source?.kind === 'import' && !rec.updatedAt ? statusPill('From workbook', 'neutral') : rec ? statusPill('In progress', 'warn') : null);
+  const dot = (kind, label) => h('span', { class: `dot ${kind}`, title: label, 'aria-label': label });
+  const statusOf = (rec) => (rec?.signoff?.reviewed ? dot('good', 'Reviewed') : rec?.signoff?.prepared ? dot('info', 'Prepared') : rec?.source?.kind === 'import' && !rec.updatedAt ? dot('neutral', 'From the workbook') : rec ? dot('warn', 'In progress') : null);
   const openMonth = (m) => (e) => { e.preventDefault(); setMonth(m); location.hash = '#/poc/month'; };
   const range = done.length ? `${monthName(done[0].m, { short: true }).split(' ')[0]}–${monthName(done[done.length - 1].m, { short: true }).split(' ')[0]}` : 'no months yet';
-  const nCols = 3 + months.length * 2;
+  // One sheet: revenue, interest, or both side by side (the workbook's layout — wider than most
+  // screens). The default stacks a revenue sheet above an interest sheet so each fits.
+  function sheet(showRev, showInt, title) {
+    const span = (showRev ? 1 : 0) + (showInt ? 1 : 0);
+    const nCols = 1 + span * (months.length + 1);
+    const hasAny = (r) => done.length === 0 || r.strong || [r.rev && showRev && [ytd(r.rev), ...done.map((x) => r.rev(x.c))], r.int && showInt && [ytd(r.int), ...done.map((x) => r.int(x.c))]]
+      .flat().some((v) => v != null && v !== false && Math.abs(v) >= 0.005);
+    const body = [];
+    for (const r of rows) {
+      if (r.section) { body.push({ section: r.section }); continue; }
+      if (r.pct) { body.push({ r }); continue; }
+      if ((!showRev || !r.rev) && (!showInt || !r.int)) continue;
+      if (!hasAny(r)) continue;
+      body.push({ r });
+    }
+    const kept = body.filter((b, i) => !b.section || (body[i + 1] && !body[i + 1].section));
+    return h('div', { class: 'sheet-block' },
+      title ? h('h2', {}, title) : null,
+      h('div', { class: 'table-wrap sheet' }, h('table', {},
+        h('thead', {},
+          h('tr', {}, h('th', { class: 'label-col' }, ''),
+            h('th', { class: 'num ytd', colspan: span }, 'YTD', h('div', { class: 'muted small' }, done.length ? `${range} · ${done.length} mo.` : range)),
+            cols.map(({ m, rec }) => h('th', { class: 'num month', colspan: span },
+              h('a', { href: '#/poc/month', onclick: openMonth(m) }, monthName(m, { short: true }).split(' ')[0]), ' ', statusOf(rec)))),
+          span > 1 ? h('tr', {}, h('th', { class: 'label-col' }, ''),
+            h('th', { class: 'num ytd sub' }, 'Revenue'), h('th', { class: 'num ytd sub' }, 'Interest'),
+            months.map(() => [h('th', { class: 'num sub' }, 'Revenue'), h('th', { class: 'num sub int' }, 'Interest')])) : null),
+        h('tbody', {}, kept.map(({ section, r }) => {
+          if (section) return h('tr', { class: 'section-row' }, h('td', { colspan: nCols }, section));
+          if (r.pct) {
+            return h('tr', { class: 'pct-row' }, h('td', { class: 'label-col' }, r.label),
+              showRev ? h('td', { class: 'num ytd' }, pctOf(ytd((c) => c.diffRev), ytd((c) => c.glRev))) : null,
+              showInt ? h('td', { class: 'num ytd' }, pctOf(ytd((c) => c.diffInt), ytd((c) => c.glInt))) : null,
+              cols.map(({ c }) => [showRev ? h('td', { class: 'num' }, c ? pctOf(c.diffRev, c.glRev) : '') : null, showInt ? h('td', { class: `num${span > 1 ? ' int' : ''}` }, c ? pctOf(c.diffInt, c.glInt) : '') : null]));
+          }
+          return h('tr', { class: r.strong ? 'strong-row' : '' },
+            h('td', { class: 'label-col', title: r.hint || '' }, r.label),
+            showRev ? cell(r.rev ? ytd(r.rev) : null, { strong: true, diff: r.diff }) : null,
+            showInt ? cell(r.int ? ytd(r.int) : null, { strong: true, diff: r.diff }) : null,
+            cols.map(({ c, rec }) => {
+              if (!c) return [showRev ? h('td') : null, showInt ? h('td', { class: span > 1 ? 'int' : '' }) : null];
+              const revCell = showRev ? cell(r.rev ? r.rev(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.rev?.(c, rec) }) : null;
+              const intCell = showInt ? cell(r.int ? r.int(c) : null, { strong: r.strong, diff: r.diff, meta: r.meta?.int?.(c, rec) }) : null;
+              if (intCell && span > 1) intCell.classList.add('int');
+              return [revCell, intCell];
+            }));
+        })))));
+  }
 
   mount(main,
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, `${fy} Proof of Cash Summary`),
-        h('p', { class: 'muted' }, 'Laid out like the workbook. Click a month to open it. ✓ = confirmed, ! = changed since it was confirmed; hover a figure for its source.')),
+        h('p', { class: 'muted' }, 'Laid out like the workbook. Click a month to open it. Dots: green reviewed, blue prepared, amber in progress, grey from the workbook. ✓ = confirmed, ! = changed since confirmed; hover a figure for its source.')),
       h('div', { class: 'actions' },
         h('a', { class: 'btn primary', href: '#/poc/month' }, `Open ${monthName(month)}`),
         h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'))),
     h('div', { class: 'row tabs' },
       years.map((y) => h('button', { class: y === fy ? 'tab active' : 'tab', onclick: () => pickFy(y) }, `FY${y}`)),
-      h('button', { class: 'tab add', onclick: addYear }, '+ Add fiscal year')),
-    h('div', { class: 'table-wrap sheet' }, h('table', {},
-      h('thead', {},
-        h('tr', {}, h('th', { class: 'label-col' }, ''),
-          h('th', { class: 'num ytd', colspan: 2 }, 'YTD', h('div', { class: 'muted small' }, done.length ? `${range} · ${done.length} mo.` : range)),
-          cols.map(({ m, rec }) => h('th', { class: 'num month', colspan: 2 },
-            h('a', { href: '#/poc/month', onclick: openMonth(m) }, monthName(m, { short: true }).split(' ')[0]), h('div', {}, statusOf(rec))))),
-        h('tr', {}, h('th', { class: 'label-col' }, ''),
-          h('th', { class: 'num ytd sub' }, 'Revenue'), h('th', { class: 'num ytd sub' }, 'Interest'),
-          months.map(() => [h('th', { class: 'num sub' }, 'Revenue'), h('th', { class: 'num sub int' }, 'Interest')]))),
-      h('tbody', {}, rows.map((r) => {
-        if (r.section) return h('tr', { class: 'section-row' }, h('td', { colspan: nCols }, r.section));
-        if (r.pct) {
-          return h('tr', { class: 'pct-row' }, h('td', { class: 'label-col' }, r.label),
-            h('td', { class: 'num ytd' }, pctOf(ytd((c) => c.diffRev), ytd((c) => c.glRev))),
-            h('td', { class: 'num ytd' }, pctOf(ytd((c) => c.diffInt), ytd((c) => c.glInt))),
-            cols.map(({ c }) => [h('td', { class: 'num' }, c ? pctOf(c.diffRev, c.glRev) : ''), h('td', { class: 'num int' }, c ? pctOf(c.diffInt, c.glInt) : '')]));
-        }
-        return h('tr', { class: r.strong ? 'strong-row' : '' },
-          h('td', { class: 'label-col', title: r.hint || '' }, r.label),
-          cell(r.rev ? ytd(r.rev) : null, { strong: true, diff: r.diff }), cell(r.int ? ytd(r.int) : null, { strong: true, diff: r.diff }),
-          cols.map(({ c, rec }) => {
-            if (!c) return [h('td'), h('td', { class: 'int' })];
-            const rv = r.rev ? r.rev(c) : null, iv = r.int ? r.int(c) : null;
-            const revCell = cell(rv, { strong: r.strong, diff: r.diff, meta: r.meta?.rev?.(c, rec) });
-            const intCell = cell(iv, { strong: r.strong, diff: r.diff, meta: r.meta?.int?.(c, rec) });
-            intCell.classList.add('int');
-            return [revCell, intCell];
-          }));
-      })))),
+      h('button', { class: 'tab add', onclick: addYear }, '+ Add fiscal year'),
+      h('span', { class: 'spacer' }),
+      h('div', { class: 'seg' }, [['stacked', 'Revenue above interest'], ['side', 'Side by side (workbook)']].map(([v, l]) =>
+        h('button', { class: v === show ? 'active' : '', onclick: () => pickShow(v) }, l)))),
+    show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')],
     done.length ? null : h('p', { class: 'muted' }, `Nothing entered for FY${fy} yet. Click a month to start it.`),
   );
 }
