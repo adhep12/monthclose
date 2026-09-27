@@ -97,13 +97,19 @@ export function statusPill(text, kind) {
 function openDialog(build) {
   return new Promise((resolve) => {
     const prev = document.activeElement;
-    const close = (value) => { overlay.remove(); document.removeEventListener('keydown', onKey); prev?.focus?.(); resolve(value); };
+    const close = (value) => {
+      overlay.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', onNav);
+      prev?.focus?.(); resolve(value);
+    };
     const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    // A link inside the dialog that goes to another page ("Open all of October") closes it.
+    const onNav = () => close(null);
     const box = h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true' });
     const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(null); } }, box);
     build(box, close);
     document.body.append(overlay);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', onNav);
     (box.querySelector('[autofocus]') || box.querySelector('button.primary') || box.querySelector('button'))?.focus();
   });
 }
