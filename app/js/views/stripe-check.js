@@ -41,8 +41,29 @@ export function stripeCheckBox(chk, { rec, user, onChange }) {
     chk.state === 'explained' ? h('p', { class: 'small' }, `“${chk.explained.note}” — ${chk.explained.by} · ${when(chk.explained.at)}`) : null,
     chk.state === 'mismatch' && chk.early?.length ? h('p', { class: 'small' },
       `Often timing: ${chk.early.map((t) => `${t.date} ${money(t.amount)}`).join(', ')} arrived in the first days of the month and may be last month’s payout. A payout at the end of this month may show up in next month’s Cass.`) : null,
-    chk.transfers.length ? h('details', { class: 'small' }, h('summary', {}, 'Cass transfers'),
-      table([{ label: 'Date', cell: (t) => t.date }, { label: 'Description', cell: (t) => `${t.desc}${t.detail ? ` ${t.detail}` : ''}` }, { label: 'Amount', num: true, cell: (t) => money(t.amount) }], chk.transfers)) : null);
+    chk.transfers.length || chk.ignored.length ? h('details', { class: 'small', open: chk.state === 'mismatch' || chk.ignored.length ? '' : null }, h('summary', {}, `Cass transfers${chk.ignored.length ? ` · ${chk.ignored.length} ignored` : ''}`),
+      h('p', { class: 'muted' }, 'Ignore a transfer that isn’t a Stripe payout (a small stray Stripe payment, say) to leave it out of this check.'),
+      table([
+        { label: 'Date', cell: (t) => t.date },
+        { label: 'Description', cell: (t) => h('span', { class: 'wrap' }, `${t.desc}${t.detail ? ` ${t.detail}` : ''}`, t.ignored ? h('div', { class: 'muted' }, `Ignored${t.ignored.note ? `: “${t.ignored.note}”` : ''} — ${t.ignored.by} · ${when(t.ignored.at)}`) : null) },
+        { label: 'Amount', num: true, cell: (t) => (t.ignored ? h('s', { class: 'muted' }, money(t.amount)) : money(t.amount)) },
+        { label: '', cell: (t) => (t.ignored
+          ? h('button', { class: 'small-btn', onclick: () => include(t) }, 'Include')
+          : h('button', { class: 'small-btn', onclick: () => ignore(t) }, 'Ignore…')) },
+      ], [...chk.transfers, ...chk.ignored].sort((a, b) => a.date.localeCompare(b.date)))) : null);
+
+  async function ignore(t) {
+    const note = await askValue('Ignore this transfer', `Leave ${t.date} ${t.desc} ${money(t.amount, { dash: false })} out of the Stripe payout check? Add a reason (optional).`, { ok: 'Ignore' });
+    if (note == null) return;
+    rec.stripeIgnored = { ...(rec.stripeIgnored || {}), [t.id]: { note: note.trim(), amount: t.amount, date: t.date, by: user, at: nowIso() } };
+    logChange(rec, user, `Ignored Stripe transfer ${t.date} ${money(t.amount, { dash: false })} in the payout check${note.trim() ? `: ${note.trim()}` : ''}`);
+    onChange(rec);
+  }
+  function include(t) {
+    delete rec.stripeIgnored[t.id];
+    logChange(rec, user, `Put Stripe transfer ${t.date} ${money(t.amount, { dash: false })} back into the payout check`);
+    onChange(rec);
+  }
 }
 
 function row(k, v) {

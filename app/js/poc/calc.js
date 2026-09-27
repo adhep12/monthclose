@@ -201,10 +201,15 @@ export function statementAdjustments(rec) {
 // difference, so it flags again if either number changes.
 export function stripePayoutCheck(rec) {
   const op = rec.statements?.operating;
-  const transfers = op ? op.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc)) : null;
+  const all = op ? op.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc)) : null;
+  // Transfers someone chose to leave out of this check (small Stripe payments that aren't payouts).
+  // They still come out of Cass deposits as Stripe money; only the comparison skips them.
+  const ignoredBy = rec.stripeIgnored || {};
+  const transfers = all ? all.filter((t) => !ignoredBy[t.id]) : null;
+  const ignored = all ? all.filter((t) => ignoredBy[t.id]).map((t) => ({ ...t, ignored: ignoredBy[t.id] })) : [];
   const cass = transfers ? round2(sum(transfers, (t) => t.amount)) : null;
   const csv = rec.stripe ? round2(rec.stripe.payouts || 0) : null;
-  const base = { cass, csv, transfers: transfers || [], explained: rec.stripeCheck || null };
+  const base = { cass, csv, transfers: transfers || [], ignored, explained: rec.stripeCheck || null };
   if (cass == null || csv == null) return { ...base, state: 'incomplete', diff: null };
   const diff = round2(cass - csv);
   if (Math.abs(diff) < 0.005) return { ...base, state: 'match', diff };

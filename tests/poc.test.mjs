@@ -96,3 +96,18 @@ test('Stripe payouts per the CSV are checked against the Stripe transfers into C
   // The explanation is for that exact difference: if a number changes, it flags again.
   assert.equal(stripePayoutCheck({ ...explained, stripe: { payouts: 1300000 } }).state, 'mismatch');
 });
+
+test('an ignored Stripe transfer drops out of the payout check only', async () => {
+  const { stripePayoutCheck, statementAdjustments } = await import('../app/js/poc/calc.js');
+  const operating = { transactions: [
+    { id: '5884-0', section: 'credit', date: '2026-07-02', amount: 1000, desc: 'STRIPE TRANSFER' },
+    { id: '5884-1', section: 'credit', date: '2026-07-15', amount: 42.5, desc: 'STRIPE TRANSFER' },
+  ] };
+  const rec = { statements: { operating }, stripe: { payouts: 1000 } };
+  assert.equal(stripePayoutCheck(rec).state, 'mismatch');
+  rec.stripeIgnored = { '5884-1': { note: 'stray payment', by: 'A' } };
+  const chk = stripePayoutCheck(rec);
+  assert.equal(chk.state, 'match');
+  assert.equal(chk.ignored.length, 1);
+  assert.equal(statementAdjustments(rec).find((a) => a.id === 'auto-stripe').amount, -1042.5);
+});
