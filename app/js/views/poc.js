@@ -1,6 +1,6 @@
 import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } from '../ui.js';
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa } from '../data.js';
-import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions, statementTies } from '../poc/calc.js';
 import { attachFiles } from '../poc/attach.js';
 import { stripeCheckBox } from './stripe-check.js';
 import { monthSummary } from '../cd/schedule.js';
@@ -151,7 +151,7 @@ export default async function (main, { month, monthName, user, rerender }) {
     for (const [k, s] of Object.entries(rec.statements)) out.push({ label: `Cass ${KIND_LABEL[k]}`, s, ok: s.check.creditsOk && s.check.debitsOk && s.check.balanceOk, detach: () => { delete rec.statements[k]; } });
     if (rec.stripe) out.push({ label: 'Stripe', s: rec.stripe, ok: true, detach: () => { delete rec.stripe; } });
     if (rec.ics) out.push({ label: 'ICS', s: rec.ics, ok: rec.ics.ties !== false, detach: () => { delete rec.ics; } });
-    for (const [k, s] of Object.entries(rec.bankStatements)) out.push({ label: BANK_SOURCES.find((x) => x.id === k)?.label || k, s, ok: s.ties !== false, detach: () => { delete rec.bankStatements[k]; } });
+    for (const [k, s] of Object.entries(rec.bankStatements)) out.push({ label: BANK_SOURCES.find((x) => x.id === k)?.label || k, s, ok: statementTies(rec, k), detach: () => { delete rec.bankStatements[k]; } });
     return out;
   }
 

@@ -6,7 +6,7 @@
 import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
@@ -650,7 +650,7 @@ function attachedFor(rec, id) {
   if (id === 'stripe' && rec.stripe) out.push({ label: 'Stripe', s: rec.stripe, detach: () => { delete rec.stripe; } });
   if (id === 'ics' && rec.ics) out.push({ label: 'ICS', s: rec.ics, ok: rec.ics.ties !== false, detach: () => { delete rec.ics; } });
   const b = rec.bankStatements?.[id];
-  if (b) out.push({ label: BANK_SOURCES.find((s) => s.id === id)?.label || id, s: b, ok: b.ties !== false, detach: () => { delete rec.bankStatements[id]; } });
+  if (b) out.push({ label: BANK_SOURCES.find((s) => s.id === id)?.label || id, s: b, ok: statementTies(rec, id), detach: () => { delete rec.bankStatements[id]; } });
   return out;
 }
 

@@ -86,6 +86,30 @@ test('Wise statements with day-first dates', () => {
   assert.equal(w.items[0].date, '2026-06-01');
 });
 
+test('Wise descriptions that wrap onto a second line are still read, and the statement ties', async () => {
+  const { detectTransfers, statementTies } = await import('../app/js/poc/calc.js');
+  // December 2025's shape: two of the four gifts wrap, and one donor wrote "BIBLE PROJECT" as the reference.
+  const w = parseWise(L(['December 1, 2025 [GMT-08:00] - December 31, 2025 [GMT-08:00]', 'USD on December 31, 2025 [GMT-08:00] 398,987.90 USD',
+    'Description Incoming Outgoing Amount',
+    'Received money from DONOR ONE with reference BIBLE PROJECT', '9,993.89 398,987.90', 'December 12, 2025 Transaction: TRANSFER-1 Reference: BIBLE PROJECT',
+    'Received money from Donor Two Foundation with reference Donor Two', '29,993.89 388,994.01', 'Foundation - Donation', 'December 11, 2025 Transaction: TRANSFER-2',
+    'Received money from DONOR THREE TOD Beneficiari+ with', '29,993.89 359,000.12', 'reference', 'December 10, 2025 Transaction: TRANSFER-3',
+    'Received money from DONOR FOUR LTD with reference', '90,146.74 329,006.23', 'December 4, 2025 Transaction: TRANSFER-4',
+    'Interest payment', '655.90 238,859.49', 'December 1, 2025 Transaction: BALANCE_INTEREST-x', '3.40% APY from 2025-11-01']));
+  assert.equal(w.items.length, 5);
+  assert.equal(w.revenue, 160128.41);
+  assert.equal(w.interest, 655.9);
+  assert.equal(w.beginning, 238203.59);
+  assert.ok(w.ties);
+  assert.match(w.items[1].desc, /Donor Two Foundation - Donation$/);
+  assert.deepEqual(detectTransfers({ bankStatements: { wise: w } }), {}); // a donor's reference isn't us
+  assert.ok(detectTransfers({ bankStatements: { wise: { items: [{ id: 'w', desc: 'Received money from BibleProject with reference x', amount: 50, balance: 50, date: '2025-12-01' }] } } }).w);
+  // What the old reader stored: the two wrapped gifts missing. It no longer passes as tying.
+  const old = { ...w, items: w.items.filter((it) => !/TWO|THREE/i.test(it.desc)) };
+  assert.equal(statementTies({ bankStatements: { wise: old } }, 'wise'), false);
+  assert.equal(statementTies({ bankStatements: { wise: w } }, 'wise'), true);
+});
+
 test('Delap/Tschetter gain = change in value less money moved in', () => {
   assert.equal(balanceMethodInterest({ ending: 5186270.92 }, { ending: 5161886.70 }), 24384.22);
   assert.equal(balanceMethodInterest({ ending: 5084983.41, netDeposits: -84706.53 }, { ending: 5145263.38 }), 24426.56);

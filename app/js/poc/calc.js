@@ -11,7 +11,7 @@
 //   timing:      { accrued, realizedPrior, restricted, merchAR }
 //   gl:          { revenue, interest, note }        typed override of the GL figures
 
-import { classifyWiseItems, wiseTotals } from './banks.js';
+import { classifyWiseItems, wiseTotals, wiseTies, wiseSender } from './banks.js';
 import { round2, sum } from '../money.js';
 
 // gl = the cash account in Acumatica whose month-end balance the statement's ending balance
@@ -85,6 +85,15 @@ export function exclusionInfo(v) {
 // Accept either a month record or (older callers) its Cass statements object.
 // Wise items as they should be read — statements attached before the sign fix are re-read here.
 const wiseItems = (rec) => classifyWiseItems(structuredClone(rec.bankStatements?.wise?.items || []));
+// Whether an attached statement's transactions account for its whole balance change. Wise
+// statements attached before the reader handled wrapped descriptions are missing lines, and this
+// is how they show up (re-attach them).
+export function statementTies(rec, id) {
+  const b = rec.bankStatements?.[id];
+  if (!b) return true;
+  if (id === 'wise' && b.items?.length) return wiseTies(wiseItems(rec), b.ending);
+  return b.ties !== false;
+}
 // Money sent to, or received from, another of our own accounts.
 const OWN = /bible ?project|cass commercial|\bcass\b/i;
 
@@ -136,7 +145,7 @@ export function detectTransfers(recIn) {
   const outs = outgoingItems(rec);
   const found = {};
   for (const d of reviewableDeposits(rec)) {
-    if (d.account === 'wise' && /bible ?project/i.test(d.desc)) { found[d.id] = { type: 'transfer', note: 'Sent from our own account', auto: true }; continue; }
+    if (d.account === 'wise' && /bible ?project/i.test(wiseSender(d.desc))) { found[d.id] = { type: 'transfer', note: 'Sent from our own account', auto: true }; continue; }
     if (d.account !== 'wise' && FIDELITY.test(`${d.desc} ${d.detail || ''}`)) { found[d.id] = { type: 'transfer', note: 'From the Delap Fidelity account', auto: true }; continue; }
     const m = outs.find((o) => o.account !== d.account && sameMoney(o, d, OWN.test(o.desc)));
     // Under $1,000 a same-amount match could be coincidence, unless the money was sent to us by name.

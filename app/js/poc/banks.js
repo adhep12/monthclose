@@ -35,20 +35,43 @@ export function parseWise(lines) {
   const ending = amt((j.match(new RegExp(`USD on [^\\n]*? (${AMT}) USD`)) || [])[1]);
 
   // Each transaction: a description, its amount and running balance (on the same line or the
-  // next), then a line starting with its date.
+  // next), then a line starting with its date. A long description wraps, and its second line
+  // sits between the amount and the date ("…with reference Fundacao Bom" / "Pelicano - Donation").
   const items = [];
   const bothRe = new RegExp(`^(.*?) ?(${AMT}) (${AMT})$`);
+  const dateRe = new RegExp(`^${WISE_DATE}`);
   const start = all.findIndex((x) => /^Description/.test(x));
   for (let i = start + 1; i > 0 && i < all.length; i++) {
     const m = all[i].match(bothRe);
     if (!m) continue;
-    const desc = m[1].trim() || (all[i - 1] || '').trim();
-    const dm = (all[i + 1] || '').match(new RegExp(`^${WISE_DATE}`));
+    let k = i + 1;
+    while (k < all.length && k <= i + 3 && !dateRe.test(all[k]) && !bothRe.test(all[k])) k++;
+    const dm = (all[k] || '').match(dateRe);
     if (!dm) continue;
+    const desc = [m[1].trim() || (all[i - 1] || '').trim(), ...all.slice(i + 1, k)].join(' ').trim();
     items.push({ id: `wise-${items.length}`, desc, amount: amt(m[2]), balance: amt(m[3]), date: wiseDate(dm[0]) });
   }
   classifyWiseItems(items);
-  return { source: 'wise', date, month: date.slice(0, 7), ...wiseTotals(items), beginning: round(wiseBeginning(items, ending)), ending, items };
+  return { source: 'wise', date, month: date.slice(0, 7), ...wiseTotals(items), beginning: round(wiseBeginning(items, ending)), ending, items, ties: wiseTies(items, ending) };
+}
+
+// Every transaction was read: the newest running balance is the statement's ending balance, and
+// each balance is the one before it plus money in or less money out. A line the reader missed
+// breaks the chain.
+export function wiseTies(items, ending) {
+  if (!items.length) return true;
+  if (ending != null && Math.abs(items[0].balance - ending) >= 0.005) return false;
+  for (let i = 0; i + 1 < items.length; i++) {
+    const a = Math.abs(items[i].amount) * (items[i].direction === 'out' ? -1 : 1);
+    if (Math.abs(items[i + 1].balance + a - items[i].balance) >= 0.005) return false;
+  }
+  return true;
+}
+
+// Who sent money into Wise: "Received money from X with reference Y" → X. The reference is the
+// sender's own note, and donors often write "BIBLE PROJECT" there.
+export function wiseSender(desc) {
+  return (String(desc).match(/^Received money from (.+?)(?: with reference\b|$)/i) || [])[1] || '';
 }
 
 // Wise prints money out with a minus sign ("-39.26"); money in has none. Where the sign is missing
