@@ -247,9 +247,14 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
   const revAdjusted = round2(bankRev + adjTotal + (ditChange || 0) + (t.restricted || 0) + (t.merchAR || 0));
   const intAdjusted = round2(bankInt + (t.accrued || 0) - (t.realizedPrior || 0));
 
-  const glRev = rec.gl?.revenue ?? gl?.revenueTotal ?? null;
-  const glInt = rec.gl?.interest ?? gl?.interestTotal ?? null;
-  const glSource = rec.gl?.revenue != null || rec.gl?.interest != null ? 'typed' : gl?.source || null;
+  // GL figures: a number typed in the app (stamped typedAt) wins; then Acumatica (GL register or
+  // statement of activities upload); then whatever came in with the old workbook.
+  const g = rec.gl || {};
+  const typed = g.typedAt ? g : {};
+  const glRev = typed.revenue ?? gl?.revenueTotal ?? g.revenue ?? null;
+  const glInt = typed.interest ?? gl?.interestTotal ?? g.interest ?? null;
+  const glSource = typed.revenue != null || typed.interest != null ? 'typed' : gl ? gl.source : g.revenue != null || g.interest != null ? 'workbook' : null;
+  const workbookGl = !g.typedAt && gl && (g.revenue != null || g.interest != null) ? { revenue: g.revenue ?? null, interest: g.interest ?? null } : null;
 
   const diffRev = glRev == null ? null : round2(revAdjusted - glRev);
   const diffInt = glInt == null ? null : round2(intAdjusted - glInt);
@@ -258,7 +263,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
     lines, bankRev, bankInt, adjustments, adjTotal,
     ditTotal, priorDit, ditChange, timing: t,
     revAdjusted, intAdjusted,
-    glRev, glInt, glSource, gl,
+    glRev, glInt, glSource, gl, workbookGl,
     diffRev, diffInt,
     pctRev: diffRev == null || !glRev ? null : diffRev / glRev,
     pctInt: diffInt == null || !glInt ? null : diffInt / glInt,

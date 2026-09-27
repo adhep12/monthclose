@@ -319,7 +319,7 @@ export default async function (main, { month, monthName, user, rerender }) {
   // ---- GL (statement of activities lines) --------------------------------------------------
   function glNote() {
     const t = rec.gl || {};
-    const differs = gl && ((t.revenue != null && round2(t.revenue - gl.revenueTotal) !== 0) || (t.interest != null && round2(t.interest - gl.interestTotal) !== 0));
+    const differs = gl && t.typedAt && ((t.revenue != null && round2(t.revenue - gl.revenueTotal) !== 0) || (t.interest != null && round2(t.interest - gl.interestTotal) !== 0));
     return h('div', { 'data-role': 'gl-note' }, differs ? h('div', { class: 'notice warn' }, `The typed GL figures differ from Acumatica now (revenue ${money(gl.revenueTotal)}, interest ${money(gl.interestTotal)}) — something was posted after they were entered. Clear them to use Acumatica’s.`) : null);
   }
   function drawGl() {
@@ -336,8 +336,8 @@ export default async function (main, { month, monthName, user, rerender }) {
       soa ? soaCheck() : h('p', { class: 'muted small' }, 'Upload this month’s Statement of Activities on the Acumatica uploads page to check these against the report.'),
       glNote(),
       h('div', { class: 'row' },
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Revenue (override)'), numInput(() => t.revenue, (v) => { track('gl.rev', 'GL revenue override', t.revenue, v); t.revenue = v; })),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Interest (override)'), numInput(() => t.interest, (v) => { track('gl.int', 'GL interest override', t.interest, v); t.interest = v; })),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Revenue (override)'), numInput(() => t.revenue, (v) => { track('gl.rev', 'GL revenue override', t.revenue, v); t.revenue = v; t.typedAt = nowIso(); t.typedBy = user; })),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Interest (override)'), numInput(() => t.interest, (v) => { track('gl.int', 'GL interest override', t.interest, v); t.interest = v; t.typedAt = nowIso(); t.typedBy = user; })),
         h('button', { onclick: () => { rec.gl = {}; logChange(rec, user, 'Cleared GL overrides'); mount(glHost); changed({ now: true }); } }, 'Clear overrides')));
   }
 

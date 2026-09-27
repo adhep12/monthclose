@@ -67,8 +67,11 @@ export default async function (main, { user, rerender }) {
   const glFor = (m) => glFigures({ glActivity: glBy[m], soa: soaBy[m], month: m, config: cfg });
   const cols = months.map((m) => {
     const rec = byMonth[m];
-    if (!hasData(rec)) return { m, rec: null, c: null };
-    return { m, rec, c: computePoc(rec, { prior: byMonth[addMonths(m, -1)], gl: glFor(m), cd: cdFor(m) }) };
+    const gl = glFor(m);
+    // A month with GL loaded but no proof of cash yet still shows its GL figures.
+    if (!hasData(rec) && !gl) return { m, rec: null, c: null };
+    const r = hasData(rec) ? rec : { ...blank(m), ...(rec || {}), source: undefined };
+    return { m, rec: hasData(rec) ? rec : null, c: computePoc(r, { prior: byMonth[addMonths(m, -1)], gl, cd: cdFor(m) }) };
   });
   // YTD covers the months whose Cass Operating deposits are in — the main account, so a month
   // with only a stray figure or two entered doesn't pull its whole GL into the totals yet.
@@ -333,6 +336,14 @@ export default async function (main, { user, rerender }) {
           h('p', { class: 'muted' }, 'Revenue and interest per Acumatica for the month. Upload the Statement of Activities – Comparative (Excel) for this month, or the GL Register Detailed export, which fills every month it covers.'),
           gl ? h('div', { class: 'recon' }, rowKV('Revenue', money(gl.revenueTotal)), rowKV('Interest', money(gl.interestTotal)), rowKV('Source', gl.source))
             : h('p', {}, 'Nothing loaded for this month yet.'),
+          (() => {
+            const w = byMonth[m]?.gl;
+            if (!gl || !w || w.typedAt || (w.revenue == null && w.interest == null)) return null;
+            const dr = w.revenue != null ? round2(gl.revenueTotal - w.revenue) : 0, di = w.interest != null ? round2(gl.interestTotal - w.interest) : 0;
+            return Math.abs(dr) >= 1 || Math.abs(di) >= 1
+              ? h('div', { class: 'notice warn' }, `The old workbook had revenue ${money(w.revenue)} and interest ${money(w.interest)} for ${monthName(m)}. Acumatica now shows ${money(gl.revenueTotal)} / ${money(gl.interestTotal)} — something was posted after the workbook was tied out.`)
+              : h('p', { class: 'small muted' }, 'Matches the figures from the old workbook (to the dollar).');
+          })(),
           soa && !gl?.soaOnly ? h('p', { class: 'small' }, `Statement of activities: revenue ${money(soa.revenueTotal)}, interest ${money(soa.interestTotal)} — ${Math.abs(soa.revenueTotal - (gl?.revenueTotal || 0)) < 1 && Math.abs(soa.interestTotal - (gl?.interestTotal || 0)) < 1 ? 'matches the GL register' : 'differs from the GL register'}.`) : null,
           h('div', { class: 'row', style: { marginTop: '.75rem' } },
             fileButton('Upload statement of activities…', '.xlsx,.xls', async (file) => {
