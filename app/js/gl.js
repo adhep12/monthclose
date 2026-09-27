@@ -40,6 +40,7 @@ export function parseGlRegister(XLSX, wb) {
   for (const p of Object.values(periods)) {
     for (const k of Object.keys(p.accounts)) p.accounts[k] = round2(p.accounts[k]);
     p.receipts = cashReceipts(p.batches);
+    p.stripeReclass = stripeReclasses(p.batches);
     delete p.batches;
   }
   if (!lines) throw new Error('No journal lines found in that file.');
@@ -68,6 +69,20 @@ function cashReceipts(batches) {
     // Only money in, and money out that takes revenue back (a chargeback, a deposit reclassed).
     if (cash < 0 && !Object.entries(other).some(([acct, v]) => /^4/.test(acct) && v < 0)) continue;
     out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: cash, accounts: other });
+  }
+  return out;
+}
+
+// Stripe sales the GL moves after booking the month's Stripe giving to 4015: merchandise to the
+// merch revenue lines, shipping to 9050, sales tax to 2042, and now and then a stray Stripe
+// transfer into giving. What leaves (or joins) revenue is an adjustment to the Stripe line.
+function stripeReclasses(batches) {
+  const out = [];
+  for (const b of batches) {
+    if (!/stripe/i.test(b.desc) || /Monthly Stripe Giving/i.test(b.desc) || b.accounts[CASS_GL] || !b.accounts['4015']) continue;
+    const accounts = {};
+    for (const [acct, net] of Object.entries(b.accounts)) if (Math.abs(net) >= 0.005) accounts[acct] = round2(-net);
+    out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), accounts });
   }
   return out;
 }

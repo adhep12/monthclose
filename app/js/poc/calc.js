@@ -12,6 +12,7 @@
 //   gl:          { revenue, interest, note }        typed override of the GL figures
 
 import { classifyWiseItems, wiseTotals, wiseTies, wiseSender } from './banks.js';
+import { stripeRevenue } from './stripe.js';
 import { round2, sum } from '../money.js';
 
 // gl = the cash account in Acumatica whose month-end balance the statement's ending balance
@@ -332,7 +333,7 @@ export function autoFigures(rec, cd = null, prior = null) {
     if (int != null) auto[s.id] = { int, from: 'change in balance', by: b.enteredBy, at: b.enteredAt, computed: true };
   }
   if (st.operating) auto.cassOp = { rev: st.operating.summary.credits.total, ending: st.operating.summary.ending, from: 'Cass statements', by: st.operating.attachedBy, at: st.operating.attachedAt };
-  if (rec.stripe) auto.stripe = { rev: rec.stripe.revenue, ending: rec.stripe.endBalance, from: 'Stripe CSV', by: rec.stripe.attachedBy, at: rec.stripe.attachedAt };
+  if (rec.stripe) auto.stripe = { rev: stripeRevenue(rec.stripe), ending: rec.stripe.endBalance, from: 'Stripe CSV', by: rec.stripe.attachedBy, at: rec.stripe.attachedAt };
   if (rec.ics) auto.ics = { int: rec.ics.interest, ending: rec.ics.ending, from: 'ICS statement', by: rec.ics.attachedBy, at: rec.ics.attachedAt };
   if (cd?.hasData) auto.cd = { int: cd.realized, ending: cd.balance, from: 'CD schedule', by: cd.by, at: cd.at };
   return auto;

@@ -87,6 +87,8 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **What the GL booked it to decides.** Revenue accounts → revenue. Another of our cash/investment accounts (10xx, 1150–1171) → transfer. Receivable (1210, 1220) → recognized in another month. Anything else (7220 COBRA, 8039, 2041 agency, 2042 tax) → not revenue. Stripe (1200) is left to the Stripe rule; Outgoing credits to the sweep rule. | Workbook hand lines all have a GL reason: Dec 100k agency (1020/2041), Mar 750k Murdock grant (1220), Jan 733.86 tax refund (7215), Jan 400 returned ACH (8036), Aug 7,100 Imago (8039). |
 | **A hand adjustment covers the GL finding of the same amount**, so imported workbook lines and GL findings never both come out. | Merge import brings in Dec −100k, Mar −750k, etc. |
 | **Revenue the GL took back** (a batch crediting cash and debiting revenue: chargebacks, a deposit reclassed) is an adjustment. A reversal with the same description, amount and accounts as another batch is a duplicate: both are dropped before matching. | Nov: three DAF batches posted twice and reversed. Dec GL017613 reclassed the 100k agency deposit. |
+| **Stripe revenue = payments + refunds + disputes** (the CSV's gross). Fees are an expense (8590). | GL "Monthly Stripe Giving" credits 4015 with exactly this, every month Oct–Aug (Nov dispute 195, Dec 255, Jan 60, Feb 35, Apr 125, May 40). |
+| **Stripe sales the GL moves out of revenue come off the Stripe line**, read from the GL's Stripe reclass batches: shipping (9050), sales tax (2042). Merchandise moved to 4081–4085 stays revenue. A stray Stripe transfer the GL reclasses into giving (1200 → 4015) is added. | With disputes, this explains the Stripe line vs GL to $0.00 every month Nov–Jul. Oct leaves 9.43 (that month's stray, which the GL never booked as giving). Jan's 97.50 stray was booked as giving in Feb (GL017834), so ignored strays are revenue per the GL, a month late. |
 | **Deposits in transit come from the GL.** A revenue batch booked in month M whose money reached the bank in M+1 is in transit at M (the GL names the bank date: "3.3.2026 February Deposit"); one in the bank in M but booked in M+1 is a minus. The M+1 statement confirms it; until then the batch date suggests it and a person confirms (`rec.ditGl`). Typed DIT still counts unless the GL has the same amount; workbook DIT is shown for comparison only. | GL DIT = workbook DIT for Nov, Feb, Mar, Apr, Jul exactly. Dec/Jan differ by the 8,565 Cigna check the workbook put in DIT (GL: 8015, not revenue); May/Jun by a 50.00 6/11 deposit the workbook missed. Aug: 53,093.52. |
 
 ## 3. FY2026 tie-out: where it stands
@@ -141,7 +143,29 @@ The Outgoing fix should improve some of these: July is expected to go from −3,
 are built (rules in §2). The workbook's small monthly differences look like two larger errors cancelling: the
 Stripe CSV line is 10–31k above GL 4015 every month, offset elsewhere. February's difference rises by 10,126.31
 under the Outgoing sweep rule (on 2/2 only 76,044.28 of the 86,170.59 Fidelity transfer swept into Operating); that
-gap was real and hidden by the workbook. Next agent task: take the Stripe line apart against GL 1200/4015.
+gap was real and hidden by the workbook.
+
+**Stripe, taken apart (later still):** the Stripe line is *not* a big error. The 10–31k gap to 4015 is the GL
+moving merchandise sales out of 4015 into 4081–4085, which stays inside total revenue. What really leaves revenue
+is disputes, shipping and sales tax (under 1,200 a month), now handled (rules in §2). The workbook's monthly
+difference, broken down by source with the GL, sums to the workbook's own figure within cents (Jan and May
+differ only by later GL postings):
+
+| | Oct | Nov | Dec | Jan | Feb | Mar | Apr | May | Jun | Jul |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stripe (now 0) | 597 | 815 | 755 | 1,142 | 323 | 173 | 815 | 384 | 117 | 663 |
+| PayPal | | | | | 15,337 | 15,337 | | | | |
+| Cass | −1,211 | 424 | −8,181 | 16,700 | −10,135 | −6,841 | 393 | −3,278 | −5,832 | −3,056 |
+| Other (Wise fees, KeyBank, AR) | −26 | −400 | −50 | 2,499 | −52 | −6 | 44 | −6 | | −709 |
+
+- **PayPal Feb:** a 15,337 gift charged back (GL017755 books "Payment Refund / Chargeback", DR 4012). The PayPal
+  reader uses "Payments received", which ignores it. Needs the Feb PayPal statement to find how it shows the
+  chargeback. **PayPal Mar:** GL017941 books the same 15,337 chargeback again, and the donor's 15,337 check
+  (GL017858) is booked to 4012 against Cass. Unless the March PayPal statement also shows a chargeback, the GL
+  double-counted it: March revenue and GL 1012 are 15,337 low. Ask the user.
+- **Cass:** Feb −10,135 is the 10,126.31 Fidelity over-removal (the sweep rule fixes it); Jul −3,056 is mostly
+  the 2,828.76 Outgoing over-removal. Dec/Jan include the 8,565 Cigna check the workbook ran through DIT. The rest
+  needs each month's Cass statements attached, then the GL deposit check lists what's left.
 
 After deploying: **upload the GL register again** (older uploads don't have the deposit batches), re-attach
 Wise for Dec, Mar and May, and attach Incoming for Feb and May.
@@ -186,7 +210,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (42 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (43 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

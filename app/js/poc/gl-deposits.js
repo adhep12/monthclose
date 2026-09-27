@@ -32,6 +32,7 @@ const ACCOUNT_NAMES = {
   1012: 'PayPal', 1013: 'Wise', 1015: 'Stripe', 1020: 'pass-through cash', 1060: 'KeyBank money market', 1061: 'KeyBank',
   1150: 'CDARS', 1160: 'ICS', 1170: 'Delap Fidelity', 1171: 'Tschetter', 1200: 'Stripe clearing', 1210: 'accounts receivable',
   1220: 'grants / pledges receivable', 2010: 'accounts payable', 2041: 'agency (pass-through)', 2042: 'sales tax', 2050: 'payroll',
+  9050: 'shipping (COGS)',
 };
 export const accountName = (a, names = {}) => `${a} ${names[a] || ACCOUNT_NAMES[a] || ''}`.trim();
 
@@ -265,6 +266,18 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         if (!at || at.month !== m) res.glOnly.push({ receipt: { ...r, ...k }, landed: at || null });
       }
       res.cancelled = [...(cancelledBy[m] || [])];
+      // Stripe sales the GL took out of revenue (shipping, sales tax) or added (a stray transfer).
+      for (const x of glBy[m]?.stripeReclass || []) {
+        const net = round2(sum(Object.entries(x.accounts).filter(([a]) => config.revenueAccounts.includes(a)), ([, v]) => v));
+        if (Math.abs(net) < 0.005) continue;
+        const moved = Object.entries(x.accounts).filter(([a, v]) => !config.revenueAccounts.includes(a) && Math.abs(v) >= 0.005);
+        const id = `auto-glstripe-${x.batch}`;
+        if (dismissed[id]) continue;
+        res.adjustments.push({ id, account: 'stripe', type: 'not-revenue', label: `Stripe, per the GL: ${x.desc}`, amount: net, auto: true, gl: x.batch,
+          note: `GL ${x.batch} (${x.date}): ${moved.map(([a, v]) => `${v > 0 ? 'to' : 'from'} ${accountName(a, names)} ${round2(Math.abs(v)).toFixed(2)}`).join(', ')}`,
+          why: 'Stripe’s gross includes sales the GL doesn’t count as revenue — shipping (9050) and sales tax (2042) on merchandise — and the GL sometimes adds a stray Stripe transfer to giving.',
+          detail: [{ date: x.date, amount: net, desc: x.desc }] });
+      }
     }
     res.dit = ditFor(m, rec);
     return res;

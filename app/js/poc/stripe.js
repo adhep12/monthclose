@@ -1,6 +1,14 @@
 // Stripe "monthly statement" CSV (Reports → Balance → monthly summary). Months run across the
 // columns; rows are grouped by section. Revenue for proof of cash = gross payments (cards and
-// other) less gross refunds — fees and disputes are left out, matching how the workbook did it.
+// other) less gross refunds and disputes, which is what the GL books to 4015 ("Monthly Stripe
+// Giving": FY2026 ties to the cent every month once disputes come off). Fees are an expense (8590).
+
+// Also used for CSVs attached before disputes came off (their stored revenue left them in).
+export function stripeRevenue(m) {
+  if (!m) return null;
+  if (m.payments == null) return m.revenue ?? null;
+  return round2((m.payments || 0) + (m.refunds || 0) + (m.disputes || 0));
+}
 
 import { round2 } from '../money.js';
 
@@ -53,11 +61,10 @@ export function parseStripeMonthly(textIn) {
     months: months.map((m, i) => {
       const payments = round2(get('Monthly Activity Summary|Payments (cards)|Gross Amount', i) + get('Monthly Activity Summary|Payments (other)|Gross Amount', i));
       const refunds = round2(get('Monthly Activity Summary|Refunds (cards)|Gross Amount', i) + get('Monthly Activity Summary|Refunds (other)|Gross Amount', i));
-      return {
+      const out = {
         month: m,
         payments,
         refunds,
-        revenue: round2(payments + refunds),
         disputes: round2(get('Monthly Activity Summary|Disputes|Gross Amount', i) + get('Monthly Activity Summary|Dispute Reversals|Gross Amount', i)),
         fees: round2(['Payments (cards)', 'Refunds (cards)', 'Disputes', 'Dispute Reversals', 'Other Adjustments', 'Payments (other)', 'Refunds (other)']
           .reduce((s, sec) => s + get(`Monthly Activity Summary|${sec}|Fees`, i) + get(`Monthly Activity Summary|${sec}|Fees Returned`, i), 0)),
@@ -66,6 +73,8 @@ export function parseStripeMonthly(textIn) {
         startBalance: get('Balance Summary||Start of Month Balance', i),
         endBalance: get('Balance Summary||End of Month Balance', i),
       };
+      out.revenue = stripeRevenue(out);
+      return out;
     }),
   };
 }

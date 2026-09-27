@@ -38,6 +38,7 @@ export function adjKey(a) {
   if (a.id?.startsWith('auto-tr-')) return 'Transfers between accounts';
   if (a.id?.startsWith('auto-ex-')) return 'Deposits that aren’t revenue';
   if (a.id?.startsWith('auto-glrev-')) return 'Revenue the GL took back';
+  if (a.id?.startsWith('auto-glstripe-')) return 'Stripe shipping, sales tax (per the GL)';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
 }
 

@@ -372,7 +372,7 @@ export default async function (main, { month, monthName, user, rerender }) {
       { label: 'From the Cass statements and the GL', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null,
         a.detail?.length ? h('details', { class: 'small' }, h('summary', {}, `${a.detail.length} item${a.detail.length === 1 ? '' : 's'}`),
           h('ul', {}, a.detail.map((d) => h('li', {}, `${d.date} ${d.desc} ${money(d.amount)}`)))) : null) },
-      { label: 'Amount', num: true, cell: (a) => h('span', {}, money(a.amount), a.id.startsWith('auto-glrev-') ? h('div', {}, h('button', { class: 'small-btn', title: 'The GL took this back, but it doesn’t affect this month’s deposits',
+      { label: 'Amount', num: true, cell: (a) => h('span', {}, money(a.amount), /^auto-gl(rev|stripe)-/.test(a.id) ? h('div', {}, h('button', { class: 'small-btn', title: 'Per the GL, but it doesn’t affect this month’s deposits',
         onclick: () => { rec.dismissed = { ...(rec.dismissed || {}), [a.id]: true }; logChange(rec, user, `Left out “${a.label}” ${money(a.amount)}`); changed({ now: true }); } }, 'Leave out')) : null) },
       { label: 'Entered / confirmed', cell: (a) => {
         const o = rec.autoConfirm[a.id] || (rec.autoConfirm[a.id] = {});

@@ -114,6 +114,20 @@ test('a missing wire statement is flagged when Operating shows its sweeps', () =
   assert.deepEqual(missingStatements({ statements: { incoming: {} } }).map((w) => w.kind), ['operating']);
 });
 
+test('Stripe sales the GL moves out of revenue (shipping, sales tax) come off the Stripe line', () => {
+  const g = glBy();
+  // October 2025's shape: merchandise to the merch lines (still revenue), shipping to 9050.
+  g['2026-02'].stripeReclass = [
+    { batch: 'S1', date: '2026-02-28', desc: 'Inventory - Reclass Stripe Purchases from Sales', accounts: { 4015: -24426.57, 4081: 5810, 4084: 15680, 4085: 1330, 4083: 1000, 9050: 606.57 } },
+    { batch: 'S2', date: '2026-02-28', desc: 'reclass of stripe clearing account to giving', accounts: { 4015: 97.5, 1200: -97.5 } },
+    { batch: 'S3', date: '2026-02-28', desc: 'Inventory Reversal - Reclass Stripe Purchases', accounts: { 4015: 7420, 4084: -7420 } },
+  ];
+  const d = depositChecks({ recs: { '2026-02': feb() }, glBy: g })['2026-02'];
+  const adj = d.adjustments.filter((a) => a.id.startsWith('auto-glstripe-'));
+  assert.deepEqual(adj.map((a) => [a.id, a.account, a.amount]), [['auto-glstripe-S1', 'stripe', -606.57], ['auto-glstripe-S2', 'stripe', 97.5]]);
+  assert.match(adj[0].note, /to 9050 .* 606\.57/);
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

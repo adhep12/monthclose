@@ -46,18 +46,22 @@ test('ICS statement ties opening + interest to ending', () => {
   assert.ok(r.ties);
 });
 
-test('Stripe revenue is gross payments less refunds', () => {
+test('Stripe revenue is gross payments less refunds and disputes, as the GL books it', () => {
   const csv = [
     '"","",Month (all times in UTC),2026-07-01,2026-06-01', '"","",Currency,USD,USD', '""', 'Monthly Activity Summary',
     '"",Payments (cards),Count,1,1', '"","",Gross Amount,1000.00,500.00', '"","",Fees,-30.00,-15.00',
     '"",Refunds (cards),Count,1,0', '"","",Gross Amount,-50.00,0.00', '"","",Fees Returned,0.00,0.00',
     '"",Payments (other),Count,1,1', '"","",Gross Amount,200.00,100.00', '"","",Fees,-2.00,-1.00',
+    '"",Disputes,Count,1,0', '"","",Gross Amount,-195.00,0.00', '"","",Fees,-15.00,0.00',
     '""', 'Payouts and Transfers Summary', '"",Payouts and Transfers,Count,1,1', '"","",Amount,1100.00,580.00',
     '""', 'Balance Summary', '"","",Start of Month Balance,10.00,0.00', '"","",End of Month Balance,28.00,10.00'].join('\n');
   const jul = parseStripeMonthly(csv).months.find((m) => m.month === '2026-07');
-  assert.equal(jul.revenue, 1150);
+  assert.equal(jul.revenue, 955); // 1,000 + 200 − 50 refund − 195 dispute
+  assert.equal(jul.disputes, -195);
   assert.equal(jul.payouts, 1100);
-  assert.equal(jul.fees, -32);
+  assert.equal(jul.fees, -47);
+  // A CSV attached before disputes came off is re-read the same way.
+  assert.equal(computePoc({ month: '2026-07', stripe: { ...jul, revenue: 1150 } }).lines.find((l) => l.id === 'stripe').rev, 955);
   assert.equal(jul.endBalance, 28);
 });
 

@@ -76,7 +76,7 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
       if (d.partialMonthEnding && d.partialMonthEnding.slice(0, 7) === month) messages.push({ bad: true, text: `Stripe marks ${monthName(month)} as a partial month in this file — download it again after month end.` });
       rec.stripe = { ...m, ...meta };
       logChange(rec, user, `Attached Stripe CSV ${file.name}: revenue ${money(m.revenue)}, payouts ${money(m.payouts)}`);
-      messages.push({ text: `Stripe: revenue ${money(m.revenue)} (payments ${money(m.payments)}, refunds ${money(m.refunds)})` });
+      messages.push({ text: `Stripe: revenue ${money(m.revenue)} (payments ${money(m.payments)}, refunds ${money(m.refunds)}${m.disputes ? `, disputes ${money(m.disputes)}` : ''})` });
     } else if (r.type === 'ics') {
       rec.ics = { ...d, ...meta };
       logChange(rec, user, `Attached ICS statement ${file.name}: interest ${money(d.interest)}`);
