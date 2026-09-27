@@ -274,19 +274,50 @@ export function statementAdjustments(rec, deposits = null) {
     }
   }
   const reviewable = reviewableDeposits(rec);
+  // Where each exclusion's evidence comes from: a statement rule (the matching payment out of
+  // another account, the wording), the GL, both, or a person.
+  const rules = defaultExclusions(rec);
+  for (const id of deposits?.suspended || []) delete rules[id];
+  const glEx = deposits?.exclusions || {};
+  const manual = manualExclusions(rec);
   for (const [id, v] of Object.entries(effectiveExclusions(rec, deposits))) {
     const t = reviewable.find((x) => x.id === id);
     const info = exclusionInfo(v);
     if (!t || !info) continue;
     const transfer = info.type === 'transfer';
     const what = transfer ? 'Transfer between accounts' : info.type === 'prior-period' ? 'Recognized in another month' : 'Not revenue';
+    const rule = exclusionInfo(rules[id]), gl = exclusionInfo(glEx[id]);
+    // The statement's own wording can say what it is: a named benefits/insurance/tax payer, or for a
+    // transfer, us as the sender ("From BibleProject Via WISE").
+    const words = `${t.desc} ${t.detail || ''}`;
+    const named = NAMED_PAYER.test(words) || (info.type === 'transfer' && FROM_US.test(words));
+    let evidence, note = info.note;
+    if (manual[id]) { evidence = 'typed'; if (gl) note = `${info.note || ''}${info.note ? ' · ' : ''}the GL agrees: ${gl.note}`; }
+    else if (rule && gl) { evidence = 'both'; note = `${rule.note} · the GL agrees: ${gl.note}`; }
+    else if (rule) evidence = 'statement';
+    else if (gl && named) { evidence = 'both'; note = `The statement says so (${[t.desc, t.detail].filter(Boolean).join(' — ')}) · the GL agrees: ${gl.note}`; }
+    else evidence = 'glWhat';
     adj.push({ id: `${transfer ? 'auto-tr-' : 'auto-ex-'}${id}`, account: t.account, type: info.type, label: `${what}: ${t.desc}`,
-      amount: -t.amount, auto: true, note: info.note, gl: info.gl, detail: [{ date: t.date, amount: t.amount, desc: t.desc, note: info.note }] });
+      amount: -t.amount, auto: true, note, gl: info.gl, evidence, detail: [{ date: t.date, amount: t.amount, desc: t.desc, note }] });
   }
-  // Revenue the GL took back out after it was deposited (chargebacks, a deposit reclassed).
-  for (const a of deposits?.adjustments || []) adj.push(a);
+  // From the GL: revenue it took back, Stripe reclasses, fees, refunds, revenue with no cash.
+  for (const a of deposits?.adjustments || []) adj.push({ evidence: 'gl', ...a });
+  for (const a of adj) if (!a.evidence) a.evidence = 'statement';
   return adj;
 }
+
+// Where an adjustment's evidence comes from, for anyone checking it.
+export const EVIDENCE = {
+  statement: { label: 'Statement', hint: 'The bank statement (or Stripe / PayPal / Wise report) shows it and says what it is.' },
+  both: { label: 'Statement + GL', hint: 'The statement shows it, and the GL books it the same way.' },
+  glWhat: { label: 'Statement (GL says what)', hint: 'The statement shows the amount; the GL says what it was.' },
+  gl: { label: 'GL', hint: 'Only the GL shows it — a book entry with no bank document behind it (a reclass, a fee netted out, cash spent before deposit).' },
+  typed: { label: 'Typed', hint: 'Entered by a person, with their note.' },
+};
+// Payers whose name on the statement says what a deposit is: benefits refunds, payroll credits,
+// insurance and expense reimbursements, tax refunds.
+const FROM_US = /\bfrom bible ?project\b|^bible ?project\/|\bBP WISE\b/i;
+const NAMED_PAYER = /WEX COBRA|ADP (WAGE|TAX)|CIGNA|DIVVY REIMBURSEM|PLANE\/REFUND|TAX ?REFUND|IRS TREAS|US TREASURY|FID BKG SVC|MONEYLINE/i;
 
 // ---- Stripe payouts vs Cass --------------------------------------------------------------
 // What Stripe says it paid out in the month (monthly CSV) should equal the STRIPE/TRANSFER
@@ -388,7 +419,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
   const hasFigure = (id) => lines.find((l) => l.id === id)?.rev != null;
   const all = statementAdjustments(rec, deposits);
   const waiting = all.filter((a) => a.account && a.account !== 'cassOp' && !hasFigure(a.account));
-  const adjustments = [...all.filter((a) => !waiting.includes(a)), ...(rec.adjustments || []).map((a) => ({ ...a, auto: false }))];
+  const adjustments = [...all.filter((a) => !waiting.includes(a)), ...(rec.adjustments || []).map((a) => ({ ...a, auto: false, evidence: 'typed' }))];
   const adjTotal = round2(sum(adjustments, (a) => a.amount));
 
   const ditTotal = deposits?.dit ? deposits.dit.total : round2(sum(rec.dit || [], (d) => d.amount));

@@ -1,6 +1,6 @@
 import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } from '../ui.js';
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa, loadPocMonths, listGlActivity } from '../data.js';
-import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions, statementTies, effectiveExclusions } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions, statementTies, effectiveExclusions, EVIDENCE } from '../poc/calc.js';
 import { depositChecks } from '../poc/gl-deposits.js';
 import { attachFiles } from '../poc/attach.js';
 import { stripeCheckBox } from './stripe-check.js';
@@ -410,7 +410,8 @@ export default async function (main, { month, monthName, user, rerender }) {
     stripeHost.replaceChildren(stripeCheckBox(c.stripeCheck, { rec, user, onChange: () => changed({ now: true }) }));
     const stmt = rec.statements.operating || rec.statements.incoming || rec.statements.outgoing;
     mount(autoAdjHost, auto.length ? table([
-      { label: 'From the Cass statements and the GL', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null,
+      { label: 'Evidence', cell: (a) => { const e = EVIDENCE[a.evidence] || EVIDENCE.statement; return h('span', { class: `pill ${a.evidence === 'gl' ? 'warn' : a.evidence === 'glWhat' ? 'info' : 'good'}`, title: e.hint }, e.label); } },
+      { label: 'From the Cass statements and the GL', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null, a.statement ? h('div', { class: 'small wrap' }, a.statement) : null,
         a.detail?.length ? h('details', { class: 'small' }, h('summary', {}, `${a.detail.length} item${a.detail.length === 1 ? '' : 's'}`),
           h('ul', {}, a.detail.map((d) => h('li', {}, `${d.date} ${d.desc} ${money(d.amount)}`)))) : null) },
       { label: 'Amount', num: true, cell: (a) => h('span', {}, money(a.amount), /^auto-gl/.test(a.id) ? h('div', {}, h('button', { class: 'small-btn', title: 'Per the GL, but it doesn’t affect this month’s deposits',

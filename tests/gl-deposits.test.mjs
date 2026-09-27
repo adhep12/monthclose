@@ -222,6 +222,29 @@ test('first month of the GL: last month’s deposits in transit unknown, so this
   assert.equal(again.warnings.find((w) => w.kind === 'dit-twice').text.split(';').length, 3);
 });
 
+test('evidence: what the statements show, what the GL shows, and where both agree', () => {
+  const rec = feb();
+  rec.statements.operating.transactions.push({ id: '5884-cb', section: 'debit', date: '2026-02-19', amount: 25, desc: 'CHARGE BACK' });
+  rec.bankStatements = {
+    paypal: { source: 'paypal', received: 16358.48, revenue: 16358.48, paymentsSent: -15337, sent: [{ date: '2026-02-13', desc: 'General Payment A Donor', amount: 15337 }] },
+    wise: { items: [{ id: 'w1', desc: 'Sent money to BibleProject', amount: -200000, balance: 1, date: '2026-02-19' }] },
+  };
+  const g = glBy();
+  g['2026-02'].paypalRefunds = [{ batch: 'P1', date: '2026-02-28', desc: 'Paypal - Giving, Fees', amount: 15337 }];
+  g['2026-02'].noCashRevenue = [{ batch: 'A1', date: '2026-02-10', desc: 'PKO1 - Air Order', accounts: { 1210: -52, 4084: 52 } }];
+  const c = computePoc(rec, { deposits: depositChecks({ recs: { '2026-02': rec }, glBy: g })['2026-02'] });
+  const ev = (id) => c.adjustments.find((a) => a.id === id)?.evidence;
+  assert.equal(ev('auto-stripe'), undefined); // no Stripe line in this month
+  assert.equal(ev('auto-tr-5892-3'), 'both'); // Wise shows it leaving, Cass arriving, the GL books a transfer
+  assert.match(c.adjustments.find((a) => a.id === 'auto-tr-5892-3').note, /the GL agrees/);
+  assert.equal(ev('auto-ex-5884-5'), 'glWhat'); // the statement has the deposit; only the GL says it's a tax refund
+  assert.equal(ev('auto-glpaypal-P1'), 'both');
+  assert.match(c.adjustments.find((a) => a.id === 'auto-glpaypal-P1').statement, /2026-02-13 General Payment A Donor/);
+  assert.equal(ev('auto-glrev-G9'), 'both'); // the chargeback's returned item is on the statement
+  assert.equal(ev('auto-glnocash-A1'), 'gl'); // sold on account: no bank document
+  assert.equal(ev('auto-incoming'), 'statement');
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

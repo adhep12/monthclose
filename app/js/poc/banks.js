@@ -118,7 +118,27 @@ export function parsePaypal(lines) {
   };
   res.revenue = paypalRevenue(res);
   res.ties = paypalTies(res);
+  res.sent = paypalSent(lines);
   return res;
+}
+
+// Each USD payment out, from the statement's transaction history: "General Payment <name>" then
+// "2/13/26 -15,337.00 0.00 -15,337.00". Used to show a refund the GL books is on the statement too.
+function paypalSent(lines) {
+  const sent = [];
+  let usd = false;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].text;
+    const sec = t.match(/^Transaction History - (\w+)/);
+    if (sec) { usd = sec[1] === 'USD'; continue; }
+    if (!usd) continue;
+    const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}) (-[\d,]+\.\d{2}) (-?[\d,]+\.\d{2}) (-?[\d,]+\.\d{2})$/);
+    if (!m) continue;
+    const desc = (lines[i - 1]?.text || '').trim();
+    if (/currency conversion/i.test(desc)) continue;
+    sent.push({ date: iso(2000 + Number(m[3]), Number(m[1]), Number(m[2])), desc, amount: Math.abs(amt(m[4])) });
+  }
+  return sent;
 }
 
 // The PayPal line is what the statement calls "Payments received". Money given back to donors is

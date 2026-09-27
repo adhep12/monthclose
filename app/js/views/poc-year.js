@@ -6,7 +6,7 @@
 import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
@@ -508,12 +508,26 @@ export default async function (main, { user, rerender }) {
           { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
           { label: 'Type', cell: (x) => ADJUSTMENT_TYPES[x.a.type] || (x.a.auto ? 'From the statements' : 'Entered') },
           { label: 'Date', cell: (x) => x.date || '' },
-          { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, what(x)) },
+          { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, what(x), x.a.statement ? h('div', { class: 'small muted' }, x.a.statement) : null) },
           { label: 'Amount', num: true, cell: (x) => money(x.shown) },
+          { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
           ...(items.some((x) => extra(x)) ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small' }, extra(x)) }] : []),
         ], items, { foot: (c) => (c.label === 'Amount' ? money(round2(sum(list, (a) => a.amount))) : c.label === 'Account' ? 'Total' : '') }),
+        evidenceSummary(list),
         h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, `Change these on the ${monthName(m)} page →`)));
     }, { wide: true });
+  }
+
+  // ---- Evidence --------------------------------------------------------------------------------
+  function evidencePill(e) {
+    const x = EVIDENCE[e] || EVIDENCE.statement;
+    return h('span', { class: `pill ${e === 'gl' ? 'warn' : e === 'typed' ? 'neutral' : e === 'glWhat' ? 'info' : 'good'}`, title: x.hint }, x.label);
+  }
+  function evidenceSummary(list) {
+    const by = {};
+    for (const a of list) by[a.evidence || 'statement'] = round2((by[a.evidence || 'statement'] || 0) + Math.abs(a.amount));
+    const parts = Object.keys(EVIDENCE).filter((k) => by[k]).map((k) => `${EVIDENCE[k].label} ${money(by[k], { dash: false })}`);
+    return parts.length > 1 || by.gl ? h('p', { class: 'small muted' }, `Evidence: ${parts.join(' · ')}.`) : null;
   }
 
   // ---- Deposits in transit panel -------------------------------------------------------------
@@ -626,14 +640,14 @@ export default async function (main, { user, rerender }) {
       sheetRows.push([r.label, r.rev ? ytd(r.rev) : null, r.int ? ytd(r.int) : null, ...cols.flatMap(({ c }) => [at(r.rev, c), at(r.int, c)])]);
     }
 
-    const adj = [['Month', 'Line', 'Account', 'Type', 'Date', 'Description', 'Amount', 'Note', 'Entered by', 'Entered at']];
+    const adj = [['Month', 'Line', 'Account', 'Type', 'Date', 'Description', 'Amount', 'Evidence', 'Note', 'Statement', 'Entered by', 'Entered at']];
     const src = [['Month', 'Account', 'Revenue', 'Interest', 'Ending balance', 'Source', 'Entered / attached by', 'When', 'Confirmation']];
     const checks = [['Month', 'Check', 'Result', 'Detail']];
     for (const { m, c, rec } of cols) {
       if (!c) continue;
       for (const a of c.adjustments) {
         const items = a.detail?.length ? a.detail.map((d) => ({ date: d.date, desc: d.desc, amount: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, amount: a.amount }];
-        for (const it of items) adj.push([monthName(m), adjKey(a), label(a.account || 'cassOp'), ADJUSTMENT_TYPES[a.type] || (a.auto ? 'From the statements' : ''), it.date || '', it.desc, it.amount, a.note || '', a.enteredBy || '', a.enteredAt ? when(a.enteredAt) : '']);
+        for (const it of items) adj.push([monthName(m), adjKey(a), label(a.account || 'cassOp'), ADJUSTMENT_TYPES[a.type] || (a.auto ? 'From the statements' : ''), it.date || '', it.desc, it.amount, (EVIDENCE[a.evidence] || EVIDENCE.statement).label, a.note || '', a.statement || '', a.enteredBy || '', a.enteredAt ? when(a.enteredAt) : '']);
       }
       for (const l of c.lines) {
         if (l.rev == null && l.int == null && l.ending == null) continue;
@@ -657,6 +671,8 @@ export default async function (main, { user, rerender }) {
         checks.push([monthName(m), 'Deposits vs GL', open.length ? `${open.length} NOT IN THE GL` : 'All matched',
           `${dep.lines.filter((x) => x.match).length} of ${dep.lines.length} matched; ${Object.keys(dep.exclusions).length} not revenue per the GL${open.length ? `; not in the GL: ${open.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join(', ')}` : ''}`]);
       }
+      { const glOnly = c.adjustments.filter((a) => a.evidence === 'gl');
+        if (glOnly.length) checks.push([monthName(m), 'Evidence: GL only', money(round2(sum(glOnly, (a) => Math.abs(a.amount))), { dash: false }), `${glOnly.length} adjustments no statement shows: ${glOnly.map((a) => `${adjKey(a)} ${money(a.amount, { dash: false })}`).join('; ')}`]); }
       if (dep?.conflicts?.length) checks.push([monthName(m), 'Rule vs GL', `${dep.conflicts.length} TO DECIDE`, dep.conflicts.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}: rule says ${x.rule.type}, GL ${x.match.batch} says revenue`).join('; ')]);
       if (dep?.keyBank) { const kl = c.lines.find((x) => x.id === 'keyOp'); if (kl?.rev != null) checks.push([monthName(m), 'KeyBank deposits vs GL', Math.abs((kl?.rev || 0) - dep.keyBank.glIn) < 0.005 ? 'Match' : 'DIFFERENT', `Statement ${money(kl?.rev || 0, { dash: false })}; GL into 1061 ${money(dep.keyBank.glIn, { dash: false })}`]); }
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
@@ -665,7 +681,7 @@ export default async function (main, { user, rerender }) {
     try {
       await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
         { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
-        { name: 'Adjustments detail', rows: adj, cols: [14, 32, 18, 20, 11, 60, 14, 30, 16, 20] },
+        { name: 'Adjustments detail', rows: adj, cols: [14, 32, 18, 20, 11, 60, 14, 22, 50, 50, 16, 20] },
         { name: 'Sources', rows: src, cols: [14, 26, 15, 13, 16, 44, 20, 20, 32] },
         { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
       ]);

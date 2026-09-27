@@ -36,6 +36,8 @@ const ACCOUNT_NAMES = {
 };
 export const accountName = (a, names = {}) => `${a} ${names[a] || ACCOUNT_NAMES[a] || ''}`.trim();
 const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Money leaving Cass (not the sweeps between its own accounts), for matching a chargeback.
+const cassDebits = (rec) => ['operating', 'incoming', 'outgoing'].flatMap((k) => (rec?.statements?.[k]?.transactions || []).filter((t) => t.section !== 'credit' && !isSweep(t)));
 
 // What the GL booked a batch to, in proof of cash terms.
 export function glKind(r, config = DEFAULT_POC_CONFIG, names = {}) {
@@ -294,7 +296,11 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     if (receipts) {
       for (const rev of receipts.filter((r) => r.amount < 0)) {
         const id = `auto-glrev-${rev.batch}`;
+        // A chargeback is on the Cass statement too: the returned item comes back out as a debit.
+        // (A deposit made at month end comes back on next month's statement.)
+        const back = [...cassDebits(rec), ...cassDebits(recs[addMonths(m, 1)])].find((t) => Math.abs(t.amount + rev.amount) < 0.005 && Math.abs(Date.parse(t.date) - Date.parse(rev.date)) / DAY <= 14);
         const adj = { id, account: 'cassOp', type: 'not-revenue', label: `Revenue the GL took back: ${rev.desc}`, amount: rev.amount, auto: true, gl: rev.batch,
+          evidence: back ? 'both' : 'gl', statement: back ? `Cass statement: ${back.date} ${back.desc} ${money2(back.amount)} out` : null,
           note: `GL ${rev.batch} (${rev.date}) moves ${round2(-rev.amount)} out of revenue (${glKind({ accounts: Object.fromEntries(Object.entries(rev.accounts).map(([a, v]) => [a, -v])) }, config, names).label}).`,
           why: 'The deposit is on a statement as revenue, but the GL took it back out — a chargeback, or a deposit reclassed to another account.',
           detail: [{ date: rev.date, amount: -rev.amount, desc: rev.desc }] };
@@ -363,8 +369,14 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     for (const r of glBy[m]?.paypalRefunds || []) {
       const id = `auto-glpaypal-${r.batch}`;
       if (dismissed[id]) continue;
+      // The PayPal statement's transaction history lists the payment back: date, payee, amount.
+      const pp = rec.bankStatements?.paypal;
+      const onStmt = (pp?.sent || []).find((s) => Math.abs(s.amount - r.amount) < 0.005);
+      const inTotal = !onStmt && pp && Math.abs(Math.min(0, pp.paymentsSent || 0)) >= r.amount - 0.005;
       res.adjustments.push({ id, account: 'paypal', type: 'refund', label: 'PayPal: given back to donors', amount: -r.amount, auto: true, gl: r.batch,
-        note: `GL ${r.batch} (${r.date}) books a “Payment Refund” of ${money2(r.amount)} against 4012; on the PayPal statement it’s part of “Payments sent”.`,
+        evidence: onStmt || inTotal ? 'both' : 'gl',
+        statement: onStmt ? `PayPal statement: ${onStmt.date} ${onStmt.desc} −${money2(onStmt.amount)}` : inTotal ? `PayPal statement: “Payments sent” ${money2(pp.paymentsSent)} (attach the statement again to see each payment)` : null,
+        note: `GL ${r.batch} (${r.date}) books a “Payment Refund” of ${money2(r.amount)} against 4012${onStmt ? `; the PayPal statement shows it: ${onStmt.date} ${onStmt.desc} −${money2(onStmt.amount)}` : '; on the PayPal statement it’s part of “Payments sent”'}.`,
         why: 'The PayPal statement’s “Payments received” is before any gift was given back; the GL takes refunds off revenue.',
         detail: [{ date: r.date, amount: r.amount, desc: r.desc }] });
     }
