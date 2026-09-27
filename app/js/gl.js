@@ -41,3 +41,37 @@ export function parseGlRegister(XLSX, wb) {
   return { periods: Object.values(periods).sort((x, y) => x.month.localeCompare(y.month)), lines,
     runAt: header('Date:'), fromPeriod: header('From Period:'), toPeriod: header('To Period:') };
 }
+
+// Acumatica "Statement of Activities - Comparative" (Excel). Whole dollars. We keep each line's
+// period-to-date and year-to-date actuals, plus the totals proof of cash compares against:
+//   revenue  = Total Contributions + Total Merchandise Revenue + Total Other Income
+//   interest = −(Net Interest Expense/Income)   (income shows as negative on the report)
+export function parseStatementOfActivities(XLSX, wb) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const at = (r, c) => cellAt(XLSX, ws, r, c);
+  let asOf = null;
+  for (let r = 0; r < 8 && !asOf; r++) {
+    const m = text(at(r, 0)).match(/As of\s+(\w+)\s+(\d{1,2}),\s+(\d{4})/i);
+    if (m) {
+      const mi = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'].indexOf(m[1].toLowerCase()) + 1;
+      asOf = `${m[3]}-${String(mi).padStart(2, '0')}`;
+    }
+  }
+  if (!asOf || !/statement of activ/i.test(`${text(at(0, 0))} ${text(at(1, 0))}`)) throw new Error('This doesn’t look like the Statement of Activities export (no “As of …” date).');
+  const lines = [];
+  const totals = {};
+  for (let r = 6; r <= range.e.r; r++) {
+    const group = text(at(r, 0)), line = text(at(r, 1));
+    const ptd = num(at(r, 2)), ytd = num(at(r, 5));
+    if (line) lines.push({ line, ptd: ptd ?? 0, ytd: ytd ?? 0, budget: num(at(r, 3)) });
+    else if (group && (ptd != null || ytd != null)) totals[group] = { ptd: ptd ?? 0, ytd: ytd ?? 0 };
+  }
+  const ptdOf = (label) => totals[label]?.ptd ?? 0;
+  const interestLine = lines.find((l) => /net interest/i.test(l.line));
+  return {
+    month: asOf, lines, totals,
+    revenueTotal: ptdOf('Total Contributions') + ptdOf('Total Merchandise Revenue') + ptdOf('Total Other Income'),
+    interestTotal: interestLine ? -interestLine.ptd : 0,
+  };
+}

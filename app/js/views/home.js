@@ -35,9 +35,9 @@ export default async function (main, { month, monthName }) {
             h('span', { class: 'muted small' }, close?.batch ? `Batch ${close.batch}` : `${assets.length} assets in the register`))
           : h('p', { class: 'muted' }, 'Import the FA listing to get started.'),
         assets.length ? '#/fa/je' : '#/fa/import', assets.length ? 'Open the JE' : 'Import FA listing'),
-      card('CD interest', statusPill('Coming next', 'neutral'), h('p', { class: 'muted' }, 'CDARS ladder, monthly accrued and realized interest, and the 1150/4050 entry.')),
+      card('CD schedule', statusPill('Ready', 'info'), h('p', { class: 'muted' }, 'CDARS ladder, interest earned each month, the 1150/4050 entry and the GL 1150 tie-out.'), '#/cds', 'Open the CD schedule'),
       card('Proof of cash',
-        poc?.reviewedBy ? statusPill('Reviewed', 'good') : poc?.preparedBy ? statusPill('Prepared', 'info') : poc ? statusPill('In progress', 'warn') : statusPill('To do', 'warn'),
+        poc?.signoff?.reviewed ? statusPill('Reviewed', 'good') : poc?.signoff?.prepared ? statusPill('Prepared', 'info') : poc ? statusPill('In progress', 'warn') : statusPill('To do', 'warn'),
         pc && pc.diffRev != null
           ? h('p', {}, h('span', { class: 'big' }, money(pc.diffRev)), h('br'), h('span', { class: 'muted small' }, `revenue difference · ${Object.keys(poc.statements || {}).length}/3 Cass statements`))
           : h('p', { class: 'muted' }, poc ? `${Object.keys(poc.statements || {}).length}/3 Cass statements attached${glAct ? '' : ' · GL not uploaded'}` : 'Attach the Cass statements and fill in the other bank lines.'),

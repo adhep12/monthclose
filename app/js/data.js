@@ -6,6 +6,8 @@
 //   poc-months      proof of cash, key = 'YYYY-MM'
 //   gl-activity     net activity per account from a GL register upload, key = 'YYYY-MM'
 //   statements      (files) the bank statement PDFs behind each proof of cash
+//   soa             Statement of Activities uploads, key = 'YYYY-MM'
+//   cds             the CDARS schedule, one record per CD, key = CD account ID
 
 import * as store from './store.js';
 import { DEFAULT_FA_CONFIG } from './fa/je.js';
@@ -136,4 +138,27 @@ export async function listGlActivity() {
 
 export async function saveGlActivity(rec) {
   await store.upsert('gl-activity', rec.month, rec);
+}
+
+// ---- CD schedule ----------------------------------------------------------------------------
+
+export async function loadCds() {
+  return store.listAll('cds');
+}
+
+export async function saveCd(cd) {
+  const { key, ...data } = cd;
+  await store.upsert('cds', cd.id, data, { tag: cd.status || 'active' });
+}
+
+export async function loadSoa(month) {
+  return store.get('soa', month);
+}
+
+export async function listSoa() {
+  return store.listAll('soa');
+}
+
+export async function saveSoa(rec) {
+  await store.upsert('soa', rec.month, rec);
 }

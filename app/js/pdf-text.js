@@ -1,5 +1,6 @@
-// PDF → lines of text, using the vendored pdf.js. Items on the same baseline (±2pt) become one
-// line, left to right. Parsers work on these lines, so they don't depend on pdf.js themselves.
+// PDF → lines of text, using the vendored pdf.js — its "legacy" build, which runs in older
+// browsers too (the modern build needs JS features some browsers don't have yet). Items on the
+// same baseline (±2pt) become one line, left to right. Parsers work on these lines, so they don't depend on pdf.js themselves.
 
 let pdfjsPromise = null;
 

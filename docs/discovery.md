@@ -198,6 +198,33 @@ maturity) plus the ICS balance. Matured CDs show $0. What it gives us:
 Not in it: rates, effective dates (= prior CD's maturity), or history — so the app keeps the CD
 ladder itself and takes a snapshot at each month end.
 
+## Per-account statements, sign-off and CD schedule (Sept 27, later)
+
+Every bank account gets a card on the proof of cash page: revenue, interest and ending balance
+from its statement (or typed), the GL cash account's month-end balance from the trial balance,
+who entered the figures and when, and who confirmed them and when. A confirmation stores the
+values it confirmed; if a number changes afterwards it shows as "changed since confirmed".
+Adjustments carry account, type (transfer, timing, refund, not revenue, other period), date and
+who entered/confirmed them. Every change is written to the month's activity log.
+
+Statement readers (all verified against July 2026):
+- **Stripe** monthly CSV — revenue = gross payments (cards + other) less refunds: 1,652,932.20 ✓;
+  payouts 1,491,737.76 = the Cass Stripe transfers ✓. Stripe vs GL 4015 differs by 10,533.23.
+- **ICS** PDF — interest capitalized 9,215.38 ✓.
+- **CDARS** PDFs — per CD: effective, maturity, rate, balance, interest earned since the last
+  statement, interest paid at maturity. July: 4256 4,315.56, 5582 15,161.21 (paid 19,290.27),
+  6803 12,424.83, 6432 6,211.40 ✓.
+- **Wise** (1,336.87 received, 633.06 interest), **PayPal** (payments received 17,170.54),
+  **KeyBank** checking and money market (0.14 interest) ✓.
+- **Delap / Tschetter**: typed. Gain = ending value − last month's ending − net money moved in.
+- **Statement of Activities – Comparative** (Excel): revenue = contributions + merchandise +
+  other income; interest = −net interest. Aug: 4,299,675 / 163,354 vs GL register
+  4,299,675.83 / 163,354.41 (rounding only).
+
+CD schedule: imported from the rolling CDARS workbook, then kept current from statements. FY26
+monthly accrued and realized interest match the workbook exactly, and at Aug 31 principal of open
+CDs + interest earned but not paid = 12,879,281.08 = GL 1150 on the trial balance.
+
 ## Open questions
 
 1. What's the BibleProject group name for accounting (for `group:` access)?

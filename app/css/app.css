@@ -166,3 +166,18 @@ details summary { cursor: pointer; font-weight: 600; margin: .5rem 0; }
 textarea { font: inherit; }
 .cards.wide { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
 .break { overflow-wrap: anywhere; }
+.stamp { font-size: .78rem; line-height: 1.35; display: flex; flex-direction: column; gap: .15rem; }
+.warn-text { color: var(--warn); }
+.small-btn { padding: .15rem .55rem; font-size: .78rem; }
+button.link { border: 0; background: none; color: var(--accent); padding: 0 .3rem; font-size: inherit; cursor: pointer; text-decoration: underline; }
+.acct-card { display: flex; flex-direction: column; gap: .5rem; }
+.acct-card .figs { display: grid; grid-template-columns: auto 1fr; gap: .3rem .75rem; align-items: center; font-variant-numeric: tabular-nums; }
+.acct-card .figs .num { text-align: right; }
+.acct-card .figs input { width: 100%; }
+.acct-card.confirmed { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.acct-card.stale { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.log { font-size: .82rem; max-height: 22rem; overflow: auto; }
+.log li { margin: .15rem 0; }
+td.src { font-size: .7rem; color: var(--muted); }
+.cell-statement { color: var(--good); }
+.cell-typed { color: var(--warn); }

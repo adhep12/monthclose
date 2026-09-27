@@ -1,12 +1,13 @@
 import { h, mount, statusPill } from '../ui.js';
-import { loadPocMonths, listGlActivity, loadPocConfig } from '../data.js';
+import { loadPocMonths, listGlActivity, loadPocConfig, loadCds } from '../data.js';
+import { monthSummary } from '../cd/schedule.js';
 import { computePoc, glFigures } from '../poc/calc.js';
 import { money, round2, sum } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName } from '../fiscal.js';
 
 export default async function (main, { month, setMonth }) {
   const fy = fiscalYear(month);
-  const [recs, glActs, cfg] = await Promise.all([loadPocMonths(), listGlActivity(), loadPocConfig()]);
+  const [recs, glActs, cfg, cds] = await Promise.all([loadPocMonths(), listGlActivity(), loadPocConfig(), loadCds()]);
   const byMonth = Object.fromEntries(recs.map((r) => [r.month, r]));
   const glBy = Object.fromEntries(glActs.map((g) => [g.month, g]));
   const months = Array.from({ length: 12 }, (_, i) => addMonths(fyStart(fy), i));
@@ -15,7 +16,8 @@ export default async function (main, { month, setMonth }) {
     const rec = byMonth[m];
     if (!rec || rec.source?.ditOnly) return { m, c: null };
     const gl = glFigures({ glActivity: glBy[m], month: m, config: cfg });
-    return { m, rec, c: computePoc(rec, { prior: byMonth[addMonths(m, -1)], gl }) };
+    const cd = { ...monthSummary(cds, m), hasData: cds.some((x) => x.earned?.[m]) };
+    return { m, rec, c: computePoc(rec, { prior: byMonth[addMonths(m, -1)], gl, cd }) };
   });
   const have = cols.filter((x) => x.c);
   const ytd = (f) => round2(sum(have, (x) => f(x.c) || 0));
@@ -41,7 +43,7 @@ export default async function (main, { month, setMonth }) {
     h('div', { class: 'table-wrap' }, h('table', {},
       h('thead', {}, h('tr', {}, h('th', {}, ''), cols.map(({ m, rec }) => h('th', { class: 'num' },
         h('a', { href: '#/poc', onclick: (e) => { e.preventDefault(); setMonth(m); location.hash = '#/poc'; } }, monthName(m, { short: true }).split(' ')[0]),
-        rec?.reviewedBy ? h('div', {}, statusPill('Reviewed', 'good')) : rec?.preparedBy ? h('div', {}, statusPill('Prepared', 'info')) : null)),
+        rec?.signoff?.reviewed || rec?.reviewedBy ? h('div', {}, statusPill('Reviewed', 'good')) : rec?.signoff?.prepared || rec?.preparedBy ? h('div', {}, statusPill('Prepared', 'info')) : null)),
         h('th', { class: 'num' }, 'YTD'))),
       h('tbody', {}, rows.map(([label, f, cls]) => h('tr', {},
         h('td', {}, cls ? h('strong', {}, label) : label),

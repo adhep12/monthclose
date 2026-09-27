@@ -7,6 +7,8 @@
     "settings": { "access": "shared" },
     "poc-months": { "access": "shared" },
     "gl-activity": { "access": "shared" },
-    "statements": { "access": "shared" }
+    "statements": { "access": "shared" },
+    "cds": { "access": "shared" },
+    "soa": { "access": "shared" }
   }
 }

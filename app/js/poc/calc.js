@@ -13,18 +13,38 @@
 
 import { round2, sum } from '../money.js';
 
+// gl = the cash account in Acumatica whose month-end balance the statement's ending balance
+// should match. revenueGl = the revenue line on the statement of activities it feeds, where the
+// match is one-to-one.
 export const BANK_SOURCES = [
-  { id: 'wise', label: 'Wise' },
-  { id: 'paypal', label: 'PayPal' },
-  { id: 'stripe', label: 'Stripe' },
-  { id: 'keyOp', label: 'KeyBank Operating' },
-  { id: 'keyMM', label: 'KeyBank Money Market' },
-  { id: 'ics', label: 'Cass Money Market / ICS' },
-  { id: 'cd', label: 'Cass CD' },
-  { id: 'delap', label: 'Delap Fidelity Investment' },
-  { id: 'tschetter', label: 'Tschetter Group' },
-  { id: 'cassOp', label: 'Cass Operating' },
+  { id: 'cassOp', label: 'Cass Operating', gl: '1100', hint: 'Operating, Incoming and Outgoing statements' },
+  { id: 'stripe', label: 'Stripe', gl: '1015', revenueGl: '4015', hint: 'Stripe monthly statement CSV' },
+  { id: 'paypal', label: 'PayPal', gl: '1012', revenueGl: '4012' },
+  { id: 'wise', label: 'Wise', gl: '1013' },
+  { id: 'keyOp', label: 'KeyBank Operating', gl: '1061' },
+  { id: 'keyMM', label: 'KeyBank Money Market', gl: '1060' },
+  { id: 'ics', label: 'Cass Money Market / ICS', gl: '1160', hint: 'ICS monthly statement PDF' },
+  { id: 'cd', label: 'Cass CD (CDARS)', gl: '1150', hint: 'From the CD schedule' },
+  { id: 'delap', label: 'Delap Fidelity Investment', gl: '1170', method: 'balance' },
+  { id: 'tschetter', label: 'Tschetter Group', gl: '1171', method: 'balance' },
 ];
+
+// Investment accounts: the month's gain/interest is the change in value, less money moved in
+// (or plus money taken out). Last month's ending value comes from last month's proof of cash.
+export function balanceMethodInterest(b = {}, priorB = {}) {
+  const prior = b.priorEnding ?? priorB?.ending ?? null;
+  if (b.ending == null || prior == null) return null;
+  return round2(b.ending - prior - (b.netDeposits || 0));
+}
+
+export const ADJUSTMENT_TYPES = {
+  transfer: 'Transfer between accounts',
+  timing: 'Timing',
+  refund: 'Refund / return',
+  'not-revenue': 'Deposit that isn’t revenue',
+  'prior-period': 'Recognized in another month',
+  other: 'Other',
+};
 
 export const DEFAULT_POC_CONFIG = {
   // GL revenue = credits less debits in these accounts. CC rewards (4077) are included — the
@@ -97,10 +117,14 @@ export function statementAdjustments(rec) {
   return adj;
 }
 
-export function glFigures({ glActivity, tb, month, config = DEFAULT_POC_CONFIG }) {
+export function glFigures({ glActivity, tb, soa = null, month, config = DEFAULT_POC_CONFIG }) {
   // Net debit per account for the month: from a GL register upload, or failing that a TB for
-  // the same period (its Debit/Credit columns are the period's activity).
+  // the same period (its Debit/Credit columns are the period's activity), or failing that the
+  // statement of activities (whole dollars, totals only).
   let net = null, source = null;
+  if (!glActivity?.accounts && !(tb && tb.month === month) && soa) {
+    return { source: `Statement of activities (${soa.fileName || 'upload'})`, revenue: {}, interest: {}, revenueTotal: soa.revenueTotal, interestTotal: soa.interestTotal, soaOnly: true };
+  }
   if (glActivity?.accounts) { net = glActivity.accounts; source = `GL register (${glActivity.fileName || 'upload'})`; }
   else if (tb && tb.month === month) {
     net = Object.fromEntries(Object.entries(tb.accounts).map(([a, x]) => [a, x.debit - x.credit]));
@@ -113,14 +137,42 @@ export function glFigures({ glActivity, tb, month, config = DEFAULT_POC_CONFIG }
   return { source, revenue, interest, revenueTotal: round2(sum(Object.values(revenue))), interestTotal: round2(sum(Object.values(interest))) };
 }
 
-export function computePoc(rec, { prior = null, gl = null } = {}) {
-  const bank = rec.bank || {};
+// Figures that come from an attached statement (or the CD schedule) rather than being typed.
+export function autoFigures(rec, cd = null, prior = null) {
   const st = rec.statements || {};
+  const auto = {};
+  for (const [id, b] of Object.entries(rec.bankStatements || {})) {
+    auto[id] = { rev: b.revenue, int: b.interest, ending: b.ending, from: `${b.fileName || 'statement'}`, by: b.attachedBy, at: b.attachedAt };
+  }
+  for (const s of BANK_SOURCES.filter((x) => x.method === 'balance')) {
+    const b = rec.bank?.[s.id];
+    const int = balanceMethodInterest(b, prior?.bank?.[s.id]);
+    if (int != null) auto[s.id] = { int, from: 'change in balance', by: b.enteredBy, at: b.enteredAt, computed: true };
+  }
+  if (st.operating) auto.cassOp = { rev: st.operating.summary.credits.total, ending: st.operating.summary.ending, from: 'Cass statements', by: st.operating.attachedBy, at: st.operating.attachedAt };
+  if (rec.stripe) auto.stripe = { rev: rec.stripe.revenue, ending: rec.stripe.endBalance, from: 'Stripe CSV', by: rec.stripe.attachedBy, at: rec.stripe.attachedAt };
+  if (rec.ics) auto.ics = { int: rec.ics.interest, ending: rec.ics.ending, from: 'ICS statement', by: rec.ics.attachedBy, at: rec.ics.attachedAt };
+  if (cd?.hasData) auto.cd = { int: cd.realized, ending: cd.balance, from: 'CD schedule', by: cd.by, at: cd.at };
+  return auto;
+}
+
+export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances = null } = {}) {
+  const bank = rec.bank || {};
+  const auto = autoFigures(rec, cd, prior);
   const lines = BANK_SOURCES.map((s) => {
-    let rev = bank[s.id]?.rev ?? null;
-    let from = rev == null ? null : 'typed';
-    if (s.id === 'cassOp' && st.operating) { rev = st.operating.summary.credits.total; from = 'statement'; }
-    return { ...s, rev, int: bank[s.id]?.int ?? null, note: bank[s.id]?.note || '', from };
+    const a = auto[s.id];
+    const b = bank[s.id] || {};
+    const pick = (k) => (a && a[k] !== undefined ? a[k] : b[k] ?? null);
+    const rev = pick('rev'), int = pick('int'), ending = pick('ending');
+    const glBal = glBalances && s.gl ? glBalances[s.gl] ?? null : null;
+    return {
+      ...s, rev, int, ending, note: b.note || '',
+      from: a ? a.from : (b.rev != null || b.int != null || b.ending != null ? 'typed' : null),
+      enteredBy: a ? a.by : b.enteredBy, enteredAt: a ? a.at : b.enteredAt,
+      glBalance: glBal,
+      balanceDiff: ending == null || glBal == null ? null : round2(ending - glBal),
+      values: { rev, int, ending },
+    };
   });
   const bankRev = round2(sum(lines, (l) => l.rev));
   const bankInt = round2(sum(lines, (l) => l.int));
@@ -132,7 +184,9 @@ export function computePoc(rec, { prior = null, gl = null } = {}) {
   const priorDit = prior ? round2(sum(prior.dit || [], (d) => d.amount)) : null;
   const ditChange = priorDit == null ? null : round2(ditTotal - priorDit);
 
-  const t = rec.timing || {};
+  // Accrued and realized CD interest come from the CD schedule when it has the month.
+  const t = { ...(rec.timing || {}) };
+  if (cd?.hasData) { t.accrued = cd.accrued; t.realizedPrior = cd.realized; t.fromSchedule = true; }
   const revAdjusted = round2(bankRev + adjTotal + (ditChange || 0) + (t.restricted || 0) + (t.merchAR || 0));
   const intAdjusted = round2(bankInt + (t.accrued || 0) - (t.realizedPrior || 0));
 

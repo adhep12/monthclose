@@ -12,6 +12,7 @@ const routes = [
   [/^#\/poc$/, () => import('./views/poc.js')],
   [/^#\/poc\/ytd$/, () => import('./views/poc-ytd.js')],
   [/^#\/poc\/import$/, () => import('./views/poc-import.js')],
+  [/^#\/cds$/, () => import('./views/cds.js')],
   [/^#\/tb$/, () => import('./views/tb.js')],
   [/^#\/settings$/, () => import('./views/settings.js')],
 ];
@@ -19,6 +20,7 @@ const routes = [
 const NAV = [
   ['#/', 'Close overview'],
   ['#/poc', 'Proof of cash'],
+  ['#/cds', 'CD schedule'],
   ['#/fa', 'Fixed assets'],
   ['#/fa/je', 'Depreciation JE'],
   ['#/tb', 'Acumatica uploads'],

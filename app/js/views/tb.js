@@ -1,6 +1,6 @@
 import { h, mount, table, toast, fileButton } from '../ui.js';
-import { loadTrialBalances, saveTrialBalance, removeTrialBalance, listGlActivity, saveGlActivity } from '../data.js';
-import { parseGlRegister } from '../gl.js';
+import { loadTrialBalances, saveTrialBalance, removeTrialBalance, listGlActivity, saveGlActivity, listSoa, saveSoa } from '../data.js';
+import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
 import { readWorkbook } from '../xlsx-io.js';
 import { parseTrialBalance } from '../tb.js';
 import { money, round2, sum } from '../money.js';
@@ -8,7 +8,8 @@ import { addMonths, monthName } from '../fiscal.js';
 import { explain } from '../store.js';
 
 export default async function (main, { user, rerender }) {
-  const [tbsRaw, glActs] = await Promise.all([loadTrialBalances(), listGlActivity()]);
+  const [tbsRaw, glActs, soas] = await Promise.all([loadTrialBalances(), listGlActivity(), listSoa()]);
+  const soaOut = h('div');
   const tbs = tbsRaw.sort((a, b) => b.month.localeCompare(a.month));
   const out = h('div');
   const glOut = h('div');
@@ -38,6 +39,16 @@ export default async function (main, { user, rerender }) {
     } catch (err) {
       mount(glOut, h('div', { class: 'notice bad' }, err.message || String(err)));
     }
+  }
+
+  async function onSoaFile(file) {
+    try {
+      const { XLSX, wb } = await readWorkbook(file);
+      const soa = parseStatementOfActivities(XLSX, wb);
+      await saveSoa({ ...soa, fileName: file.name, uploadedBy: user, uploadedAt: new Date().toISOString() });
+      toast(`Saved the ${monthName(soa.month)} statement of activities.`);
+      rerender();
+    } catch (err) { mount(soaOut, h('div', { class: 'notice bad' }, err.message || String(err))); }
   }
 
   async function onFile(file) {
@@ -87,6 +98,16 @@ export default async function (main, { user, rerender }) {
       { label: 'From', cell: (g) => g.fileName || '' },
       { label: 'Uploaded', cell: (g) => `${(g.uploadedAt || '').slice(0, 10)} · ${g.uploadedBy || ''}` },
     ], glActs.sort((a, b) => b.month.localeCompare(a.month)), { empty: 'None yet.' }),
+    h('h2', {}, 'Statement of activities'),
+    h('p', { class: 'muted' }, 'Upload the Statement of Activities – Comparative (Excel) for the month. Proof of cash checks its revenue and interest against the report.'),
+    h('div', { class: 'row' }, fileButton('Upload statement of activities…', '.xlsx,.xls', onSoaFile, { class: 'primary' })),
+    soaOut,
+    table([
+      { label: 'Month', cell: (x) => monthName(x.month) },
+      { label: 'Revenue', num: true, cell: (x) => money(x.revenueTotal) },
+      { label: 'Net interest', num: true, cell: (x) => money(x.interestTotal) },
+      { label: 'Uploaded', cell: (x) => `${(x.uploadedAt || '').slice(0, 10)} · ${x.uploadedBy || ''}` },
+    ], soas.sort((a, b) => b.month.localeCompare(a.month)), { empty: 'None yet.' }),
     h('h2', {}, 'Trial balances'),
     h('p', { class: 'muted' }, 'Upload Acumatica’s Trial Balance Summary for the month you’re closing. Its Beginning Balance column is the prior month’s closing balance no matter when in the month it’s run, which is what the true-ups compare against. Re-upload any time to refresh it.'),
     h('div', { class: 'row' }, fileButton('Upload trial balance…', '.xlsx,.xls', onFile, { class: 'primary' })),
