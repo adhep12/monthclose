@@ -17,6 +17,7 @@ const mdY = (s) => { const [m, d, y] = s.split('/').map(Number); return `${y}-${
 export function detectIntrafi(lines) {
   const t = lines.slice(0, 60).map((l) => l.text).join('\n');
   if (/CDARS Customer Statement/.test(t)) return 'cdars';
+  if (/CDARS New Account Notice/.test(t)) return 'cdars-notice';
   if (/IntraFi Cash Service/.test(t) && /Monthly Statement/.test(t)) return 'ics';
   return null;
 }

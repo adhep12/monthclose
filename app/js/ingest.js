@@ -19,6 +19,7 @@ export async function readStatementFile(file) {
     const k = detectIntrafi(lines);
     if (k === 'cdars') return { type: 'cdars', data: parseCdarsStatement(lines) };
     if (k === 'ics') return { type: 'ics', data: parseIcsStatement(lines) };
+    if (k === 'cdars-notice') return { type: 'skip', data: {}, why: 'This is a CDARS new account notice — it isn’t needed. The new CD comes in with the month-end CDARS statement, along with its interest.' };
     const b = detectBank(lines);
     if (b === 'wise') return { type: 'bank', data: parseWise(lines) };
     if (b === 'paypal') return { type: 'bank', data: parsePaypal(lines) };

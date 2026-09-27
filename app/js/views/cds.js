@@ -45,6 +45,7 @@ export default async function (main, { user, rerender }) {
   async function onUpload(file) {
     try {
       const r = await readStatementFile(file);
+      if (r.type === 'skip') { toast(`${file.name}: ${r.why}`); return; }
       let fileKey = null;
       if (filesAvailable()) { try { fileKey = (await uploadFile('statements', file))?.key || null; } catch { /* numbers still used */ } }
       if (r.type === 'cdars') {

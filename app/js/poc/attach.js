@@ -47,6 +47,7 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
     let r;
     try { r = await readStatementFile(file); }
     catch (err) { messages.push({ bad: true, text: `${file.name}: ${err.message}` }); continue; }
+    if (r.type === 'skip') { messages.push({ text: `${file.name}: ${r.why}` }); continue; }
     const d = r.data;
     const acct = accountOf(r);
     if (expectAccount && acct !== expectAccount
