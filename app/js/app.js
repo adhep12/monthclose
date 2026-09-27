@@ -32,6 +32,38 @@ export function currentUser() {
 }
 
 let renderSeq = 0;
+let shown = { hash: null, main: null };
+
+// Redraw the page after a change without it flashing: the new page is drawn out of sight on top of
+// the old one and swapped in when it's ready, so scroll position and anything open stay put.
+async function softRender() {
+  const hash = location.hash || '#/';
+  if (shown.hash !== hash || !shown.main?.isConnected) return render();
+  const seq = ++renderSeq;
+  const match = routes.find(([re]) => re.test(hash));
+  if (!match) return render();
+  const params = hash.match(match[0]).slice(1).map(decodeURIComponent);
+  const next = h('main', { class: 'content' });
+  Object.assign(next.style, { position: 'absolute', left: '0', right: '0', top: `${shown.main.offsetTop}px`, visibility: 'hidden', pointerEvents: 'none' });
+  shown.main.parentNode.append(next);
+  const y = window.scrollY;
+  try {
+    const mod = await match[1]();
+    await mod.default(next, { params, month: params[0], rerender: softRender, monthName, user: currentUser() });
+    if (seq !== renderSeq) { next.remove(); return; }
+    const x = [...shown.main.querySelectorAll('.sheet')].map((el) => el.scrollLeft);
+    next.removeAttribute('style');
+    shown.main.replaceWith(next);
+    shown.main = next;
+    next.querySelectorAll('.sheet').forEach((el, i) => { if (x[i] != null) el.scrollLeft = x[i]; });
+    window.scrollTo(0, y);
+  } catch (err) {
+    next.remove();
+    console.error(err);
+    toast(err?.message || String(err), 'error');
+  }
+}
+
 export async function render() {
   const seq = ++renderSeq;
   const hash = location.hash || '#/';
@@ -45,6 +77,7 @@ export async function render() {
     : null;
   const main = h('main', { class: 'content' }, h('p', { class: 'muted' }, 'Loading…'));
   mount(root, header, banner, main);
+  shown = { hash, main };
 
   const match = routes.find(([re]) => re.test(hash));
   if (!match) { mount(main, h('h1', {}, 'Not found'), h('p', {}, h('a', { href: '#/poc' }, 'Back to proof of cash'))); return; }
@@ -52,7 +85,7 @@ export async function render() {
   try {
     const mod = await match[1]();
     if (seq !== renderSeq) return;
-    await mod.default(main, { params, month: params[0], rerender: render, monthName, user: currentUser() });
+    await mod.default(main, { params, month: params[0], rerender: softRender, monthName, user: currentUser() });
   } catch (err) {
     console.error(err);
     if (seq !== renderSeq) return;

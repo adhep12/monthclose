@@ -575,7 +575,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           const bad = res.messages.filter((x) => x.bad);
           if (bad.length) await notify('Please check', bad.map((x) => x.text));
           else if (res.messages.length) toast(res.messages.map((x) => x.text).join(' · '));
-          if (res.changed) { await saveRec(r); reopenAfter = again; close(true); rerender(); }
+          if (res.changed) { await saveRec(r); reopenAfter = again; await rerender(); close(true); }
         } catch (err) { toast(explain(err, 'Couldn’t attach that.'), 'error'); }
       };
       const input = h('input', { type: 'file', accept: '.pdf,.csv,.xlsx', multiple: true, class: 'visually-hidden', onchange: (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); } });
@@ -646,8 +646,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       logChange(rec, user, what);
       await saveRec(rec);
       reopenAfter = again;
+      // The page redraws underneath; the new pop-up opens over this one, then this one goes.
+      await rerender();
       close?.(true);
-      rerender();
     } catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
   }
   // How a deposit on the statement counts: revenue, or taken out (and why).
@@ -751,15 +752,38 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       const lineOf = (a) => (/^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null);
       const again_ = { kind: 'adjustments', key, m };
       const saved = byMonth[m] || {};
-      // Confirmed: who checked this item, at this amount (goes stale if the amount changes).
-      const confirmCell = (a) => {
-        const o = a.auto ? saved.autoConfirm?.[a.id] : (saved.adjustments || []).find((x) => x.id === a.id);
-        const st = o ? confirmationState(o, { amount: a.amount }) : 'none';
+      // Confirmed: who checked each line, at its amount (goes stale if the amount changes). Each line
+      // of an adjustment (each sweep, each transfer) is confirmed on its own; "Confirm all" does a
+      // section at once. A whole adjustment confirmed before lines could be still counts.
+      const lineKey = (x) => (x.a.detail?.length ? `${x.a.id}|${x.date}|${round2(Math.abs(x.shown))}|${x.desc}` : x.a.id);
+      const confirmOf = (x) => {
+        if (!x.a.auto) {
+          const t = (saved.adjustments || []).find((y) => y.id === x.a.id);
+          return t?.confirmation ? { o: t, st: confirmationState(t, { amount: x.a.amount }) } : { st: 'none' };
+        }
+        const line_ = saved.autoConfirm?.[lineKey(x)];
+        if (line_?.confirmation) return { o: line_, st: confirmationState(line_, { amount: round2(x.shown) }) };
+        const whole = saved.autoConfirm?.[x.a.id];
+        if (whole?.confirmation && confirmationState(whole, { amount: x.a.amount }) === 'confirmed') return { o: whole, st: 'confirmed' };
+        return { st: whole?.confirmation ? 'stale' : 'none' };
+      };
+      const confirmLines = (xs) => (rec) => {
+        for (const x of xs) {
+          if (!x.a.auto) { const t = (rec.adjustments || []).find((y) => y.id === x.a.id); if (t) confirmValues(t, user, { amount: x.a.amount }); continue; }
+          rec.autoConfirm ||= {};
+          confirmValues(rec.autoConfirm[lineKey(x)] ||= {}, user, { amount: round2(x.shown) });
+        }
+      };
+      const confirmCell = (x) => {
+        const { o, st } = confirmOf(x);
         if (st === 'confirmed') return h('span', { class: 'small good-text', title: when(o.confirmation.at) }, `✓ ${o.confirmation.by}`);
-        return h('button', { class: 'small-btn', title: st === 'stale' ? 'Changed since it was confirmed' : 'Mark as checked', onclick: () => decide(m, (rec) => {
-          if (a.auto) { rec.autoConfirm ||= {}; confirmValues(rec.autoConfirm[a.id] ||= {}, user, { amount: a.amount }); }
-          else { const t = (rec.adjustments || []).find((x) => x.id === a.id); if (t) confirmValues(t, user, { amount: a.amount }); }
-        }, `Confirmed “${a.label}” ${money(a.amount)}`, again_, close) }, st === 'stale' ? 'Confirm again' : 'Confirm');
+        return h('button', { class: 'small-btn', title: st === 'stale' ? 'Changed since it was confirmed' : 'Mark this line as checked',
+          onclick: () => decide(m, confirmLines([x]), `Confirmed ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close) }, st === 'stale' ? 'Confirm again' : 'Confirm');
+      };
+      const confirmAll = (xs, name) => {
+        const todo = xs.filter((x) => confirmOf(x).st !== 'confirmed');
+        if (!todo.length) return xs.length ? h('span', { class: 'small good-text' }, '✓ All confirmed') : null;
+        return h('button', { class: 'small-btn', onclick: () => decide(m, confirmLines(todo), `Confirmed all ${todo.length} lines of “${name}”`, again_, close) }, `Confirm all ${todo.length}`);
       };
       const action = (x) => {
         const id = lineOf(x.a);
@@ -773,7 +797,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
             } }, 'Remove'))
           : null;
-        return h('div', { class: 'row' }, decideCell, confirmCell(x.a));
+        return h('div', { class: 'row' }, decideCell, confirmCell(x));
       };
       // Adding (or editing) an adjustment typed by hand, in this row.
       const DEFAULT_TYPE = { [ADJ_GROUPS[0]]: 'transfer', [ADJ_GROUPS[1]]: 'transfer', [ADJ_GROUPS[2]]: 'not-revenue', [ADJ_GROUPS[3]]: 'other', [ADJ_GROUPS[4]]: 'timing' };
@@ -822,7 +846,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         const its = items.filter((x) => as.includes(x.a));
         const why = [...new Set(as.map((a) => a.why).filter(Boolean))][0];
         return h('div', { class: 'adj-section' },
-          h('div', { class: 'row' }, h('h3', {}, kind), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(round2(sum(as, (a) => a.amount))))),
+          h('div', { class: 'row' }, h('h3', {}, kind), confirmAll(its, kind), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(round2(sum(as, (a) => a.amount))))),
           why ? h('p', { class: 'muted small' }, why) : null,
           table(cols_, its));
       };
@@ -1105,7 +1129,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // A decision was just saved from a pop-up: open it again with the new numbers.
   if (reopenAfter) {
     const r = reopenAfter; reopenAfter = null;
-    setTimeout(() => (r.kind === 'adjustments' ? openAdjustments(r.key, r.m) : r.kind === 'dit' ? openDit(r.m) : r.kind === 'account' ? openAccount(r.id, r.m) : r.kind === 'month' ? openMonth(r.m) : r.kind === 'gl' ? openGl(r.m) : null), 0);
+    if (r.kind === 'adjustments') openAdjustments(r.key, r.m);
+    else if (r.kind === 'dit') openDit(r.m);
+    else if (r.kind === 'account') openAccount(r.id, r.m);
+    else if (r.kind === 'month') openMonth(r.m);
+    else if (r.kind === 'gl') openGl(r.m);
   }
   const saved = scrollMemory[fy];
   if (saved) {
