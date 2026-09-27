@@ -43,9 +43,16 @@ export function repairRefs(XLSX, wb) {
 export async function downloadWorkbook(filename, sheets) {
   const XLSX = await loadXLSX();
   const wb = XLSX.utils.book_new();
-  for (const { name, rows, cols } of sheets) {
-    const ws = XLSX.utils.aoa_to_sheet(rows);
+  for (const { name, rows, cols, freeze } of sheets) {
+    // A cell may be { v, z } to give it its own number format; other numbers get the accounting one.
+    const ws = XLSX.utils.aoa_to_sheet(rows.map((r) => r.map((v) => (v && typeof v === 'object' && 'v' in v ? v.v : v))));
+    rows.forEach((r, ri) => r.forEach((v, ci) => {
+      const cell = ws[XLSX.utils.encode_cell({ r: ri, c: ci })];
+      if (!cell || cell.t !== 'n') return;
+      cell.z = v && typeof v === 'object' && v.z ? v.z : '#,##0.00;(#,##0.00);"-"';
+    }));
     if (cols) ws['!cols'] = cols.map((wch) => ({ wch }));
+    if (freeze) ws['!freeze'] = freeze;
     XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
   }
   XLSX.writeFile(wb, filename);

@@ -266,3 +266,24 @@ main.content { margin: 0 auto; }
 .check-box.info { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .check-box .recon { max-width: 26rem; margin-top: .35rem; }
 .sheet td.busy { color: var(--accent); font-style: italic; background: var(--accent-soft); }
+
+/* ---- Print / Save as PDF ---- */
+.print-only { display: none; }
+@media print {
+  @page { size: landscape; margin: 10mm; }
+  body { background: #fff; }
+  .topbar, .banner, .page-head .actions, .row.tabs, .screen-only, .toast, .page-head p { display: none !important; }
+  .print-only { display: block; }
+  .content, .wide-page { max-width: none; padding: 0; margin: 0; }
+  .sheet-block { break-inside: avoid; margin-bottom: 6mm; }
+  .sheet-block + .sheet-block { break-before: page; }
+  .table-wrap { overflow: visible; border: 0; }
+  .sheet table { font-size: 7pt; width: 100%; }
+  .sheet th, .sheet td { padding: 1px 3px; }
+  .sheet .label-col { position: static; min-width: 15em; white-space: nowrap; }
+  .sheet tr.detail-row td { font-size: 7pt; }
+  .sheet tr.detail-row td.label-col { padding-left: 1.2em; }
+  .sheet .add-hint, .sheet .remove-hint { display: none; }
+  .sheet a { color: inherit; text-decoration: none; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

@@ -9,7 +9,7 @@ import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
-import { readWorkbook } from '../xlsx-io.js';
+import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
 import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
@@ -84,6 +84,9 @@ export default async function (main, { user, rerender }) {
   // YTD covers the months whose Cass Operating deposits are in — the main account, so a month
   // with only a stray figure or two entered doesn't pull its whole GL into the totals yet.
   const line = (c, id) => c.lines.find((l) => l.id === id);
+  // Where a figure came from, in words. Figures typed in the app carry who entered them; the
+  // workbook import's figures don't.
+  const sourceOf = (l) => (l.from === 'typed' ? (l.enteredBy ? 'Typed' : 'Workbook import') : l.from || 'Workbook import');
   const done = cols.filter((x) => x.c && line(x.c, 'cassOp').rev != null);
 
   // ---- Rows ----------------------------------------------------------------------------------
@@ -94,7 +97,7 @@ export default async function (main, { user, rerender }) {
       if (id === 'wise' && k === 'rev' && rec && wiseOutgoingCheck(rec).some((x) => x.state === 'missing')) return { mark: '⚠', title: 'Money sent from Wise to one of our accounts hasn’t turned up as a deposit — open to check' };
       if (l[k] == null) return null;
       const st = confirmationState(rec.bank?.[id], l.values);
-      return { mark: st === 'confirmed' ? '✓' : st === 'stale' ? '!' : '', title: `${l.from === 'typed' ? 'Typed' : `From ${l.from || 'the workbook'}`}${st === 'confirmed' ? ` · confirmed by ${rec.bank[id].confirmation.by}` : st === 'stale' ? ' · changed since it was confirmed' : ' · not confirmed yet'}` };
+      return { mark: st === 'confirmed' ? '✓' : st === 'stale' ? '!' : '', title: `${sourceOf(l) === 'Typed' ? 'Typed' : `From ${sourceOf(l) === 'Workbook import' ? 'the workbook' : sourceOf(l)}`}${st === 'confirmed' ? ` · confirmed by ${rec.bank[id].confirmation.by}` : st === 'stale' ? ' · changed since it was confirmed' : ' · not confirmed yet'}` };
     };
     return { label: label(id), account: id, rev: (c) => line(c, id).rev, int: (c) => line(c, id).int, meta: { rev: mark('rev'), int: mark('int') } };
   });
@@ -102,13 +105,14 @@ export default async function (main, { user, rerender }) {
   for (const { c } of cols.filter((x) => x.c)) for (const a of c.adjustments) { const k = adjKey(a); if (!adjLabels.includes(k)) adjLabels.push(k); }
   const adjFor = (k) => (c) => { const list = c.adjustments.filter((a) => adjKey(a) === k); return list.length ? round2(sum(list, (a) => a.amount)) : null; };
 
-  const rows = [
+  const adjRows = () => adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
+    meta: k === 'Stripe Transfers' ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Matches the Stripe CSV payouts' } : null) } : null }));
+  const screenRows = [
     { section: 'Per Bank Statement' },
     ...bankRows,
     { label: `${adjOpen ? '▾' : '▸'} Cass Operating - Total Adjustments`, rev: (c) => c.adjTotal, toggle: true, hint: 'Click to open up what’s being adjusted',
       meta: { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : null) } },
-    ...(adjOpen ? adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
-      meta: k === 'Stripe Transfers' ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Matches the Stripe CSV payouts' } : null) } : null })) : []),
+    ...(adjOpen ? adjRows() : []),
     { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + c.adjTotal), int: (c) => c.bankInt, strong: true },
     { section: 'Adjustments for Timing' },
     { label: 'Plus Deposit in Transit (change)', rev: (c) => c.ditChange, dit: true },
@@ -121,6 +125,9 @@ export default async function (main, { user, rerender }) {
     { label: 'Difference', rev: (c) => c.diffRev, int: (c) => c.diffInt, strong: true, diff: true },
     { label: '% difference', pct: true },
   ];
+  const rows = screenRows;
+  // For printing: every adjustment line shown, whether or not it's opened up on screen.
+  const printRows = screenRows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Cass Operating - Total Adjustments' }, ...adjRows()] : [r]));
 
   const ytd = (f) => (f ? round2(sum(done, (x) => f(x.c) || 0)) : null);
   const pctOf = (d, g) => (d == null || !g ? '' : `${((d / g) * 100).toFixed(2)}%`);
@@ -153,7 +160,8 @@ export default async function (main, { user, rerender }) {
       meta?.mark ? h('span', { class: meta.mark === '✓' ? 'good-text' : meta.mark === '⚠' ? 'error' : 'warn-text' }, ` ${meta.mark}`) : null);
   }
 
-  function sheet(showRev, showInt, title) {
+  function sheet(showRev, showInt, title, { expand = false } = {}) {
+    const rows = expand && !adjOpen ? printRows : screenRows;
     const span = (showRev ? 1 : 0) + (showInt ? 1 : 0);
     const nCols = 1 + span * (months.length + 1);
     const hasAny = (r) => done.length === 0 || r.strong || r.account || r.toggle || r.gl || [r.rev && showRev && [ytd(r.rev), ...done.map((x) => r.rev(x.c))], r.int && showInt && [ytd(r.int), ...done.map((x) => r.int(x.c))]]
@@ -522,8 +530,73 @@ export default async function (main, { user, rerender }) {
     } catch (err) { notify('Couldn’t load the GL register', [explain(err, '')]); return false; }
   }
 
+  // ---- Export: Excel workbook, or print / save as PDF ---------------------------------------
+  // The sheet as it stands (every adjustment line opened up), plus where each number came from.
+  async function exportExcel() {
+    const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · figures as imported and entered in the Proof of Cash app`;
+    const all = rows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Cass Operating - Total Adjustments' }, ...adjRows().map((a) => ({ ...a, label: `    ${a.label}` }))] : r.indent ? [] : [r]));
+    const pct = (d, g) => (d == null || !g ? null : { v: Math.round((d / g) * 1e6) / 1e6, z: '0.00%' });
+    const at = (f, c) => (f && c ? f(c) ?? null : null);
+    const sheetRows = [
+      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} months with Cass Operating deposits in)` : 'no months yet'}`], [],
+      ['', 'YTD Revenue', 'YTD Interest', ...months.flatMap((m) => [`${short(m)} Revenue`, `${short(m)} Interest`])],
+    ];
+    for (const r of all) {
+      if (r.section) { sheetRows.push([r.section.toUpperCase()]); continue; }
+      if (r.pct) {
+        sheetRows.push([r.label, pct(ytd((c) => c.diffRev), ytd((c) => c.glRev)), pct(ytd((c) => c.diffInt), ytd((c) => c.glInt)),
+          ...cols.flatMap(({ c }) => (c ? [pct(c.diffRev, c.glRev), pct(c.diffInt, c.glInt)] : [null, null]))]);
+        continue;
+      }
+      sheetRows.push([r.label, r.rev ? ytd(r.rev) : null, r.int ? ytd(r.int) : null, ...cols.flatMap(({ c }) => [at(r.rev, c), at(r.int, c)])]);
+    }
+
+    const adj = [['Month', 'Line', 'Account', 'Type', 'Date', 'Description', 'Amount', 'Note', 'Entered by', 'Entered at']];
+    const src = [['Month', 'Account', 'Revenue', 'Interest', 'Ending balance', 'Source', 'Entered / attached by', 'When', 'Confirmation']];
+    const checks = [['Month', 'Check', 'Result', 'Detail']];
+    for (const { m, c, rec } of cols) {
+      if (!c) continue;
+      for (const a of c.adjustments) {
+        const items = a.detail?.length ? a.detail.map((d) => ({ date: d.date, desc: d.desc, amount: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, amount: a.amount }];
+        for (const it of items) adj.push([monthName(m), adjKey(a), label(a.account || 'cassOp'), ADJUSTMENT_TYPES[a.type] || (a.auto ? 'From the statements' : ''), it.date || '', it.desc, it.amount, a.note || '', a.enteredBy || '', a.enteredAt ? when(a.enteredAt) : '']);
+      }
+      for (const l of c.lines) {
+        if (l.rev == null && l.int == null && l.ending == null) continue;
+        const st = rec ? confirmationState(rec.bank?.[l.id], l.values) : 'none';
+        const conf = rec?.bank?.[l.id]?.confirmation;
+        src.push([monthName(m), label(l.id), l.rev ?? null, l.int ?? null, l.ending ?? null, sourceOf(l), l.enteredBy || '', l.enteredAt ? when(l.enteredAt) : '',
+          st === 'confirmed' ? `Confirmed by ${conf.by} · ${when(conf.at)}` : st === 'stale' ? 'Changed since confirmed' : 'Not confirmed']);
+      }
+      const sc = c.stripeCheck;
+      if (sc && sc.state !== 'incomplete') {
+        checks.push([monthName(m), 'Stripe payouts vs Cass', { match: 'Match', explained: 'Explained', mismatch: 'MISMATCH' }[sc.state],
+          `CSV payouts ${money(sc.csv, { dash: false })}; Cass transfers ${money(sc.cass, { dash: false })}; difference ${money(sc.diff, { dash: false })}${sc.explained && sc.state === 'explained' ? `; “${sc.explained.note}” (${sc.explained.by})` : ''}${sc.ignored.length ? `; ignored: ${sc.ignored.map((t) => `${t.date} ${money(t.amount, { dash: false })}${t.ignored.note ? ` (${t.ignored.note})` : ''}`).join(', ')}` : ''}`]);
+      }
+      if (rec) for (const w of wiseOutgoingCheck(rec).filter((x) => x.state !== 'paid')) {
+        checks.push([monthName(m), 'Money out of Wise', { transfer: 'Matched — transfer', counted: 'Found, still counted as revenue', missing: 'NO MATCHING DEPOSIT' }[w.state], `${w.date} ${w.desc} ${money(w.amount, { dash: false })}`]);
+      }
+      if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
+    }
+    try {
+      await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
+        { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
+        { name: 'Adjustments detail', rows: adj, cols: [14, 32, 18, 20, 11, 60, 14, 30, 16, 20] },
+        { name: 'Sources', rows: src, cols: [14, 26, 15, 13, 16, 44, 20, 20, 32] },
+        { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
+      ]);
+    } catch (err) { toast(explain(err, 'Couldn’t build the Excel file.'), 'error'); }
+  }
+
+  // Print (or "Save as PDF" in the print dialog): revenue and interest stacked, one per page width.
+  function printPdf() {
+    document.body.classList.add('printing');
+    const done_ = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', done_); };
+    window.addEventListener('afterprint', done_);
+    setTimeout(() => window.print(), 50);
+  }
+
   const remember = () => {
-    scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.sheet')].map((el) => el.scrollLeft) };
+    scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.screen-only .sheet')].map((el) => el.scrollLeft) };
   };
 
   mount(main,
@@ -532,6 +605,8 @@ export default async function (main, { user, rerender }) {
         h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Drop a statement on an account’s cell to attach it (the number updates in place); click a cell to see its detail or type figures; click a month to open all of it. `,
           'Dots: green reviewed, blue prepared, amber in progress, grey from the workbook. ✓ confirmed, ! changed since confirmed.')),
       h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: exportExcel, title: 'Download the sheet, adjustment detail, sources and checks as an Excel workbook' }, 'Export Excel'),
+        h('button', { class: 'btn', onclick: printPdf, title: 'Print, or choose “Save as PDF” in the print dialog' }, 'Print / PDF'),
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),
         h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'))),
     h('div', { class: 'row tabs' },
@@ -540,17 +615,21 @@ export default async function (main, { user, rerender }) {
       h('span', { class: 'spacer' }),
       h('div', { class: 'seg' }, [['stacked', 'Revenue above interest'], ['side', 'Side by side (workbook)']].map(([v, l]) =>
         h('button', { class: v === show ? 'active' : '', onclick: () => { store.set(SHOW_KEY, v); rerender(); } }, l)))),
-    show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')],
+    h('div', { class: 'screen-only' }, show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')]),
+    // What prints: both halves stacked, whichever view is on screen.
+    h('div', { class: 'print-only' },
+      h('p', { class: 'muted small' }, `Printed ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · YTD = ${done.length ? `${range}, ${done.length} months` : 'no months yet'}`),
+      sheet(true, false, 'Revenue', { expand: true }), sheet(false, true, 'Interest', { expand: true })),
   );
 
   const saved = scrollMemory[fy];
   if (saved) {
-    main.querySelectorAll('.sheet').forEach((el, i) => { el.scrollLeft = saved.x[i] ?? saved.x[0] ?? 0; });
+    main.querySelectorAll('.screen-only .sheet').forEach((el, i) => { el.scrollLeft = saved.x[i] ?? saved.x[0] ?? 0; });
     window.scrollTo(0, saved.y);
     requestAnimationFrame(() => window.scrollTo(0, saved.y));
   }
   // Keep the memory current as you scroll, and keep the two stacked sheets side-scrolled together.
-  const sheets = [...main.querySelectorAll('.sheet')];
+  const sheets = [...main.querySelectorAll('.screen-only .sheet')];
   sheets.forEach((el) => el.addEventListener('scroll', () => {
     for (const other of sheets) if (other !== el && other.scrollLeft !== el.scrollLeft) other.scrollLeft = el.scrollLeft;
     remember();
