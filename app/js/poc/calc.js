@@ -230,6 +230,12 @@ export function defaultExclusions(recIn) {
 export function statementAdjustments(rec, deposits = null) {
   const st = rec.statements || {};
   const adj = [];
+  if (rec.stripe?.disputes) {
+    adj.push({ id: 'auto-stripe-disputes', account: 'stripe', type: 'refund', label: 'Stripe disputes', amount: round2(rec.stripe.disputes), auto: true,
+      note: `Stripe CSV “Disputes” gross ${money2(rec.stripe.disputes)} — charges donors disputed, taken back by Stripe. The GL books them against 4015.`,
+      why: 'Stripe’s payments less refunds still includes charges donors later disputed; the GL takes them off revenue.',
+      detail: [{ date: `${rec.month}-01`.slice(0, 10), amount: -rec.stripe.disputes, desc: 'Stripe CSV: Disputes, gross amount' }] });
+  }
   if (st.operating) {
     const stripe = st.operating.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc));
     if (stripe.length) {
@@ -327,7 +333,7 @@ export function glFigures({ glActivity, tb, soa = null, month, config = DEFAULT_
 }
 
 // Figures that come from an attached statement (or the CD schedule) rather than being typed.
-export function autoFigures(rec, cd = null, prior = null) {
+export function autoFigures(rec, cd = null, prior = null, deposits = null) {
   const st = rec.statements || {};
   const auto = {};
   for (const [id, b] of Object.entries(rec.bankStatements || {})) {
@@ -339,8 +345,11 @@ export function autoFigures(rec, cd = null, prior = null) {
     let b = rec.bank?.[s.id];
     // Fidelity money that reached Cass left Delap: a withdrawal, unless someone typed net deposits.
     if (s.id === 'delap' && b && b.netDeposits == null) { const fid = fidelityTransfers(rec).total; if (fid) b = { ...b, netDeposits: -fid }; }
+    // Fees the GL booked (Dr 8070), unless someone typed them.
+    const glFee = deposits?.fees?.[s.id];
+    if (b && b.fees == null && glFee) b = { ...b, fees: glFee.amount };
     const int = balanceMethodInterest(b, prior?.bank?.[s.id]);
-    if (int != null) auto[s.id] = { int, from: 'change in balance', by: b.enteredBy, at: b.enteredAt, computed: true };
+    if (int != null) auto[s.id] = { int, from: 'change in balance', by: b.enteredBy, at: b.enteredAt, computed: true, feesFromGl: b.fees != null && rec.bank?.[s.id]?.fees == null ? glFee : null };
   }
   if (st.operating) auto.cassOp = { rev: st.operating.summary.credits.total, ending: st.operating.summary.ending, from: 'Cass statements', by: st.operating.attachedBy, at: st.operating.attachedAt };
   if (rec.stripe) auto.stripe = { rev: stripeRevenue(rec.stripe), ending: rec.stripe.endBalance, from: 'Stripe CSV', by: rec.stripe.attachedBy, at: rec.stripe.attachedAt };
@@ -353,7 +362,7 @@ export function autoFigures(rec, cd = null, prior = null) {
 // them, deposits in transit come from the GL; without, from what was typed or imported.
 export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances = null, deposits = null, priorDeposits = null } = {}) {
   const bank = rec.bank || {};
-  const auto = autoFigures(rec, cd, prior);
+  const auto = autoFigures(rec, cd, prior, deposits);
   const lines = BANK_SOURCES.map((s) => {
     const a = auto[s.id];
     const b = bank[s.id] || {};
@@ -372,7 +381,12 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
   const bankRev = round2(sum(lines, (l) => l.rev));
   const bankInt = round2(sum(lines, (l) => l.int));
 
-  const adjustments = [...statementAdjustments(rec, deposits), ...(rec.adjustments || []).map((a) => ({ ...a, auto: false }))];
+  // An automatic adjustment to another account (Stripe disputes, PayPal refunds, Wise fees, KeyBank)
+  // only counts once that account's own figure is in — otherwise it would stand alone.
+  const hasFigure = (id) => lines.find((l) => l.id === id)?.rev != null;
+  const all = statementAdjustments(rec, deposits);
+  const waiting = all.filter((a) => a.account && a.account !== 'cassOp' && !hasFigure(a.account));
+  const adjustments = [...all.filter((a) => !waiting.includes(a)), ...(rec.adjustments || []).map((a) => ({ ...a, auto: false }))];
   const adjTotal = round2(sum(adjustments, (a) => a.amount));
 
   const ditTotal = deposits?.dit ? deposits.dit.total : round2(sum(rec.dit || [], (d) => d.amount));
@@ -403,7 +417,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
     revAdjusted, intAdjusted,
     glRev, glInt, glSource, gl, workbookGl,
     stripeCheck: stripePayoutCheck(rec),
-    warnings: missingStatements(rec), deposits, ditFromGl: !!deposits?.dit,
+    warnings: missingStatements(rec), deposits, ditFromGl: !!deposits?.dit, waiting,
     diffRev, diffInt,
     pctRev: diffRev == null || !glRev ? null : diffRev / glRev,
     pctInt: diffInt == null || !glInt ? null : diffInt / glInt,

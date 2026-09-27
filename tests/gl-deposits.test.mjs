@@ -168,6 +168,44 @@ test('KeyBank: deposits are giving unless the GL says they came from another of 
   assert.deepEqual(d.adjustments.filter((a) => a.account === 'keyOp').map((a) => [a.id, a.type, a.amount]), [['auto-glkey-K2', 'transfer', -2000]]);
 });
 
+test('what the statements can’t show comes from the GL, each as its own labelled adjustment', () => {
+  const g = glBy();
+  g['2026-02'].paypalRefunds = [{ batch: 'P1', date: '2026-02-28', desc: 'Paypal - Giving, Fees', amount: 15337 }];
+  g['2026-02'].wiseReceipts = [gl('W1', '2026-02-14', 699993.89, { 4018: 700000, 8590: -6.11 }, 'Wise Donation - A Foundation'), gl('W2', '2026-02-01', 1053.6, { 4050: 1053.6 }, 'Interest Earned')];
+  g['2026-02'].keyReceipts = [gl('K1', '2026-02-12', 155, { 4010: 480, 4075: 75, 8036: -400 }, 'Keybank Cash Giving + Cheers Club')];
+  g['2026-02'].noCashRevenue = [
+    { batch: 'A1', date: '2026-02-10', desc: 'PKO1 - Air Order', accounts: { 1210: -52, 4084: 52 } },
+    { batch: 'R1', date: '2026-02-20', desc: 'Reverse gift sent to a different NFP', accounts: { 2052: 3018.7, 4018: -3018.7 } },
+    { batch: 'I1', date: '2026-02-28', desc: 'Interest Earned - 0001', accounts: { 1150: -100, 4050: 100 } }, // interest isn't revenue
+  ];
+  const d = depositChecks({ recs: { '2026-02': feb() }, glBy: g })['2026-02'];
+  const by = Object.fromEntries(d.adjustments.map((a) => [a.id, a]));
+  assert.equal(by['auto-glpaypal-P1'].amount, -15337);
+  assert.equal(by['auto-glpaypal-P1'].account, 'paypal');
+  assert.equal(by['auto-glwise-fees'].amount, 6.11); // the interest batch isn't a fee
+  assert.equal(by['auto-glkey-K1'].amount, 400); // cash gifts spent before the deposit
+  assert.match(by['auto-glkey-K1'].label, /spent before they were deposited/);
+  assert.equal(by['auto-glnocash-A1'].amount, 52);
+  assert.equal(by['auto-glnocash-A1'].type, 'timing');
+  assert.equal(by['auto-glnocash-R1'].amount, -3018.7);
+  assert.equal(by['auto-glnocash-I1'], undefined);
+  for (const a of Object.values(by)) assert.ok(a.note && a.why, `${a.id} explains itself`);
+});
+
+test('matching across month end: a check booked on the last day and deposited a week later; two batches in one deposit', () => {
+  const recs = { '2026-02': feb() };
+  recs['2026-03'] = { month: '2026-03', statements: { operating: { summary: { credits: { total: 0 }, ending: 0 }, transactions: [
+    cr('5884-a', '2026-03-07', 8565, 'DEPOSIT CONNECTION DEPOSIT'), cr('5884-b', '2026-03-30', 595, 'ORIG:A BOOKSHOP') ] } } };
+  const g = glBy();
+  g['2026-02'].receipts.push(gl('C1', '2026-02-28', 8565, { 8015: 8565 }, 'Deposit - Cigna Reimbursement Check'));
+  g['2026-03'].receipts.push(gl('AR1', '2026-03-30', 520, { 1210: 520 }, 'PKO1 - Air Order'), gl('AR2', '2026-03-30', 75, { 1210: 75 }, 'PKO2 - Air Order'));
+  const d = depositChecks({ recs, glBy: g })['2026-03'];
+  assert.equal(d.exclusions['5884-a'].type, 'not-revenue');
+  assert.match(d.exclusions['5884-a'].note, /C1/);
+  assert.equal(d.exclusions['5884-b'].type, 'prior-period');
+  assert.match(d.exclusions['5884-b'].note, /AR1 \+ AR2/);
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

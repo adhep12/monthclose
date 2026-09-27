@@ -121,14 +121,11 @@ export function parsePaypal(lines) {
   return res;
 }
 
-// USD payments sent out of PayPal are money given back to donors: the GL books each as a
-// "Payment Refund" against 4012 (Feb and Mar 2026: 15,337 returned to a donor who gave by check
-// instead). Payments to vendors go out in other currencies, after a currency conversion. The
-// card's "Revenue vs GL 4012" shows it if a USD payment sent was ever something else.
-// Statements attached before this kept only payments received as revenue.
+// The PayPal line is what the statement calls "Payments received". Money given back to donors is
+// an adjustment, taken from the GL's "Payment Refund" lines — the statement's "Payments sent"
+// can't tell a refund from a payment to someone else (June 2026: 1,000 paid out, not a refund).
 export function paypalRevenue(b) {
-  const received = b.received ?? b.revenue;
-  return received == null ? null : round(received + Math.min(0, b.paymentsSent || 0));
+  return b.received ?? b.revenue ?? null;
 }
 export function paypalTies(b) {
   if (b.transfers == null) return b.ties;

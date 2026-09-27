@@ -20,7 +20,7 @@ export function parseGlRegister(XLSX, wb) {
     const a = text(at(r, 0));
     if (/^\d{2}-\d{4}$/.test(a)) {
       period = a; module = text(at(r, 1));
-      batch = { batch: text(at(r, 2)), module, date: isoDate(at(r, 3)), desc: text(at(r, 5)), accounts: {} };
+      batch = { batch: text(at(r, 2)), module, date: isoDate(at(r, 3)), desc: text(at(r, 5)), accounts: {}, refunds: 0 };
       const m = fromPeriod(period);
       (periods[m] || (periods[m] = { month: m, period, accounts: {}, lines: 0, batches: [] })).batches.push(batch);
       continue;
@@ -34,6 +34,9 @@ export function parseGlRegister(XLSX, wb) {
     const p = periods[m];
     p.accounts[acct] = (p.accounts[acct] || 0) + net;
     batch.accounts[acct] = (batch.accounts[acct] || 0) + net;
+    // PayPal gifts given back ("Payment Refund", a debit to 4012) inside the month's PayPal batch.
+    // (A whole batch reversed out of the wrong period also debits 4012, but it isn't money given back.)
+    if (acct === '4012' && net > 0 && /refund/i.test(text(at(r, 5)))) batch.refunds += net;
     p.lines++;
     lines++;
   }
@@ -41,7 +44,12 @@ export function parseGlRegister(XLSX, wb) {
     for (const k of Object.keys(p.accounts)) p.accounts[k] = round2(p.accounts[k]);
     p.receipts = cashReceipts(p.batches);
     p.keyReceipts = cashReceipts(p.batches, KEYBANK_GL);
+    p.wiseReceipts = cashReceipts(p.batches, WISE_GL);
+    p.paypalRefunds = p.batches.filter((b) => b.refunds >= 0.005 && PAYPAL_GL in b.accounts)
+      .map((b) => ({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: round2(b.refunds) }));
+    p.noCashRevenue = noCashRevenue(p.batches);
     p.stripeReclass = stripeReclasses(p.batches);
+    p.investmentFees = investmentFees(p.batches);
     delete p.batches;
   }
   if (!lines) throw new Error('No journal lines found in that file.');
@@ -55,22 +63,43 @@ export function parseGlRegister(XLSX, wb) {
 
 // Money into and out of Cass (1100) batch by batch, so deposits on the statements can be matched to
 // how the GL booked them. Each batch keeps the accounts on its other side, net credit positive
-// (what the deposit was booked to). AP batches that debit cash are voided checks, not deposits.
+// (what the deposit was booked to). AP batches that debit cash are mostly voided checks, which
+// never reach a statement, but some are money paid back to us (a vendor refund); they're kept,
+// marked, and only used when a deposit matches them.
 //   { batch, date, desc, amount, accounts: { '4018': 12425 } }   amount > 0: money in
 //                                                                amount < 0: money out, e.g. a
 //                                                                reversal of revenue (chargeback)
 export const CASS_GL = '1100';
 export const KEYBANK_GL = '1061';
+export const WISE_GL = '1013';
+export const PAYPAL_GL = '1012';
+// Accounts where revenue arrives as cash: a revenue entry with none of these on its other side
+// had no cash this month (a sale on account, a gift reclassed to a liability).
+const CASH_SIDE = ['1100', '1012', '1013', '1015', '1200', '1020', '1060', '1061', '2041'];
 function cashReceipts(batches, cashGl = CASS_GL) {
   const out = [];
   for (const b of batches) {
     const cash = round2(b.accounts[cashGl] || 0);
-    if (!cash || b.module === 'AP') continue;
+    if (!cash) continue;
     const other = {};
     for (const [acct, net] of Object.entries(b.accounts)) if (acct !== cashGl && Math.abs(net) >= 0.005) other[acct] = round2(-net);
     // Only money in, and money out that takes revenue back (a chargeback, a deposit reclassed).
     if (cash < 0 && !Object.entries(other).some(([acct, v]) => /^4/.test(acct) && v < 0)) continue;
-    out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: cash, accounts: other });
+    out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: cash, accounts: other, ...(b.module === 'AP' ? { ap: true } : {}) });
+  }
+  return out;
+}
+
+// Revenue entries with no cash on the other side: merchandise sold on account (Dr 1210), a gift
+// reclassed to a liability (Cr 2052). Stripe's own reclasses are kept separately.
+function noCashRevenue(batches) {
+  const out = [];
+  for (const b of batches) {
+    if (/stripe/i.test(b.desc) || CASH_SIDE.some((a) => a in b.accounts)) continue;
+    const accounts = {};
+    for (const [acct, net] of Object.entries(b.accounts)) if (Math.abs(net) >= 0.005) accounts[acct] = round2(-net);
+    if (!Object.keys(accounts).some((a) => /^40[1-8]\d$/.test(a))) continue;
+    out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), accounts });
   }
   return out;
 }
@@ -85,6 +114,20 @@ function stripeReclasses(batches) {
     const accounts = {};
     for (const [acct, net] of Object.entries(b.accounts)) if (Math.abs(net) >= 0.005) accounts[acct] = round2(-net);
     out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), accounts });
+  }
+  return out;
+}
+
+// Management fees taken out of an investment account. The GL books the month's gain from the
+// statement's change in value, grossed up by the fee (Cr 8999), with the fee as an expense
+// (Dr 8070) — so the fee is added back to the change in value. Tschetter bills quarterly.
+export const INVESTMENT_GL = { 1170: 'delap', 1171: 'tschetter' };
+function investmentFees(batches) {
+  const out = [];
+  for (const b of batches) {
+    const acct = Object.keys(INVESTMENT_GL).find((a) => a in b.accounts);
+    const fee = round2(b.accounts['8070'] || 0);
+    if (acct && fee) out.push({ account: INVESTMENT_GL[acct], batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: fee });
   }
   return out;
 }

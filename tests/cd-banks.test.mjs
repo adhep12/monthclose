@@ -46,7 +46,7 @@ test('ICS statement ties opening + interest to ending', () => {
   assert.ok(r.ties);
 });
 
-test('Stripe revenue is gross payments less refunds and disputes, as the GL books it', () => {
+test('Stripe: the line is payments less refunds, as the CSV has it; disputes are their own adjustment', () => {
   const csv = [
     '"","",Month (all times in UTC),2026-07-01,2026-06-01', '"","",Currency,USD,USD', '""', 'Monthly Activity Summary',
     '"",Payments (cards),Count,1,1', '"","",Gross Amount,1000.00,500.00', '"","",Fees,-30.00,-15.00',
@@ -56,12 +56,15 @@ test('Stripe revenue is gross payments less refunds and disputes, as the GL book
     '""', 'Payouts and Transfers Summary', '"",Payouts and Transfers,Count,1,1', '"","",Amount,1100.00,580.00',
     '""', 'Balance Summary', '"","",Start of Month Balance,10.00,0.00', '"","",End of Month Balance,28.00,10.00'].join('\n');
   const jul = parseStripeMonthly(csv).months.find((m) => m.month === '2026-07');
-  assert.equal(jul.revenue, 955); // 1,000 + 200 − 50 refund − 195 dispute
+  assert.equal(jul.revenue, 1150); // 1,000 + 200 − 50 refund
   assert.equal(jul.disputes, -195);
+  const c = computePoc({ month: '2026-07', stripe: jul });
+  assert.equal(c.lines.find((l) => l.id === 'stripe').rev, 1150);
+  assert.equal(c.adjustments.find((a) => a.id === 'auto-stripe-disputes').amount, -195); // = GL 4015: 955
   assert.equal(jul.payouts, 1100);
   assert.equal(jul.fees, -47);
-  // A CSV attached before disputes came off is re-read the same way.
-  assert.equal(computePoc({ month: '2026-07', stripe: { ...jul, revenue: 1150 } }).lines.find((l) => l.id === 'stripe').rev, 955);
+  // A CSV attached when disputes were folded into revenue is read as the CSV has it.
+  assert.equal(computePoc({ month: '2026-07', stripe: { ...jul, revenue: 955 } }).lines.find((l) => l.id === 'stripe').rev, 1150);
   assert.equal(jul.endBalance, 28);
 });
 
@@ -114,18 +117,17 @@ test('Wise descriptions that wrap onto a second line are still read, and the sta
   assert.equal(statementTies({ bankStatements: { wise: w } }, 'wise'), true);
 });
 
-test('PayPal: money sent back to donors comes off revenue, and transfers count toward the tie', () => {
+test('PayPal: the line is payments received, as the statement has it; transfers count toward the tie', () => {
   // February 2026's summary: 15,337 returned to a donor; 100 converted to pay a vendor in BRL.
   const feb = parsePaypal(L(['Merchant Account ID: X PayPal ID: y 2/1/26 - 2/28/26', 'Activity Summary (2/1/26 - 2/28/26)', 'USD BRL',
     'Beginning Available Balance 205,920.71 0.00', 'Payments received 16,358.48 0.00', 'Payments sent -15,337.00 -508.56',
     'Withdrawals and Debits 0.00 0.00', 'Deposits and Credits 0.00 0.00', 'Fees -800.00 0.00', 'Transfers -100.00 508.56',
     'Ending Available Balance 206,042.19 0.00']));
-  assert.equal(feb.revenue, 1021.48); // = GL 4012 for February
-  assert.equal(feb.received, 16358.48);
+  assert.equal(feb.revenue, 16358.48); // money given back comes off as an adjustment, from the GL
   assert.ok(feb.ties);
-  // Attached before the fix: revenue was payments received, no transfers kept.
-  const old = { source: 'paypal', revenue: 16358.48, paymentsSent: -15337, ties: false };
-  assert.equal(computePoc({ month: '2026-02', bankStatements: { paypal: old } }).lines.find((l) => l.id === 'paypal').rev, 1021.48);
+  // Attached when refunds were netted in: read as the statement has it.
+  const old = { source: 'paypal', received: 16358.48, revenue: 1021.48, paymentsSent: -15337 };
+  assert.equal(computePoc({ month: '2026-02', bankStatements: { paypal: old } }).lines.find((l) => l.id === 'paypal').rev, 16358.48);
 });
 
 test('Delap/Tschetter gain = change in value less money moved in', () => {

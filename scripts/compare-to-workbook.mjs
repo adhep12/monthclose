@@ -74,7 +74,7 @@ function section(title, kind, parts) {
 section('REVENUE', 'rev', [
   ['Wise', /^Wise$/, /^Wise$/], ['PayPal', /^PayPal$/i, /^Paypal$/i], ['Stripe', /^Stripe$/, /^Stripe$/],
   ['KeyBank Operating', /^KeyBank Operating/, /^KeyBank Operating/], ['Delap revenue', /^Delap/, /^Delap/],
-  ['Cass Operating', /^Cass Operating$/, /^Cass Operating$/], ['Cass adjustments (total)', /^Cass Operating - Total/, /^Cass Operating - Total/],
+  ['Cass Operating', /^Cass Operating$/, /^Cass Operating$/], ['Adjustments (total)', /^(Cass Operating - )?Total Adjustments/, /^Cass Operating - Total/],
   ['Deposits in transit (change)', /^Plus Deposit/, /^Plus Deposit/], ['Restricted revenue', /Restricted/, /Restricted/], ['Merchandise AR', /^Merchandise/, /^Merchandise/],
   ['GL revenue (negated)', /^Total GL Revenue/, /^Total GL Revenue \/ Interest Income \(4050\) #2$/, -1],
 ]);

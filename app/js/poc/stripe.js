@@ -1,13 +1,12 @@
 // Stripe "monthly statement" CSV (Reports → Balance → monthly summary). Months run across the
-// columns; rows are grouped by section. Revenue for proof of cash = gross payments (cards and
-// other) less gross refunds and disputes, which is what the GL books to 4015 ("Monthly Stripe
-// Giving": FY2026 ties to the cent every month once disputes come off). Fees are an expense (8590).
-
-// Also used for CSVs attached before disputes came off (their stored revenue left them in).
+// columns; rows are grouped by section. The Stripe line is the CSV's gross payments (cards and
+// other) less gross refunds. Disputes come off as their own adjustment, which makes it what the GL
+// books to 4015 ("Monthly Stripe Giving": FY2026 ties to the cent every month). Fees are an
+// expense (8590).
 export function stripeRevenue(m) {
   if (!m) return null;
   if (m.payments == null) return m.revenue ?? null;
-  return round2((m.payments || 0) + (m.refunds || 0) + (m.disputes || 0));
+  return round2((m.payments || 0) + (m.refunds || 0));
 }
 
 import { round2 } from '../money.js';

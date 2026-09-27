@@ -220,7 +220,8 @@ export default async function (main, { month, monthName, user, rerender }) {
         h('span', {}, 'Ending value'), h('span', { class: 'num' }, inp('ending', 'ending value')),
         h('span', {}, `${monthName(prevMonth, { short: true })} ending value`), h('span', { class: 'num' }, priorB?.ending != null && b.priorEnding == null ? fmtV(priorB.ending) : inp('priorEnding', 'prior month ending')),
         h('span', { title: 'Money put in is positive, money taken out is negative. Left blank for Delap, Fidelity MoneyLine transfers into Cass are used.' }, 'Net deposits (withdrawals)'), h('span', { class: 'num' }, inp('netDeposits', 'net deposits')),
-        h('span', { title: 'Management fees deducted from the account. The GL books them as an expense and grosses up the gain, so they’re added back.' }, 'Fees taken out'), h('span', { class: 'num' }, inp('fees', 'fees')),
+        h('span', { title: 'Management fees deducted from the account. The GL books them as an expense and grosses up the gain, so they’re added back. Left blank, the fee the GL booked (Dr 8070) is used.' }, 'Fees taken out'),
+        h('span', { class: 'num' }, (() => { const f = calc().deposits?.fees?.[l.id]; const el = inp('fees', 'fees'); if (f) el.placeholder = `${money(f.amount, { dash: false })} per GL`; return el; })()),
         h('span', {}, h('strong', {}, 'Gain / interest')), h('span', { class: 'num' }, h('strong', {}, fmtV(l.int ?? balanceMethodInterest(b, priorB)))),
         h('span', {}, 'Revenue'), h('span', { class: 'num' }, inp('rev', 'revenue')))
       : h('div', { class: 'figs' }, fig('Revenue', 'rev'), fig('Interest', 'int'), fig('Ending balance', 'ending'));
@@ -412,7 +413,7 @@ export default async function (main, { month, monthName, user, rerender }) {
       { label: 'From the Cass statements and the GL', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null,
         a.detail?.length ? h('details', { class: 'small' }, h('summary', {}, `${a.detail.length} item${a.detail.length === 1 ? '' : 's'}`),
           h('ul', {}, a.detail.map((d) => h('li', {}, `${d.date} ${d.desc} ${money(d.amount)}`)))) : null) },
-      { label: 'Amount', num: true, cell: (a) => h('span', {}, money(a.amount), /^auto-gl(rev|stripe)-/.test(a.id) ? h('div', {}, h('button', { class: 'small-btn', title: 'Per the GL, but it doesn’t affect this month’s deposits',
+      { label: 'Amount', num: true, cell: (a) => h('span', {}, money(a.amount), /^auto-gl/.test(a.id) ? h('div', {}, h('button', { class: 'small-btn', title: 'Per the GL, but it doesn’t affect this month’s deposits',
         onclick: () => { rec.dismissed = { ...(rec.dismissed || {}), [a.id]: true }; logChange(rec, user, `Left out “${a.label}” ${money(a.amount)}`); changed({ now: true }); } }, 'Leave out')) : null) },
       { label: 'Entered / confirmed', cell: (a) => {
         const o = rec.autoConfirm[a.id] || (rec.autoConfirm[a.id] = {});

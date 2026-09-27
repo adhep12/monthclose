@@ -90,7 +90,15 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **When a statement rule and the GL disagree, a person decides.** A deposit a rule takes out (a matching payment out of another account, a tax refund, Fidelity wording) that the GL booked as revenue is listed under "to decide" on the month page (⚠ on the FY sheet), counted as revenue meanwhile. "It's a transfer" stores it in `rec.excluded`; "It's revenue" in `rec.dismissed`. Automatic findings stored on older records (`auto: true`) are ignored and worked out fresh. | User rule: the GL is booked by people, a coincidence of amounts isn't proof. None in the FY2026 months with statements. |
 | **KeyBank Operating deposits are cash giving** unless the GL booked a KeyBank (1061) deposit from another of our accounts (taken out as a transfer). A statement total that differs from what the GL put into 1061 is flagged, with a button to take the difference out as a transfer. | User rule. Nov 155 and Apr 945 = GL. |
 | **PayPal, Tschetter, Delap: transfers are called out by hand** until better statements are available. PayPal money in isn't revenue unless it's a payment received; Tschetter/Delap net deposits are typed (Delap's Fidelity transfers into Cass fill in automatically). | User. |
-| **PayPal revenue = payments received less USD payments sent** (money given back to donors). The tie check includes Transfers. | Feb/Mar 2026: 15,337 returned to a donor each month, booked by the GL as "Payment Refund" DR 4012. Feb 1,021.48 and Mar 17,829.08 = GL 4012 (less the check to Cass). |
+| **A statement line is what the statement says; every change to it is its own labelled adjustment** with its source (GL batch or CSV line) and a why. Account adjustments wait until that account's figure is in. | User: auditors must be able to follow it without digging. |
+| **Investment fees come from the GL**: 8070 in a batch touching 1170/1171 fills "Fees taken out" when it's blank (a typed fee wins). | Tschetter Oct 3,135.59, Jan 3,186.16, Apr 9,697.84, Jun 16,139.40: interest then ties to 0.00 every month. |
+| **PayPal: line = "Payments received"; money given back to donors is an adjustment from the GL's "Payment Refund" lines.** Not from "Payments sent", which also holds payments to others, and not from a whole batch reversed out of the wrong period. | Feb/Mar 15,337 refunds, Aug 10.00. Jun 1,000 sent was a harvest-share payment (GL018412), not a refund. Apr GL018363 reverses a mis-posted batch. |
+| **Stripe: line = payments + refunds (the CSV); disputes are an adjustment** ("Stripe disputes"). | = GL 4015 to the cent. |
+| **Wise fees on incoming gifts are added back** (the GL books the gift gross, fee to expense). | 6.11 per wire: Dec 24.44, Mar/Apr/May/Aug 6.11. |
+| **KeyBank: GL revenue vs deposit, per batch.** Less → a transfer or a non-giving deposit; more → cash gifts spent before the deposit. | Nov: 555 of gifts, 155 deposited, 400 spent (Cheers Club, honorarium). Apr: 50 of the 945 was a phone reimbursement. |
+| **Revenue with no cash this month (per the GL)**: merchandise sold on account (Dr 1210 → timing, collected later as "recognized in another month"), a gift moved to a liability (Jan: Overflow 3,018.70 to 2052). | Oct/Dec 26, Jan 520, Feb 52, Jul 708.95 air orders. |
+| **Matching across month end:** last month's batch with no bank date in its name can match a deposit up to 12 days later early in the month; AP batches that put money into Cass are matched (a vendor refund) but never listed as GL-only; one deposit can be several batches of the same kind. | Cigna 8,565 booked 12/31, deposited 1/7. MA PFML 181.25 booked 2/25, deposited 3/3. Paramount 600 (AP014203). Koorong 595 = 520 + 75 receivable payments. |
+| **PayPal revenue = payments received less USD payments sent** *(superseded by the rule above)* (money given back to donors). The tie check includes Transfers. | Feb/Mar 2026: 15,337 returned to a donor each month, booked by the GL as "Payment Refund" DR 4012. Feb 1,021.48 and Mar 17,829.08 = GL 4012 (less the check to Cass). |
 | **Stripe revenue = payments + refunds + disputes** (the CSV's gross). Fees are an expense (8590). | GL "Monthly Stripe Giving" credits 4015 with exactly this, every month Oct–Aug (Nov dispute 195, Dec 255, Jan 60, Feb 35, Apr 125, May 40). |
 | **Stripe sales the GL moves out of revenue come off the Stripe line**, read from the GL's Stripe reclass batches: shipping (9050), sales tax (2042). Merchandise moved to 4081–4085 stays revenue. A stray Stripe transfer the GL reclasses into giving (1200 → 4015) is added. | With disputes, this explains the Stripe line vs GL to $0.00 every month Nov–Jul. Oct leaves 9.43 (that month's stray, which the GL never booked as giving). Jan's 97.50 stray was booked as giving in Feb (GL017834), so ignored strays are revenue per the GL, a month late. |
 | **Deposits in transit come from the GL.** A revenue batch booked in month M whose money reached the bank in M+1 is in transit at M (the GL names the bank date: "3.3.2026 February Deposit"); one in the bank in M but booked in M+1 is a minus. The M+1 statement confirms it; until then the batch date suggests it and a person confirms (`rec.ditGl`). Typed DIT still counts unless the GL has the same amount; workbook DIT is shown for comparison only. | GL DIT = workbook DIT for Nov, Feb, Mar, Apr, Jul exactly. Dec/Jan differ by the 8,565 Cigna check the workbook put in DIT (GL: 8015, not revenue); May/Jun by a 50.00 6/11 deposit the workbook missed. Aug: 53,093.52. |
@@ -142,6 +150,16 @@ Jan 17,322.22 · Feb 5,472.36 · Mar 8,661.90 · Apr 1,251.12 · May −2,966.38
 The Outgoing fix should improve some of these: July is expected to go from −3,101.67 to about −273.
 
 ## 4. Next steps
+
+**2026-09-27, latest export (after deploy):** interest differences were only the four Tschetter fees (now from the GL).
+Revenue by month, and what explains it (source split with the GL, `scratchpad floor2` method: each GL revenue batch
+assigned to the bank account on its other side):
+Oct −8,588.64: October's DIT change is blank because September 2025 isn't in this GL (the workbook had 133,829.22 → change
++19,032.90), and the 10/14 Divvy CC rewards 10,479.69 were booked in FY25; with both, −9.43 (the October Stripe stray).
+Nov −75.92: KeyBank cash spent 400 (now automatic); a 324.08 Divvy reimbursement the GL has as 648.16 — mark not revenue.
+Dec −50.44: Wise fees 24.44 + air order 26 (both now automatic) → 0.00. Jan +11,115.70: Cigna 8,565 (now matched), Overflow
+3,018.70 and air order 520 (now automatic) → about +52. Jun: 1,000 no longer taken off PayPal. Apr: Cass statements missing.
+
 
 **Since the tie-out above (2026-09-27, later):** the Wise reader, the GL deposit check and GL deposits in transit
 are built (rules in §2). The workbook's small monthly differences look like two larger errors cancelling: the
@@ -214,7 +232,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (46 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (48 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

@@ -39,6 +39,11 @@ export function adjKey(a) {
   if (a.id?.startsWith('auto-ex-')) return 'Deposits that aren’t revenue';
   if (a.id?.startsWith('auto-glrev-')) return 'Revenue the GL took back';
   if (a.id?.startsWith('auto-glstripe-')) return 'Stripe shipping, sales tax (per the GL)';
+  if (a.id === 'auto-stripe-disputes') return 'Stripe disputes';
+  if (a.id?.startsWith('auto-glpaypal-')) return 'PayPal given back to donors (per the GL)';
+  if (a.id === 'auto-glwise-fees') return 'Wise fees on incoming gifts (per the GL)';
+  if (a.id?.startsWith('auto-glkey-')) return 'KeyBank deposits (per the GL)';
+  if (a.id?.startsWith('auto-glnocash-')) return 'Revenue with no cash this month (per the GL)';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
 }
 
@@ -121,7 +126,7 @@ export default async function (main, { user, rerender }) {
   const screenRows = [
     { section: 'Per Bank Statement' },
     ...bankRows,
-    { label: `${adjOpen ? '▾' : '▸'} Cass Operating - Total Adjustments`, rev: (c) => c.adjTotal, toggle: true, hint: 'Click to open up what’s being adjusted',
+    { label: `${adjOpen ? '▾' : '▸'} Total Adjustments (all accounts)`, rev: (c) => c.adjTotal, toggle: true, hint: 'Click to open up what’s being adjusted',
       meta: { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : null) } },
     ...(adjOpen ? adjRows() : []),
     { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + c.adjTotal), int: (c) => c.bankInt, strong: true },
@@ -139,7 +144,7 @@ export default async function (main, { user, rerender }) {
   ];
   const rows = screenRows;
   // For printing: every adjustment line shown, whether or not it's opened up on screen.
-  const printRows = screenRows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Cass Operating - Total Adjustments' }, ...adjRows()] : [r]));
+  const printRows = screenRows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Total Adjustments (all accounts)' }, ...adjRows()] : [r]));
 
   const ytd = (f) => (f ? round2(sum(done, (x) => f(x.c) || 0)) : null);
   const pctOf = (d, g) => (d == null || !g ? '' : `${((d / g) * 100).toFixed(2)}%`);
@@ -370,7 +375,9 @@ export default async function (main, { user, rerender }) {
                     ? h('span', {}, money(prior.bank[id].ending, { dash: false }), h('span', { class: 'muted small' }, ' (from last month)')) : inp('priorEnding')),
                   field('Net deposits (withdrawals)', inp('netDeposits'), id === 'delap' && fidelityTransfers(rec).total && b.netDeposits == null
                     ? `Left blank: Cass received ${money(fidelityTransfers(rec).total, { dash: false })} from Fidelity this month, so that’s used as a withdrawal.` : 'Money put in is positive; taken out (withdrawals, fees) negative.'),
-                  field('Fees taken out', inp('fees'), 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
+                  field('Fees taken out', inp('fees'), c.deposits?.fees?.[id] && b.fees == null
+                    ? `Left blank: the GL booked ${money(c.deposits.fees[id].amount, { dash: false })} in fees this month (${c.deposits.fees[id].batches.map((x) => x.batch).join(', ')}, Dr 8070), so that’s added back.`
+                    : 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
                   field('Revenue', inp('rev')),
                   h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Gain / interest'), h('strong', {}, money(balanceMethodInterest(b, prior?.bank?.[id]), { dash: false }))))
                 : h('div', { class: 'form-grid' }, field('Revenue (deposits)', inp('rev')), field('Interest', inp('int')), field('Ending balance', inp('ending'))),
@@ -548,7 +555,7 @@ export default async function (main, { user, rerender }) {
   // The sheet as it stands (every adjustment line opened up), plus where each number came from.
   async function exportExcel() {
     const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · figures as imported and entered in the Proof of Cash app`;
-    const all = rows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Cass Operating - Total Adjustments' }, ...adjRows().map((a) => ({ ...a, label: `    ${a.label}` }))] : r.indent ? [] : [r]));
+    const all = rows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Total Adjustments (all accounts)' }, ...adjRows().map((a) => ({ ...a, label: `    ${a.label}` }))] : r.indent ? [] : [r]));
     const pct = (d, g) => (d == null || !g ? null : { v: Math.round((d / g) * 1e6) / 1e6, z: '0.00%' });
     const at = (f, c) => (f && c ? f(c) ?? null : null);
     const sheetRows = [

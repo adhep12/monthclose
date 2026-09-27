@@ -35,6 +35,7 @@ const ACCOUNT_NAMES = {
   9050: 'shipping (COGS)',
 };
 export const accountName = (a, names = {}) => `${a} ${names[a] || ACCOUNT_NAMES[a] || ''}`.trim();
+const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // What the GL booked a batch to, in proof of cash terms.
 export function glKind(r, config = DEFAULT_POC_CONFIG, names = {}) {
@@ -107,9 +108,17 @@ function matchMonth(month, lines, receiptsBy, used) {
   const all = [[month, 'this'], [addMonths(month, -1), 'prior'], [addMonths(month, 1), 'next']]
     .flatMap(([m, when]) => (receiptsBy[m] || []).filter((r) => r.amount > 0).map((r) => ({ r, when, w: bankWindow(r), stripe: glKind(r).kind === 'stripe' })));
   const open = (x) => !used.has(x.r.batch);
-  const take = (x, ls) => { used.add(x.r.batch); for (const l of ls) byLine.set(l, { r: x.r, when: x.when, group: ls.length }); };
+  const take = (x, ls) => { used.add(x.r.batch); for (const l of ls) byLine.set(l, { r: x.r, when: x.when, group: ls.length, batches: [x.r] }); };
   // Last or next month's batch has to be close: it's borrowing across the month end.
-  const near = (x, date, days) => distance(date, x.w) <= (x.when === 'this' ? days : Math.min(days, 3));
+  // A batch from last month without a bank date in its name is usually dated the last day of the
+  // month, and the deposit can take a week or so to reach the bank (the Cigna check: booked 12/31,
+  // deposited 1/7), so it gets longer early in the month.
+  const near = (x, date, days) => {
+    const d = distance(date, x.w);
+    if (x.when === 'this') return d <= days;
+    if (x.when === 'prior' && !x.w.named && Number(String(date).slice(8, 10)) <= 12) return d <= 12;
+    return d <= Math.min(days, 3);
+  };
   const order = (date) => (a, b) => RANK[a.when] - RANK[b.when] || distance(date, a.w) - distance(date, b.w);
   const fits = (x, l) => {
     if (STRIPE.test(l.desc) !== x.stripe) return false;
@@ -154,13 +163,25 @@ function matchMonth(month, lines, receiptsBy, used) {
     if (x) take(x, [l]);
   }
   for (const x of [...all].sort((a, b) => RANK[a.when] - RANK[b.when] || b.r.amount - a.r.amount)) {
-    if (!open(x)) continue;
+    if (!open(x) || x.r.ap) continue;
     const cand = left().filter((l) => fits(x, l) && near(x, l.date, x.w.named ? 1 : 2));
     for (const set of [cand.filter((l) => l.kind === 'operating'), cand.filter((l) => l.kind === 'incoming'), cand.filter((l) => l.kind === 'outgoing'), cand]) {
       if (set.length < 2) continue;
       const found = subsetSum(set.slice(0, 40).map((l) => ({ line: l, c: cents(l.amount) })), cents(x.r.amount));
       if (found) { take(x, found); break; }
     }
+  }
+  // One deposit, several batches of the same kind: two receivable payments in one wire (Koorong
+  // Books, March: 520 + 75).
+  for (const l of left()) {
+    const cand = all.filter((x) => open(x) && fits(x, l) && near(x, l.date, 3) && x.r.amount < l.amount).sort(order(l.date)).slice(0, 12);
+    const found = subsetSum(cand.map((x) => ({ line: x, c: cents(x.r.amount) })), cents(l.amount));
+    if (!found || found.length < 2 || new Set(found.map((x) => glKind(x.r).kind)).size > 1) continue;
+    for (const x of found) used.add(x.r.batch);
+    const accounts = {};
+    for (const x of found) for (const [a, v] of Object.entries(x.r.accounts)) accounts[a] = round2((accounts[a] || 0) + v);
+    const r = { batch: found.map((x) => x.r.batch).join(' + '), date: found[0].r.date, desc: found.map((x) => x.r.desc).join(' + '), amount: l.amount, accounts };
+    byLine.set(l, { r, when: found[0].when, group: 1, batches: found.map((x) => x.r) });
   }
   return byLine;
 }
@@ -205,13 +226,19 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     const byLine = lines.length ? matchMonth(m, lines, receiptsBy, used) : new Map();
     matched[m] = { lines, byLine };
     for (const [l, x] of byLine) {
-      const e = matchedBatch.get(x.r.batch) || { month: m, lines: [] };
-      e.lines.push(l); matchedBatch.set(x.r.batch, e);
+      for (const r of x.batches || [x.r]) {
+        const e = matchedBatch.get(r.batch) || { month: m, lines: [] };
+        e.lines.push(l); matchedBatch.set(r.batch, e);
+      }
     }
   }
   const out = {};
   for (const m of months) out[m] = monthFindings(m);
   return out;
+
+  function revenueIn(accounts) {
+    return round2(sum(Object.entries(accounts || {}).filter(([a]) => config.revenueAccounts.includes(a)), ([, v]) => v));
+  }
 
   function monthFindings(m) {
     const rec = recs[m] || {};
@@ -220,6 +247,11 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     const hasStatements = !!(rec.statements?.operating || rec.statements?.incoming);
     const res = { month: m, available: !!receipts, hasStatements, lines: [], exclusions: {}, adjustments: [], covered: [], noGl: [], glOnly: [], dit: null,
       conflicts: [], suspended: [], keyBank: null };
+    // Investment fees the GL booked this month (added back to the change in value when not typed).
+    for (const f of glBy[m]?.investmentFees || []) {
+      const x = (res.fees ||= {})[f.account] || (res.fees[f.account] = { amount: 0, batches: [] });
+      x.amount = round2(x.amount + f.amount); x.batches.push(f);
+    }
     if (!receipts && !byLine.size && !glBy[m]?.keyReceipts) return res;
 
     // Hand-entered adjustments (typed, or from the workbook) already cover some of these. One
@@ -270,7 +302,7 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         else if (!dismissed[id]) res.adjustments.push(adj);
       }
       for (const r of receipts) {
-        if (r.amount <= 0) continue;
+        if (r.amount <= 0 || r.ap) continue;
         const k = glKind(r, config, names);
         if (k.kind === 'stripe') continue;
         const at = matchedBatch.get(r.batch);
@@ -296,19 +328,61 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     if (key) {
       const ins = key.filter((r) => r.amount > 0);
       for (const r of ins) {
-        const own = Object.entries(r.accounts).filter(([a, v]) => v > 0 && ['transfer'].includes(glKind({ accounts: { [a]: v } }, config).kind));
-        const amount = round2(sum(own, ([, v]) => v));
-        if (!amount) continue;
+        // What the GL counted as revenue against what was deposited. Less: part of the deposit
+        // wasn't giving (a transfer, a reimbursement). More: cash gifts spent before the deposit.
+        const revenue = revenueIn(r.accounts);
+        const amount = round2(revenue - r.amount);
+        if (Math.abs(amount) < 0.005) continue;
+        const own = Object.entries(r.accounts).filter(([a, v]) => v > 0 && glKind({ accounts: { [a]: v } }, config).kind === 'transfer');
+        const others = Object.entries(r.accounts).filter(([a, v]) => !config.revenueAccounts.includes(a) && Math.abs(v) >= 0.005);
         const id = `auto-glkey-${r.batch}`;
-        const adj = { id, account: 'keyOp', type: 'transfer', label: `KeyBank deposit from another of our accounts: ${r.desc}`, amount: -amount, auto: true, gl: r.batch,
-          note: `GL ${r.batch} (${r.date}): from ${own.map(([a]) => accountName(a, names)).join(', ')}`,
-          why: 'The GL booked this KeyBank deposit as money from another of our accounts, not giving.',
-          detail: [{ date: r.date, amount, desc: r.desc }] };
-        const by = coveredBy(-amount);
+        const adj = { id, account: 'keyOp', type: amount < 0 && own.length ? 'transfer' : 'other', auto: true, gl: r.batch, amount,
+          label: amount < 0 ? (own.length ? `KeyBank deposit from another of our accounts: ${r.desc}` : `KeyBank deposit that isn’t giving: ${r.desc}`) : `Cash gifts spent before they were deposited: ${r.desc}`,
+          note: `GL ${r.batch} (${r.date}): deposited ${money2(r.amount)}, of which the GL counts ${money2(revenue)} as revenue; the rest went to ${others.map(([a, v]) => `${accountName(a, names)} ${money2(Math.abs(v))}`).join(', ')}.`,
+          why: 'The KeyBank statement only has the total deposited; the GL shows what it was.',
+          detail: [{ date: r.date, amount: Math.abs(amount), desc: r.desc }] };
+        const by = coveredBy(amount);
         if (by) res.covered.push({ adjustment: adj, by });
         else if (!dismissed[id]) res.adjustments.push(adj);
       }
       res.keyBank = { glIn: round2(sum(ins, (r) => r.amount)), batches: ins };
+    }
+    // Wise takes its fee out of an incoming wire; the GL books the gift in full (e.g. 699,993.89
+    // received, 700,000 to 4018, 6.11 fee), so the fee is added back to the Wise line.
+    const wiseFees = (glBy[m]?.wiseReceipts || []).filter((r) => r.amount > 0 && revenueIn(r.accounts) > 0)
+      .map((r) => ({ r, fee: round2(revenueIn(r.accounts) - r.amount) })).filter((x) => Math.abs(x.fee) >= 0.005);
+    if (wiseFees.length && !dismissed['auto-glwise-fees']) {
+      res.adjustments.push({ id: 'auto-glwise-fees', account: 'wise', type: 'other', label: 'Wise fees taken from incoming gifts', auto: true,
+        amount: round2(sum(wiseFees, (x) => x.fee)),
+        note: wiseFees.map((x) => `GL ${x.r.batch}: ${x.r.desc} — received ${money2(x.r.amount)}, booked ${money2(x.r.amount + x.fee)}`).join('; '),
+        why: 'Wise pays out an incoming wire less its fee; the GL books the gift in full and the fee as an expense, so the fee is added back.',
+        detail: wiseFees.map((x) => ({ date: x.r.date, amount: x.fee, desc: x.r.desc })) });
+    }
+    // Money given back to donors out of PayPal, from the GL's "Payment Refund" lines.
+    for (const r of glBy[m]?.paypalRefunds || []) {
+      const id = `auto-glpaypal-${r.batch}`;
+      if (dismissed[id]) continue;
+      res.adjustments.push({ id, account: 'paypal', type: 'refund', label: 'PayPal: given back to donors', amount: -r.amount, auto: true, gl: r.batch,
+        note: `GL ${r.batch} (${r.date}) books a “Payment Refund” of ${money2(r.amount)} against 4012; on the PayPal statement it’s part of “Payments sent”.`,
+        why: 'The PayPal statement’s “Payments received” is before any gift was given back; the GL takes refunds off revenue.',
+        detail: [{ date: r.date, amount: r.amount, desc: r.desc }] });
+    }
+    // Revenue the GL booked with no cash this month: merchandise sold on account (collected later,
+    // when the receivable is paid), or a gift moved to a liability.
+    for (const x of glBy[m]?.noCashRevenue || []) {
+      const amount = revenueIn(x.accounts);
+      if (Math.abs(amount) < 0.005) continue;
+      const id = `auto-glnocash-${x.batch}`;
+      const onAccount = Object.keys(x.accounts).some((a) => /^12[1-9]\d$/.test(a));
+      const adj = { id, account: 'cassOp', type: onAccount ? 'timing' : 'other', auto: true, gl: x.batch, amount,
+        label: onAccount ? `Merchandise sold on account: ${x.desc}` : `Revenue the GL moved with no cash: ${x.desc}`,
+        note: `GL ${x.batch} (${x.date}): ${Object.entries(x.accounts).map(([a, v]) => `${accountName(a, names)} ${v > 0 ? 'Cr' : 'Dr'} ${money2(Math.abs(v))}`).join(', ')}`,
+        why: onAccount ? 'Booked as revenue when sold; the cash comes in later, when the receivable is paid (that deposit is then taken out as recognized in an earlier month).'
+          : 'The GL changed revenue without any money moving this month.',
+        detail: [{ date: x.date, amount: Math.abs(amount), desc: x.desc }] };
+      const by = coveredBy(amount);
+      if (by) res.covered.push({ adjustment: adj, by });
+      else if (!dismissed[id]) res.adjustments.push(adj);
     }
     res.dit = ditFor(m, rec);
     return res;
