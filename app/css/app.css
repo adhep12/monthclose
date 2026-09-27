@@ -292,3 +292,12 @@ main.content { margin: 0 auto; }
 .inline-form input, .inline-form select { width: auto; flex: 0 1 auto; }
 .inline-form input[type=text] { min-width: 9rem; }
 .stack { display: flex; flex-direction: column; gap: .3rem; align-items: flex-start; }
+/* Checking a line: the same Status and actions in every pop-up. */
+.status { display: flex; flex-direction: column; gap: .15rem; align-items: flex-start; min-width: 8rem; }
+.actions { display: flex; flex-direction: column; gap: .3rem; align-items: stretch; width: 11rem; }
+.actions > button, .actions > select { width: 100%; }
+.change-select { font-size: .78rem; padding: .15rem .35rem; }
+.confirm-btn { background: var(--accent); color: #fff; border-color: var(--accent); }
+.review-head { align-items: center; gap: .5rem; }
+.review-head h3, .review-head h4 { margin: .75rem 0 .25rem; }
+.review-bar { display: flex; align-items: center; gap: .5rem; padding: .5rem .75rem; margin-bottom: .75rem; border: 1px solid var(--line); border-radius: var(--radius); background: color-mix(in srgb, var(--muted) 6%, transparent); }

@@ -242,7 +242,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (51 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (53 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.
@@ -251,6 +251,14 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
   `readStatementFile(new File([bytes], 'x.pdf'))`. pdf.js needs a browser, so node alone won't read PDFs.
   SheetJS works in node: `import * as XLSX from './app/vendor/xlsx.mjs'` + `repairRefs`, which Acumatica
   exports need.
+- **Pop-ups check lines one way** (`poc-year.js`: `statusCell`, `actionsCell`, `changeSelect`,
+  `reviewHead`). Every checkable line has Date · Description (what it is, with who/source under it)
+  · Amount · Evidence · **Status** (To check / ✓ Confirmed, who, when / Changed / Overridden* / ✓
+  Statement shows it, plus how it counts) · then the actions, always in this order: **Confirm**
+  (keeps how it counts now), **Change…** (a menu of the other ways it can count), then Undo, Leave
+  out, Edit or Remove. Every section heading shows what's left to check, *Confirm all* and the
+  subtotal; each pop-up opens with a bar counting everything left, with one *Confirm all*. Going
+  from one pop-up to another closes the first. Keep new pop-ups to this.
 - **Gotchas:**
   - Native `confirm`/`prompt`/`alert` are blocked in the platform iframe. Use `ask`, `askValue`,
     `notify` and `panel` from `app/js/ui.js`.

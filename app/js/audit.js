@@ -51,6 +51,6 @@ export function stampBadge({ enteredBy, enteredAt, obj, values, user, onConfirm,
       : h('div', {},
         state === 'stale' ? h('span', { class: 'warn-text' }, `Changed since ${c.by} confirmed it · `) : null,
         hasValue && onConfirm
-          ? h('button', { class: 'small-btn', onclick: onConfirm, title: enteredBy && enteredBy === user ? 'You entered this — ideally someone else confirms it.' : '' }, 'Confirm')
+          ? h('button', { class: 'small-btn confirm-btn', onclick: onConfirm, title: enteredBy && enteredBy === user ? 'You entered this — ideally someone else confirms it.' : '' }, 'Confirm')
           : null));
 }

@@ -6,7 +6,7 @@
 import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks, depositHint } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
@@ -72,6 +72,69 @@ export const adjKey = adjGroup;
 // booked on or just before the sweep that isn't a deposit on Operating or Incoming (Fidelity,
 // WEX COBRA). Items are { date, desc, note, a }; their notes are filled in from the GL where
 // the statement had none. Returns the text to show for an item.
+// Confirmed: who checked each line of an adjustment, at its amount (goes stale if the amount
+// changes). Each line (each sweep, each transfer) is confirmed on its own; a whole adjustment
+// confirmed before lines could be still counts. x is { a, date, desc, shown }.
+const lineKey = (x) => (x.a.detail?.length ? `${x.a.id}|${x.date}|${round2(Math.abs(x.shown))}|${x.desc}` : x.a.id);
+function confirmOf(saved, x) {
+  if (!x.a.auto) {
+    const t = (saved.adjustments || []).find((y) => y.id === x.a.id);
+    return t?.confirmation ? { o: t, st: confirmationState(t, { amount: x.a.amount }) } : { st: 'none' };
+  }
+  const line_ = saved.autoConfirm?.[lineKey(x)];
+  if (line_?.confirmation) return { o: line_, st: confirmationState(line_, { amount: round2(x.shown) }) };
+  const whole = saved.autoConfirm?.[x.a.id];
+  if (whole?.confirmation && confirmationState(whole, { amount: x.a.amount }) === 'confirmed') return { o: whole, st: 'confirmed' };
+  return { st: whole?.confirmation ? 'stale' : 'none' };
+}
+const confirmLines = (xs, user) => (rec) => {
+  for (const x of xs) {
+    if (!x.a.auto) { const t = (rec.adjustments || []).find((y) => y.id === x.a.id); if (t) confirmValues(t, user, { amount: x.a.amount }); continue; }
+    rec.autoConfirm ||= {};
+    confirmValues(rec.autoConfirm[lineKey(x)] ||= {}, user, { amount: round2(x.shown) });
+  }
+};
+// An adjustment's lines, each with its own (positive) amount shown with the adjustment's sign.
+const linesOf = (list) => list.flatMap((a) => (a.detail?.length ? a.detail.map((d) => ({ ...d, a, shown: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, note: a.note, a, shown: a.amount }]));
+
+// ---- One way of checking a line, in every pop-up ------------------------------------------------
+// Every line that can be checked shows the same things in the same place:
+//   Status  — To check · ✓ Confirmed (who, when) · Changed (who, why) · the statement shows it
+//   Confirm — keeps how it counts now, and records who checked it
+//   Change… — counts it differently; then Undo, Leave out, Edit or Remove where they apply
+// and every section has its title, what's left to check, "Confirm all" and its subtotal.
+const STATUS = {
+  todo: ['To check', 'warn'], confirmed: ['✓ Confirmed', 'good'], changed: ['Changed', 'info'],
+  override: ['Overridden*', 'bad'], statement: ['✓ Statement shows it', 'good'], stale: ['Changed since confirmed', 'warn'],
+};
+function statusCell({ state, text, by, at, counts, note }) {
+  const [t, kind] = STATUS[state] || [text || '', 'neutral'];
+  return h('div', { class: 'status' },
+    state ? statusPill(text || t, kind) : null,
+    by ? h('span', { class: 'small muted' }, `${by}${at ? ` · ${when(at)}` : ''}`) : null,
+    counts ? h('span', { class: 'small' }, counts) : null,
+    note ? h('span', { class: 'small wrap' }, note) : null);
+}
+function actionsCell({ confirm = null, confirmLabel = 'Confirm', change = null, more = [] }) {
+  const parts = [confirm ? h('button', { class: 'small-btn confirm-btn', onclick: confirm }, confirmLabel) : null, change, ...more].filter(Boolean);
+  return parts.length ? h('div', { class: 'actions' }, parts) : '';
+}
+// A menu of other ways something can count. Picking one does it; the menu itself never shows a
+// current value (that's what Status is for).
+function changeSelect(options, current, onPick, placeholder = 'Change…') {
+  const others = options.filter(([v]) => v !== current);
+  if (!others.length) return null;
+  return h('select', { class: 'change-select', onchange: (e) => { const v = e.target.value; e.target.selectedIndex = 0; if (v) onPick(v); } },
+    h('option', { value: '', selected: true }, placeholder), others.map(([v, t]) => h('option', { value: v }, t)));
+}
+function reviewHead(title, { total = null, todo = 0, count = 0, onConfirmAll = null, level = 'h3' } = {}) {
+  return h('div', { class: 'row review-head' }, h(level, {}, title),
+    count ? (todo ? statusPill(`${todo} to check`, 'warn') : statusPill('✓ All checked', 'good')) : null,
+    todo && onConfirmAll ? h('button', { class: 'small-btn confirm-btn', onclick: onConfirmAll }, `Confirm all ${todo}`) : null,
+    h('span', { class: 'spacer' }),
+    total != null ? h('strong', { class: 'num' }, money(total)) : null);
+}
+
 const PLUMBING = /^Trnsfr (from|to) Checking Acct/i;
 function whatLanded(c, items) {
   const glOnly = (c.deposits?.glOnly || []).map((g) => g.receipt).filter((r) => r.kind !== 'revenue');
@@ -450,13 +513,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
                   draw();
                 } }, 'Save'))),
           auto && src.id !== 'cd' ? h('p', { class: 'muted small' }, 'Detach the statement to type figures instead.') : null,
-
-          id === 'cassOp' ? cassSummary(c, m, close) : null,
-          id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
-          id === 'wise' ? wiseOutBox(rec, close) : null,
-          id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
-
-          h('h3', {}, 'Confirmation'),
+          h('h3', {}, 'Confirm the figures'),
           stampBadge({ enteredBy: l.enteredBy, enteredAt: l.enteredAt, obj: b, values: l.values, user,
             onConfirm: async () => {
               confirmValues(b, user, l.values); logChange(rec, user, `Confirmed ${label(id)}: revenue ${money(l.rev, { dash: false })}, interest ${money(l.int, { dash: false })}`);
@@ -464,6 +521,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               draw();
             },
             onUnconfirm: async () => { delete b.confirmation; logChange(rec, user, `Removed confirmation on ${label(id)}`); try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err), 'error'); } draw(); } }),
+
+          id === 'cassOp' ? cassSummary(c, m, close) : null,
+          id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
+          id === 'wise' ? wiseOutBox(rec, close) : null,
+          id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
+
           h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
       };
       draw();
@@ -511,8 +574,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { label: 'Date', cell: (x) => x.date },
         { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.desc) },
         { label: 'Amount', num: true, cell: (x) => money(-x.amount) },
-        { label: '', cell: (x) => h('div', { class: 'row' }, status[x.state](x),
-          x.state === 'counted' && x.landed ? h('button', { class: 'small-btn', onclick: () => treatAs(x.landed.month || rec.month, x.landed, 'transfer', `Money from Wise: ${x.date} ${x.desc}`, { kind: 'account', id: 'wise', m: rec.month }, close) }, 'Take the deposit out as a transfer') : null) },
+        { label: 'Status', cell: (x) => status[x.state](x) },
+        { label: '', cell: (x) => actionsCell({ confirm: x.state === 'counted' && x.landed ? () => treatAs(x.landed.month || rec.month, x.landed, 'transfer', `Money from Wise: ${x.date} ${x.desc}`, { kind: 'account', id: 'wise', m: rec.month }, close) : null, confirmLabel: 'Take out as a transfer' }) },
       ], outs));
   }
 
@@ -520,57 +583,79 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const cassAdj = c.adjustments.filter((a) => a.account === 'cassOp' || a.auto);
     const dep = c.deposits;
     const again = { kind: 'account', id: 'cassOp', m };
+    const saved = byMonth[m] || {};
     const conflicts = dep?.conflicts || [];
-    const noGl = (dep?.noGl || []).filter((x) => !x.covered && !x.decided);
-    const decidedNoGl = (dep?.noGl || []).filter((x) => x.decided);
+    // Deposits the GL doesn't have: those still to check first, then those someone has decided.
+    const noGl = (dep?.noGl || []).filter((x) => !x.covered).sort((x, y) => !!x.decided - !!y.decided);
     const typeName = (t) => (REVIEW_TYPES.find((x) => x[0] === t) || [, t])[1];
-    // Deposits a statement rule already takes out (a Divvy reimbursement): confirming says so.
-    const ruleOut = new Map(c.adjustments.filter((a) => /^auto-(tr|ex)-/.test(a.id || '')).map((a) => [a.id.replace(/^auto-(tr|ex)-/, ''), a]));
-    const noGlRevenue = noGl.filter((x) => !ruleOut.has(x.line.id));
+    // Deposits a statement rule already takes out (a Divvy reimbursement): confirming keeps that.
+    const ruleOut = new Map(Object.entries(byMonth[m] ? defaultExclusions(byMonth[m]) : {}));
+    const nowType = (x) => x.decided?.type || ruleOut.get(x.line.id)?.type || 'revenue';
+    const confirmNoGl = (xs) => (rec) => {
+      for (const x of xs) {
+        const o = ruleOut.get(x.line.id);
+        rec.excluded ||= {};
+        if (o) { rec.excluded[x.line.id] = { type: o.type, note: `Confirmed: ${o.note || typeName(o.type)}`, by: user, at: nowIso() }; if (rec.dismissed) delete rec.dismissed[x.line.id]; }
+        else { delete rec.excluded[x.line.id]; (rec.dismissed ||= {})[x.line.id] = { by: user, at: nowIso() }; }
+      }
+    };
+    const undoNoGl = (x) => decide(m, (rec) => { if (rec.excluded) delete rec.excluded[x.line.id]; if (rec.dismissed) delete rec.dismissed[x.line.id]; },
+      `${x.line.date} ${x.line.desc} ${money(x.line.amount)}: decision undone — back to checking`, again, close);
+    const todoNoGl = noGl.filter((x) => !x.decided);
+    const deposit = (line, sub) => h('div', {}, depositCell(line), sub ? h('div', { class: 'small muted wrap' }, sub) : null);
+
+    // What comes out of Cass deposits, a line per kind; each kind's lines are checked in its own
+    // pop-up (Transfers, Wire sweeps…), where the same Confirm and Change… are.
+    const kinds = [...new Set(cassAdj.map(adjDetail))].map((kind) => {
+      const as = cassAdj.filter((a) => adjDetail(a) === kind);
+      const its = linesOf(as);
+      return { kind, as, its, group: adjGroup(as[0]), todo: its.filter((x) => confirmOf(saved, x).st !== 'confirmed') };
+    });
+    const takenTodo = kinds.flatMap((k) => k.todo);
+    const review = (group) => { close(true); openAdjustments(group, m); };
     return h('div', {},
-      conflicts.length ? h('div', { class: 'notice warn' }, h('h3', {}, 'To decide: a rule says it isn’t revenue, the GL booked it as revenue'),
+      conflicts.length ? h('div', { class: 'adj-section' },
+        reviewHead('A rule and the GL disagree', { count: conflicts.length, todo: conflicts.length }),
+        h('p', { class: 'muted small' }, 'A statement rule says the deposit isn’t revenue, but the GL booked it as revenue. It counts as revenue, the GL’s way, until you decide: Confirm keeps it as revenue; Change… takes it out the rule’s way.'),
         table([
           { label: 'Date', cell: (x) => x.line.date },
-          { label: 'Deposit', cell: (x) => h('span', { class: 'wrap' }, x.line.desc) },
+          { label: 'Description', cell: (x) => deposit(x.line, `The rule: ${x.rule.note} · The GL: ${x.match.batch} ${x.match.desc}`) },
           { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
-          { label: 'The rule / the GL', cell: (x) => h('span', { class: 'small wrap' }, `${x.rule.note} · GL: ${x.match.batch} ${x.match.desc}`) },
-          { label: '', cell: (x) => h('div', { class: 'row' },
-            h('button', { class: 'small-btn', onclick: () => treatAs(m, x.line, x.rule.type, `Confirmed: ${x.rule.note}`, again, close) }, x.rule.type === 'transfer' ? 'It’s a transfer' : 'Not revenue'),
-            h('button', { class: 'small-btn', onclick: () => treatAs(m, x.line, 'revenue', '', again, close) }, 'It’s revenue')) },
+          { label: 'Status', cell: () => statusCell({ state: 'todo', counts: 'Counts as revenue (the GL)' }) },
+          { label: '', cell: (x) => actionsCell({ confirm: () => treatAs(m, x.line, 'revenue', '', again, close),
+            change: changeSelect([[x.rule.type, `The rule: ${typeName(x.rule.type).toLowerCase()}`], ...REVIEW_TYPES.filter(([v]) => v !== x.rule.type && v !== 'revenue')], 'revenue',
+              (v) => treatAs(m, x.line, v, v === x.rule.type ? `Confirmed: ${x.rule.note}` : '', again, close)) }) },
         ], conflicts)) : null,
-      noGl.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have'),
-        h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side matches it — often revenue booked in another month, or several deposits booked as one entry that doesn’t add up the same way. Counted as revenue until you say otherwise: confirm it, or choose what else it is.'),
-        noGlRevenue.length > 1 ? h('div', { class: 'row' }, h('button', { onclick: () => confirmRevenue(m, noGlRevenue.map((x) => x.line), again, close) }, `Confirm all ${noGlRevenue.length} counted as revenue`)) : null,
+      noGl.length ? h('div', { class: 'adj-section' },
+        reviewHead('Deposits the GL doesn’t have', { count: noGl.length, todo: todoNoGl.length,
+          onConfirmAll: () => decide(m, confirmNoGl(todoNoGl), `Confirmed ${todoNoGl.length} deposits the GL doesn’t match: ${todoNoGl.map((x) => `${x.line.date} ${money(x.line.amount)} as ${typeName(nowType(x)).toLowerCase()}`).join(', ')}`, again, close) }),
+        h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side matches it — often revenue booked in another month, or several deposits booked as one entry that doesn’t add up the same way. Confirm keeps how it counts now; Change… counts it differently.'),
         table([
           { label: 'Date', cell: (x) => x.line.date },
-          { label: 'Deposit', cell: (x) => depositCell(x.line) },
+          { label: 'Description', cell: (x) => deposit(x.line, x.decided?.note || '') },
           { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
-          { label: 'Treat as', cell: (x) => { const o = ruleOut.get(x.line.id); return h('div', { class: 'stack' },
-            o ? h('button', { class: 'small-btn', title: o.note || '', onclick: () => treatAs(m, x.line, o.type, `Confirmed: ${o.note || typeName(o.type)}`, again, close) }, `Confirm: ${typeName(o.type).toLowerCase()}`)
-              : h('button', { class: 'small-btn', onclick: () => confirmRevenue(m, [x.line], again, close) }, 'Confirm revenue'),
-            treatSelect(m, x.line, o?.type || 'revenue', again, close)); } },
+          { label: 'Status', cell: (x) => (x.decided
+            ? statusCell({ state: x.decided.type === (ruleOut.get(x.line.id)?.type || 'revenue') ? 'confirmed' : 'changed', by: x.decided.by, at: x.decided.at, counts: `Counts as ${typeName(x.decided.type).toLowerCase()}` })
+            : statusCell({ state: 'todo', counts: ruleOut.has(x.line.id) ? `Counts as ${typeName(nowType(x)).toLowerCase()} (a statement rule)` : 'Counts as revenue' })) },
+          { label: '', cell: (x) => actionsCell({
+            confirm: x.decided ? null : () => decide(m, confirmNoGl([x]), `${x.line.date} ${x.line.desc} ${money(x.line.amount)}: confirmed as ${typeName(nowType(x)).toLowerCase()} (no GL batch matched it)`, again, close),
+            change: changeSelect(REVIEW_TYPES, nowType(x), (v) => treatAs(m, x.line, v, '', again, close), 'Change how it counts…'),
+            more: x.decided ? [h('button', { class: 'small-btn', onclick: () => undoNoGl(x) }, 'Undo')] : [] }) },
         ], noGl)) : null,
-      decidedNoGl.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have — decided'),
-        h('p', { class: 'muted small' }, 'No GL batch for these either, but someone has said how each counts. Change it here if that was wrong.'),
-        table([
-          { label: 'Date', cell: (x) => x.line.date },
-          { label: 'Deposit', cell: (x) => depositCell(x.line) },
-          { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
-          { label: 'Counts as', cell: (x) => h('div', { class: 'stack' },
-            h('span', {}, statusPill(x.decided.type === 'revenue' ? 'Revenue — confirmed' : typeName(x.decided.type), x.decided.type === 'revenue' ? 'info' : 'good'), x.decided.by ? h('span', { class: 'small muted' }, ` ${x.decided.by} · ${when(x.decided.at)}`) : null),
-            x.decided.note ? h('span', { class: 'small' }, x.decided.note) : null) },
-          { label: 'Change', cell: (x) => treatSelect(m, x.line, x.decided.type, again, close) },
-        ], decidedNoGl)) : null,
-      h('h3', {}, 'Taken out of Cass deposits'),
-      cassAdj.length ? table([
-        { label: 'What', cell: (a) => {
-          const items = (a.detail || []).slice(0, 6).map((d) => ({ ...d, a }));
-          const what = whatLanded(c, items);
-          return h('div', {}, adjDetail(a), items.length ? h('div', { class: 'muted small wrap' }, items.map((x) => (what(x) === x.desc ? `${x.date} ${x.desc} ${money(x.amount)}` : `${x.date} swept ${money(x.amount)}: ${what(x)}`)).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null);
-        } },
-        { label: 'Type', cell: (a) => ADJUSTMENT_TYPES[a.type] || '' },
-        { label: 'Amount', num: true, cell: (a) => money(a.amount) },
-      ], cassAdj) : h('p', { class: 'muted' }, 'Nothing yet — attach the Cass statements.'),
+      h('div', { class: 'adj-section' },
+        reviewHead('Taken out of Cass deposits', { total: round2(sum(cassAdj, (a) => a.amount)), count: kinds.reduce((n, k) => n + k.its.length, 0), todo: takenTodo.length,
+          onConfirmAll: () => decide(m, confirmLines(takenTodo, user), `Confirmed all ${takenTodo.length} lines taken out of Cass deposits`, again, close) }),
+        kinds.length ? table([
+          { label: 'What', cell: (k) => {
+            const items = k.its.slice(0, 6);
+            const what = whatLanded(c, items);
+            return h('div', {}, h('span', {}, k.kind), h('span', { class: 'small muted' }, ` · ${k.group}`), items.length && k.as.some((a) => a.detail?.length) ? h('div', { class: 'muted small wrap' }, items.map((x) => (what(x) === x.desc ? `${x.date} ${x.desc} ${money(Math.abs(x.shown))}` : `${x.date} swept ${money(Math.abs(x.shown))}: ${what(x)}`)).join(' · '), k.its.length > 6 ? ` … +${k.its.length - 6} more` : '') : null);
+          } },
+          { label: 'Amount', num: true, cell: (k) => money(round2(sum(k.as, (a) => a.amount))) },
+          { label: 'Evidence', cell: (k) => h('div', { class: 'stack' }, [...new Set(k.as.map((a) => a.evidence || 'statement'))].map(evidencePill)) },
+          { label: 'Status', cell: (k) => statusCell(k.todo.length ? { state: 'todo', text: `${k.todo.length} of ${k.its.length} to check` } : { state: 'confirmed', text: `✓ All ${k.its.length} confirmed` }) },
+          { label: '', cell: (k) => actionsCell({ more: [h('button', { class: 'small-btn', title: `Open ${k.group} for ${monthName(m)}`, onclick: () => review(k.group) }, k.todo.length ? 'Check lines →' : 'See lines →')] }) },
+        ], kinds) : h('p', { class: 'muted' }, 'Nothing yet — attach the Cass statements.')),
       allDeposits(c, m, close));
   }
 
@@ -585,15 +670,15 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const deps = reviewableDeposits(rec);
     if (!deps.length) return null;
     const kindName = { revenue: 'Revenue', stripe: 'Stripe', transfer: 'Transfer', 'prior-period': 'Earlier month', 'not-revenue': 'Not revenue' };
+    const typeName = (t) => (REVIEW_TYPES.find((x) => x[0] === t) || [, t])[1];
     return h('details', { style: { marginTop: '1rem' } }, h('summary', {}, `Every deposit this month (${deps.length}) — how each counts, and what the GL booked it as`),
       table([
-        { label: 'Treat as', cell: (t) => treatSelect(m, t, out.get(t.id)?.type || 'revenue', again, close) },
-        { label: 'Account', cell: (t) => (t.kind === 'incoming' ? 'Cass Incoming' : t.kind === 'wise' ? 'Wise' : 'Cass Operating') },
         { label: 'Date', cell: (t) => t.date },
-        { label: 'Deposit', cell: (t) => h('span', { class: 'wrap', title: t.detail || '' }, t.desc) },
+        { label: 'Description', cell: (t) => h('div', {}, h('span', { class: 'wrap', title: t.detail || '' }, t.desc), h('div', { class: 'small muted' }, t.kind === 'incoming' ? 'Cass Incoming' : t.kind === 'wise' ? 'Wise' : 'Cass Operating')) },
         { label: 'Amount', num: true, cell: (t) => money(t.amount) },
         { label: 'Per the GL', cell: (t) => { const x = glOf.get(t.id); return t.kind === 'wise' ? '' : x ? h('span', { class: 'small' }, `${kindName[x.kind] || x.kind} · ${x.batch} ${x.desc.slice(0, 50)}`) : dep?.available ? statusPill('No GL deposit', 'bad') : ''; } },
-        { label: 'Why', cell: (t) => h('span', { class: 'small muted wrap' }, out.get(t.id)?.note || '') },
+        { label: 'Status', cell: (t) => statusCell({ state: null, counts: `Counts as ${typeName(out.get(t.id)?.type || 'revenue').toLowerCase()}`, note: out.get(t.id)?.note || '' }) },
+        { label: '', cell: (t) => actionsCell({ change: changeSelect(REVIEW_TYPES, out.get(t.id)?.type || 'revenue', (v) => treatAs(m, t, v, '', again, close), 'Change how it counts…') }) },
       ], deps));
   }
 
@@ -703,27 +788,23 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       else { rec.excluded[line.id] = { type, note: note || '', by: user, at: nowIso() }; if (rec.dismissed) delete rec.dismissed[line.id]; }
     }, `${line.date} ${line.desc} ${money(line.amount)}: ${type === 'revenue' ? 'counted as revenue' : `marked as ${name}`} (from the fiscal year sheet)`, again, close);
   }
-  // A deposit someone has checked and says is revenue: no longer flagged.
-  function confirmRevenue(m, lines, again, close) {
-    return decide(m, (rec) => {
-      rec.dismissed ||= {};
-      for (const l of lines) { rec.dismissed[l.id] = { by: user, at: nowIso() }; if (rec.excluded) delete rec.excluded[l.id]; }
-    }, lines.length === 1 ? `${lines[0].date} ${lines[0].desc} ${money(lines[0].amount)}: confirmed as revenue (no GL batch matched it)`
-      : `Confirmed ${lines.length} deposits the GL doesn’t match as revenue: ${lines.map((l) => `${l.date} ${money(l.amount)}`).join(', ')}`, again, close);
-  }
   // The bank's description, and what it usually means.
   function depositCell(line) {
     const hint = depositHint(line.desc);
     return h('div', {}, h('span', { class: 'wrap' }, `${line.desc}${line.detail ? ` — ${line.detail}` : ''}`), hint ? h('div', { class: 'small muted wrap' }, hint) : null);
   }
-  function treatSelect(m, line, current, again, close) {
-    return h('select', { onchange: (e) => treatAs(m, line, e.target.value, '', again, close) }, REVIEW_TYPES.map(([v, t]) => h('option', { value: v, selected: v === current }, t)));
-  }
   function leaveOut(m, a, again, close) {
     return decide(m, (rec) => { rec.dismissed = { ...(rec.dismissed || {}), [a.id]: true }; }, `Left out “${a.label}” ${money(a.amount)} (from the fiscal year sheet)`, again, close);
   }
   // Deposits in transit for month m: every row can be decided or overridden, even one a statement
-  // has settled; typed ones can be added and removed.
+  // has settled; typed ones can be added and removed. Rows are checked like every other line:
+  // Status, then Confirm (as suggested), then Change… and Undo.
+  const ditShown = (r) => r.counts || r.flagged || r.choice;
+  const ditTodoRows = (c) => (c.deposits?.dit?.rows || []).filter((r) => r.flagged);
+  const confirmDit = (rows) => (rec) => {
+    if (!rows.length) return;
+    rec.ditGl = { ...(rec.ditGl || {}), ...Object.fromEntries(rows.map((r) => [r.batch, { in: r.suggested, by: user, at: nowIso() }])) };
+  };
   function ditBlock(m, c, close, again) {
     const dit = c.deposits?.dit;
     const M = short(m), N = short(addMonths(m, 1));
@@ -732,17 +813,30 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       let note = '';
       if (r.settled && inTransit !== r.suggested) {
         note = (await askValue('Override the statement?', `${r.desc} ${money(r.amount)}: ${r.evidence}. Say why it belongs the other way — it will be marked * wherever it shows.`, { ok: 'Override' }))?.trim();
-        if (!note) { toast('Not changed — an override needs a reason.'); rerender(); return; }
+        if (!note) { toast('Not changed — an override needs a reason.'); return; }
       }
       decide(m, (rec) => { rec.ditGl = { ...(rec.ditGl || {}), [r.batch]: { in: inTransit, by: user, at: nowIso(), ...(note ? { note } : {}) } }; },
         `${r.desc} ${money(r.amount)}: ${inTransit ? `in transit at the end of ${monthName(m)}` : 'not in transit'}${note ? ` — overriding the statement: ${note}` : ''}`, again, close);
     };
     const clearChoice = (r) => decide(m, (rec) => { if (rec.ditGl) delete rec.ditGl[r.batch]; },
       `${r.desc} ${money(r.amount)}: back to ${r.settled ? 'what the statement shows' : 'the GL’s suggestion'}`, again, close);
-    const rows = dit ? dit.rows.filter((r) => r.counts || r.flagged || r.choice) : [];
-    const todo = dit ? dit.rows.filter((r) => r.flagged) : [];
+    const rows = dit ? dit.rows.filter(ditShown) : [];
     const typed = (byMonth[m]?.dit || []).filter((d) => !dit || !String(d.id || '').startsWith('imp-'));
     const dup = new Set((dit?.manual || []).filter((x) => x.duplicate).map((x) => x.d.id));
+    // Where each choice puts the deposit, in words.
+    const choices = (r) => (r.sign > 0 ? [['in', `Hit the bank in ${N} — in transit`], ['out', `Hit the bank in ${M}`]] : [['in', `Hit the bank in ${M} — booked in ${N}`], ['out', `Hit the bank in ${N}`]]);
+    const countsAs = (r) => (choices(r).find(([v]) => v === (r.counts ? 'in' : 'out')) || [, ''])[1];
+    const rowStatus = (r) => {
+      if (r.overridden && r.settled) return statusCell({ state: 'override', by: r.choice.by, at: r.choice.at, counts: countsAs(r), note: r.choice.note ? `* ${r.choice.note}` : '' });
+      if (r.choice) return statusCell({ state: r.choice.in === r.suggested ? 'confirmed' : 'changed', by: r.choice.by, at: r.choice.at, counts: countsAs(r) });
+      if (r.settled) return statusCell({ state: 'statement', counts: countsAs(r) });
+      return statusCell({ state: r.flagged ? 'todo' : null, counts: countsAs(r) });
+    };
+    const rowActions = (r) => actionsCell({
+      confirm: r.flagged ? () => setIn(r, r.suggested) : null,
+      change: changeSelect(choices(r), r.counts ? 'in' : 'out', (v) => setIn(r, v === 'in')),
+      more: r.choice ? [h('button', { class: 'small-btn', title: r.settled ? 'Go back to what the statement shows' : 'Go back to the GL’s suggestion', onclick: () => clearChoice(r) }, 'Undo')] : [],
+    });
     // Typed deposits in transit.
     const f = { date: h('input', { type: 'date' }), note: h('input', { type: 'text', placeholder: 'Donor / reference', size: 28 }), amount: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 12, placeholder: 'Amount' }) };
     const addTyped = () => {
@@ -754,27 +848,20 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const removeTyped = (d) => decide(m, (rec) => { rec.dit = (rec.dit || []).filter((x) => x.id !== d.id); }, `Removed deposit in transit ${d.note || ''} ${money(d.amount)}`, again, close);
     return h('div', {},
       dit ? table([
-        { label: 'Hit the bank in', cell: (r) => h('select', { onchange: (e) => setIn(r, e.target.value === 'in') },
-          ...(r.sign > 0 ? [['in', `${N} — in transit`], ['out', M]] : [['in', `${M} — booked in ${N}`], ['out', N]]).map(([v, t]) => h('option', { value: v, selected: (r.counts ? 'in' : 'out') === v }, t))) },
         { label: 'GL date', cell: (r) => r.date },
-        { label: 'Description', cell: (r) => h('span', { class: 'wrap' }, r.desc) },
-        { label: 'Why', cell: (r) => h('span', { class: 'small wrap' }, r.evidence) },
-        { label: 'Amount', num: true, cell: (r) => (r.counts ? money(r.sign * r.amount) : h('s', { class: 'muted' }, money(r.sign * r.amount))) },
-        { label: '', cell: (r) => h('div', { class: 'row' },
-          r.overridden ? h('span', { title: r.choice.note || '' }, statusPill(`Overridden* · ${r.choice.by}`, 'bad'), r.settled && r.choice.note ? h('div', { class: 'small' }, `* ${r.choice.note}`) : null) : r.choice ? h('span', { class: 'small muted' }, `${r.choice.by} · ${when(r.choice.at)}`) : r.settled ? statusPill('Statement', 'good') : r.flagged ? statusPill('To confirm', 'warn') : '',
-          r.choice ? h('button', { class: 'small-btn', title: r.settled ? 'Go back to what the statement shows' : 'Go back to the GL’s suggestion', onclick: () => clearChoice(r) }, 'Undo') : null) },
-      ], rows, { empty: 'Nothing near month end.', foot: (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Hit the bank in' ? 'In transit, from the GL' : '') })
+        { label: 'Description', cell: (r) => h('div', {}, h('span', { class: 'wrap' }, r.desc), h('div', { class: 'small muted wrap' }, r.evidence)) },
+        { label: 'Amount', num: true, cell: (r) => (r.counts ? money(r.sign * r.amount) : h('s', { class: 'muted', title: 'Not in transit — not counted' }, money(r.sign * r.amount))) },
+        { label: 'Status', cell: rowStatus },
+        { label: '', cell: rowActions },
+      ], rows, { empty: 'Nothing near month end.', foot: (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Description' ? 'In transit, from the GL' : '') })
         : h('p', { class: 'muted small' }, 'No GL register for this month — deposits in transit are the typed ones below.'),
-      todo.length ? h('div', { class: 'row', style: { marginTop: '.5rem' } }, h('button', { onclick: () => decide(m, (rec) => {
-        rec.ditGl = { ...(rec.ditGl || {}), ...Object.fromEntries(todo.map((r) => [r.batch, { in: r.suggested, by: user, at: nowIso() }])) };
-      }, `Confirmed ${todo.length} deposits in transit as suggested`, again, close) }, `Confirm ${todo.length} as suggested`)) : null,
       h('h4', {}, 'Typed deposits in transit'),
       typed.length ? table([
         { label: 'Date', cell: (d) => d.date || '' },
         { label: 'Description', cell: (d) => h('span', { class: 'wrap' }, d.note || '') },
         { label: 'Amount', num: true, cell: (d) => (dup.has(d.id) ? h('span', { title: 'Also on the GL’s list — not counted twice' }, h('s', { class: 'muted' }, money(d.amount))) : money(d.amount)) },
-        { label: '', cell: (d) => h('div', { class: 'row' }, h('span', { class: 'small muted' }, d.enteredBy ? `${d.enteredBy} · ${when(d.enteredAt)}` : String(d.id || '').startsWith('imp-') ? 'From the workbook' : ''),
-          h('button', { class: 'small-btn danger', onclick: () => removeTyped(d) }, 'Remove')) },
+        { label: 'Status', cell: (d) => statusCell({ state: null, by: d.enteredBy ? `Typed by ${d.enteredBy}` : String(d.id || '').startsWith('imp-') ? 'From the workbook' : 'Typed', at: d.enteredAt, counts: dup.has(d.id) ? 'Also on the GL’s list — not counted twice' : '' }) },
+        { label: '', cell: (d) => actionsCell({ more: [h('button', { class: 'small-btn danger', onclick: () => removeTyped(d) }, 'Remove')] }) },
       ], typed) : null,
       h('div', { class: 'row inline-form', style: { marginTop: '.4rem' } }, f.date, f.note, f.amount, h('button', { onclick: addTyped }, 'Add deposit in transit')));
   }
@@ -786,61 +873,36 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const list = col.c.adjustments.filter((a) => adjKey(a) === key);
     const c = col.c;
     await panel(`${key} — ${monthName(m)}`, (body, close) => {
-      // Detail lines carry the transaction's own (positive) amount; show them with the adjustment's sign.
-      const items = list.flatMap((a) => (a.detail?.length ? a.detail.map((d) => ({ ...d, a, shown: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, note: a.note, a, shown: a.amount }]));
+      const items = linesOf(list);
       const what = whatLanded(c, items);
-      const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
+      const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `Typed by ${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
       const withNotes = items.some((x) => extra(x));
       // What can be decided here: how a deposit counts, or leaving out something the GL found.
       const lineOf = (a) => (/^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null);
       const again_ = { kind: 'adjustments', key, m };
       const saved = byMonth[m] || {};
-      // Confirmed: who checked each line, at its amount (goes stale if the amount changes). Each line
-      // of an adjustment (each sweep, each transfer) is confirmed on its own; "Confirm all" does a
-      // section at once. A whole adjustment confirmed before lines could be still counts.
-      const lineKey = (x) => (x.a.detail?.length ? `${x.a.id}|${x.date}|${round2(Math.abs(x.shown))}|${x.desc}` : x.a.id);
-      const confirmOf = (x) => {
-        if (!x.a.auto) {
-          const t = (saved.adjustments || []).find((y) => y.id === x.a.id);
-          return t?.confirmation ? { o: t, st: confirmationState(t, { amount: x.a.amount }) } : { st: 'none' };
-        }
-        const line_ = saved.autoConfirm?.[lineKey(x)];
-        if (line_?.confirmation) return { o: line_, st: confirmationState(line_, { amount: round2(x.shown) }) };
-        const whole = saved.autoConfirm?.[x.a.id];
-        if (whole?.confirmation && confirmationState(whole, { amount: x.a.amount }) === 'confirmed') return { o: whole, st: 'confirmed' };
-        return { st: whole?.confirmation ? 'stale' : 'none' };
+      const isTodo = (x) => confirmOf(saved, x).st !== 'confirmed';
+      const confirmOne = (x) => decide(m, confirmLines([x], user), `Confirmed ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close);
+      const confirmMany = (xs, name) => () => decide(m, confirmLines(xs, user), `Confirmed all ${xs.length} lines of “${name}”`, again_, close);
+      const status = (x) => {
+        const { o, st } = confirmOf(saved, x);
+        if (st === 'confirmed') return statusCell({ state: 'confirmed', by: o.confirmation.by, at: o.confirmation.at });
+        return statusCell({ state: st === 'stale' ? 'stale' : 'todo' });
       };
-      const confirmLines = (xs) => (rec) => {
-        for (const x of xs) {
-          if (!x.a.auto) { const t = (rec.adjustments || []).find((y) => y.id === x.a.id); if (t) confirmValues(t, user, { amount: x.a.amount }); continue; }
-          rec.autoConfirm ||= {};
-          confirmValues(rec.autoConfirm[lineKey(x)] ||= {}, user, { amount: round2(x.shown) });
-        }
-      };
-      const confirmCell = (x) => {
-        const { o, st } = confirmOf(x);
-        if (st === 'confirmed') return h('span', { class: 'small good-text', title: when(o.confirmation.at) }, `✓ ${o.confirmation.by}`);
-        return h('button', { class: 'small-btn', title: st === 'stale' ? 'Changed since it was confirmed' : 'Mark this line as checked',
-          onclick: () => decide(m, confirmLines([x]), `Confirmed ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close) }, st === 'stale' ? 'Confirm again' : 'Confirm');
-      };
-      const confirmAll = (xs, name) => {
-        const todo = xs.filter((x) => confirmOf(x).st !== 'confirmed');
-        if (!todo.length) return xs.length ? h('span', { class: 'small good-text' }, '✓ All confirmed') : null;
-        return h('button', { class: 'small-btn', onclick: () => decide(m, confirmLines(todo), `Confirmed all ${todo.length} lines of “${name}”`, again_, close) }, `Confirm all ${todo.length}`);
-      };
+      const typeName = (t) => (REVIEW_TYPES.find((y) => y[0] === t) || [, ADJUSTMENT_TYPES[t] || t])[1];
       const action = (x) => {
         const id = lineOf(x.a);
-        const decideCell = id
-          ? treatSelect(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, x.a.type || 'not-revenue', again_, close)
-          : /^auto-gl/.test(x.a.id || '') ? h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, again_, close) }, 'Leave out')
-          : !x.a.auto ? h('div', { class: 'row' },
-            h('button', { class: 'small-btn', onclick: () => fillForm(x.a) }, 'Edit'),
-            h('button', { class: 'small-btn danger', onclick: async () => {
-              if (!(await ask('Remove adjustment', `Remove “${x.a.label}” (${money(x.a.amount)})?`, { ok: 'Remove', danger: true }))) return;
-              decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
-            } }, 'Remove'))
-          : null;
-        return h('div', { class: 'stack' }, confirmCell(x), decideCell);
+        const todo = isTodo(x);
+        const more = [];
+        let change = null;
+        if (id) change = changeSelect(REVIEW_TYPES, x.a.type || 'not-revenue', (v) => treatAs(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, v, '', again_, close), 'Change how it counts…');
+        else if (/^auto-gl/.test(x.a.id || '')) more.push(h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, again_, close) }, 'Leave out'));
+        else if (!x.a.auto) more.push(h('button', { class: 'small-btn', onclick: () => fillForm(x.a) }, 'Edit'),
+          h('button', { class: 'small-btn danger', onclick: async () => {
+            if (!(await ask('Remove adjustment', `Remove “${x.a.label}” (${money(x.a.amount)})?`, { ok: 'Remove', danger: true }))) return;
+            decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
+          } }, 'Remove'));
+        return actionsCell({ confirm: todo ? () => confirmOne(x) : null, confirmLabel: confirmOf(saved, x).st === 'stale' ? 'Confirm again' : 'Confirm', change, more });
       };
       // Adding (or editing) an adjustment typed by hand, in this row.
       const DEFAULT_TYPE = { [ADJ_GROUPS[0]]: 'transfer', [ADJ_GROUPS[1]]: 'transfer', [ADJ_GROUPS[2]]: 'not-revenue', [ADJ_GROUPS[3]]: 'other', [ADJ_GROUPS[4]]: 'timing' };
@@ -874,36 +936,46 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       };
       fillForm(null);
       const cols_ = [
-        { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
         { label: 'Date', cell: (x) => x.date || '' },
-        { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, what(x), x.a.statement ? h('div', { class: 'small muted' }, x.a.statement) : null) },
+        { label: 'Description', cell: (x) => h('div', {}, h('span', { class: 'wrap' }, what(x)),
+          h('div', { class: 'small muted' }, [label(x.a.account || 'cassOp'), x.a.statement].filter(Boolean).join(' · '))) },
         { label: 'Amount', num: true, cell: (x) => money(x.shown) },
         { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
-        ...(withNotes ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small' }, extra(x)) }] : []),
+        ...(withNotes ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small wrap' }, extra(x)) }] : []),
+        { label: 'Status', cell: (x) => status(x) },
         { label: '', cell: (x) => action(x) },
       ];
-      // One section per kind of item, each with its reason and subtotal.
+      // One section per kind of item, each with its reason, what's left to check and its subtotal.
       const kinds = [...new Set(list.map(adjDetail))];
       const section = (kind) => {
         const as = list.filter((a) => adjDetail(a) === kind);
         const its = items.filter((x) => as.includes(x.a));
+        const todo = its.filter(isTodo);
         const why = [...new Set(as.map((a) => a.why).filter(Boolean))][0];
         return h('div', { class: 'adj-section' },
-          h('div', { class: 'row' }, h('h3', {}, kind), confirmAll(its, kind), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(round2(sum(as, (a) => a.amount))))),
+          reviewHead(kind, { total: round2(sum(as, (a) => a.amount)), count: its.length, todo: todo.length, onConfirmAll: confirmMany(todo, kind) }),
           why ? h('p', { class: 'muted small' }, why) : null,
           table(cols_, its));
       };
       const again = { kind: 'adjustments', key, m };
+      const ditTodo = key === TIMING ? ditTodoRows(c) : [];
       const dit = key === TIMING && c.ditChange != null ? h('div', { class: 'adj-section' },
-        h('div', { class: 'row' }, h('h3', {}, 'Deposits in transit (change)'), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(c.ditChange))),
+        reviewHead('Deposits in transit (change)', { total: c.ditChange, count: (c.deposits?.dit?.rows || []).filter(ditShown).length, todo: ditTodo.length,
+          onConfirmAll: () => decide(m, confirmDit(ditTodo), `Confirmed ${ditTodo.length} deposits in transit as suggested`, again, close) }),
         h('p', { class: 'muted small' }, `${monthName(m)} in transit ${money(c.ditTotal, { dash: false })}, less ${monthName(addMonths(m, -1))}’s ${c.priorDit == null ? '(not known — counted as none)' : money(c.priorDit, { dash: false })}. `,
-          h('button', { class: 'small-btn', onclick: () => openDit(m) }, `${monthName(addMonths(m, -1))}’s list too`)),
-        h('h4', {}, `In transit at the end of ${monthName(m)}`),
+          h('button', { class: 'small-btn', onclick: () => { close(true); openDit(m); } }, `${monthName(addMonths(m, -1))}’s list too`)),
         ditBlock(m, c, close, again)) : null;
-      // Everything in this pop-up at once.
-      const topConfirm = items.length ? h('div', { class: 'row', style: { marginBottom: '.5rem' } }, confirmAll(items, key), h('span', { class: 'muted small' }, 'or confirm each line below')) : null;
+      // Everything in this pop-up at once: what's left to check, and one button for all of it.
+      const allTodo = items.filter(isTodo);
+      const count = items.length + (dit ? (c.deposits?.dit?.rows || []).filter(ditShown).length : 0);
+      const todoN = allTodo.length + ditTodo.length;
+      const bar = count ? h('div', { class: 'review-bar' },
+        todoN ? statusPill(`${todoN} to check`, 'warn') : statusPill('✓ Everything here is checked', 'good'),
+        h('span', { class: 'muted small' }, todoN ? `of ${count} lines — confirm each below, or all at once` : `${count} lines`),
+        h('span', { class: 'spacer' }),
+        todoN ? h('button', { class: 'small-btn confirm-btn', onclick: () => decide(m, (rec) => { confirmLines(allTodo, user)(rec); confirmDit(ditTodo)(rec); }, `Confirmed all ${todoN} lines of “${key}”`, again, close) }, `Confirm all ${todoN}`) : null) : null;
       mount(body,
-        topConfirm,
+        bar,
         dit, kinds.map(section),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } }, rowKV(`${key}, total`, h('strong', {}, money(round2(sum(list, (a) => a.amount) + (dit ? c.ditChange : 0)))))),
         evidenceSummary(list),
@@ -967,14 +1039,21 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.desc) },
       { label: 'Why it’s in transit', cell: (x) => h('span', { class: 'small wrap' }, x.why) },
       { label: 'Amount', num: true, cell: (x) => money(x.amount) },
-      { label: '', cell: (x) => (x.from === 'To confirm' ? statusPill('To confirm', 'warn') : x.from === 'Statement' ? statusPill('Statement', 'good') : h('span', { class: 'small muted' }, x.from)) },
+      { label: 'Status', cell: (x) => (x.from === 'To confirm' ? statusPill('To check', 'warn') : x.from === 'Statement' ? statusPill('✓ Statement shows it', 'good') : h('span', { class: 'small muted' }, x.from)) },
     ], list, { empty, foot: (col_) => (col_.label === 'Amount' ? money(round2(sum(list, (x) => x.amount))) : col_.label === 'GL date' ? 'Total' : '') });
+    const prevC = cols.find((x) => x.m === prev)?.c;
+    // Each list's heading: what's left to check, and Confirm all.
+    const ditHead = (mm, cc, title, close, back = mm) => {
+      const todo = ditTodoRows(cc);
+      return reviewHead(title, { total: cc.ditTotal, count: (cc.deposits?.dit?.rows || []).filter(ditShown).length, todo: todo.length,
+        onConfirmAll: () => decide(mm, confirmDit(todo), `Confirmed ${todo.length} deposits in transit as suggested`, { kind: 'dit', m: back }, close) });
+    };
     await panel(`Deposits in transit — ${monthName(m)}`, (body, close) => {
       mount(body,
         h('p', { class: 'muted' }, `Money the GL booked as revenue in one month that reached the bank in the next. The change is ${monthName(m)}’s in transit less ${monthName(prev)}’s, which reached the bank in ${monthName(m)}. The GL names the bank date in each batch (“3.3.2026 February Deposit”); the next month’s statement confirms it.`),
-        h('h3', {}, `In transit at the end of ${monthName(m)} (plus)`), c.deposits?.dit ? ditBlock(m, c, close, { kind: 'dit', m }) : tableOf(thisList, 'None.'),
-        h('h3', {}, `In transit at the end of ${monthName(prev)}, reached the bank in ${monthName(m)} (less)`),
-        priorList ? (cols.find((x) => x.m === prev)?.c?.deposits?.dit ? ditBlock(prev, cols.find((x) => x.m === prev).c, close, { kind: 'dit', m }) : tableOf(priorList, 'None.')) : h('p', { class: 'small warn-text' }, `Not known — ${monthName(prev)} isn’t in the GL and none were entered for it, so nothing comes off. Its deposits that reached the bank in ${monthName(m)} are marked “Recognized in another month” on the deposit list instead.`),
+        ditHead(m, c, `In transit at the end of ${monthName(m)} (plus)`, close), c.deposits?.dit ? ditBlock(m, c, close, { kind: 'dit', m }) : tableOf(thisList, 'None.'),
+        prevC?.deposits?.dit ? ditHead(prev, prevC, `In transit at the end of ${monthName(prev)}, reached the bank in ${monthName(m)} (less)`, close, m) : h('h3', {}, `In transit at the end of ${monthName(prev)}, reached the bank in ${monthName(m)} (less)`),
+        priorList ? (prevC?.deposits?.dit ? ditBlock(prev, prevC, close, { kind: 'dit', m }) : tableOf(priorList, 'None.')) : h('p', { class: 'small warn-text' }, `Not known — ${monthName(prev)} isn’t in the GL and none were entered for it, so nothing comes off. Its deposits that reached the bank in ${monthName(m)} are marked “Recognized in another month” on the deposit list instead.`),
         h('div', { class: 'recon', style: { marginTop: '.75rem' } },
           rowKV(`${monthName(m)} in transit`, money(c.ditTotal)),
           rowKV(`Less ${monthName(prev)} in transit`, c.priorDit == null ? 'not known' : money(-c.priorDit)),
