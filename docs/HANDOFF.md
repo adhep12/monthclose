@@ -50,6 +50,7 @@ its tests still run.
 | Workbook import UI + merge | `app/js/views/poc-import.js` |
 | All proof-of-cash maths and rules | `app/js/poc/calc.js` |
 | Attaching statements (any account) | `app/js/poc/attach.js` |
+| Deposits checked against the GL; deposits in transit from the GL | `app/js/poc/gl-deposits.js` (batches kept by `app/js/gl.js`) |
 | Statement readers | `app/js/poc/cass.js`, `app/js/poc/banks.js` (Wise, PayPal, KeyBank), `app/js/poc/stripe.js`, `app/js/cd/intrafi.js` (CDARS, ICS, IntraFi export), `app/js/gl.js` (GL register, statement of activities) |
 | Which reader a file gets | `app/js/ingest.js` |
 | CD schedule maths | `app/js/cd/schedule.js` |
@@ -79,6 +80,14 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **CDs:** interest comes from the CD schedule; accrued and realized-prior come from the schedule too. | Matched the workbook every month. |
 | **GL precedence:** a figure typed in the app (`gl.typedAt`), then the GL register / statement of activities, then the workbook import. | |
 | **Revenue GL accounts** 4010, 4012, 4015, 4017, 4018, 4075, 4077, 4081, 4083, 4084, 4085. **Interest** 4050, 8999. | `DEFAULT_POC_CONFIG`. |
+| **Every statement ties before it's used.** Wise: the running balances must chain to the ending balance (`wiseTies`); Cass, PayPal, KeyBank, ICS: their own totals. A statement that doesn't shows "Doesn't tie — check" (⚠ on the FY sheet). | Wise wrapped descriptions dropped 2 × 29,993.89 (Dec), 2,228.89 (Mar), 699,993.89 (May) with no warning. Fixed in `parseWise`. |
+| **Wise: only the sender makes money "ours".** "Received money from X with reference BIBLE PROJECT" is a gift from X. | Dec 9,993.89 (a donor's reference) was taken out as a transfer. |
+| **Missing wire statement.** Operating shows sweeps from …5892 or …3410 but that statement isn't attached → warning, ⚠ on Cass Operating. | Feb and May: the Wise → Cass transfers sat in Incoming, which wasn't attached. |
+| **Every Cass deposit is matched to the GL batch that booked it** (`gl-deposits.js`). Incoming is matched a day at a time: each day's wires equal that day's sweep, and the GL books a day as one "DAF Gifts" batch (a Wise transfer split out). Operating: 1:1, then groups (check + mobile deposits; PayPal grants), steered by the batch wording. | Feb/May/Nov: each day's Incoming credits = the day's sweep, to the cent. Match rate Feb 161/163, May 146/146, Nov 139/143, Aug 39/40. |
+| **What the GL booked it to decides.** Revenue accounts → revenue. Another of our cash/investment accounts (10xx, 1150–1171) → transfer. Receivable (1210, 1220) → recognized in another month. Anything else (7220 COBRA, 8039, 2041 agency, 2042 tax) → not revenue. Stripe (1200) is left to the Stripe rule; Outgoing credits to the sweep rule. | Workbook hand lines all have a GL reason: Dec 100k agency (1020/2041), Mar 750k Murdock grant (1220), Jan 733.86 tax refund (7215), Jan 400 returned ACH (8036), Aug 7,100 Imago (8039). |
+| **A hand adjustment covers the GL finding of the same amount**, so imported workbook lines and GL findings never both come out. | Merge import brings in Dec −100k, Mar −750k, etc. |
+| **Revenue the GL took back** (a batch crediting cash and debiting revenue: chargebacks, a deposit reclassed) is an adjustment. A reversal with the same description, amount and accounts as another batch is a duplicate: both are dropped before matching. | Nov: three DAF batches posted twice and reversed. Dec GL017613 reclassed the 100k agency deposit. |
+| **Deposits in transit come from the GL.** A revenue batch booked in month M whose money reached the bank in M+1 is in transit at M (the GL names the bank date: "3.3.2026 February Deposit"); one in the bank in M but booked in M+1 is a minus. The M+1 statement confirms it; until then the batch date suggests it and a person confirms (`rec.ditGl`). Typed DIT still counts unless the GL has the same amount; workbook DIT is shown for comparison only. | GL DIT = workbook DIT for Nov, Feb, Mar, Apr, Jul exactly. Dec/Jan differ by the 8,565 Cigna check the workbook put in DIT (GL: 8015, not revenue); May/Jun by a 50.00 6/11 deposit the workbook missed. Aug: 53,093.52. |
 
 ## 3. FY2026 tie-out: where it stands
 
@@ -128,6 +137,15 @@ The Outgoing fix should improve some of these: July is expected to go from −3,
 
 ## 4. Next steps
 
+**Since the tie-out above (2026-09-27, later):** the Wise reader, the GL deposit check and GL deposits in transit
+are built (rules in §2). The workbook's small monthly differences look like two larger errors cancelling: the
+Stripe CSV line is 10–31k above GL 4015 every month, offset elsewhere. February's difference rises by 10,126.31
+under the Outgoing sweep rule (on 2/2 only 76,044.28 of the 86,170.59 Fidelity transfer swept into Operating); that
+gap was real and hidden by the workbook. Next agent task: take the Stripe line apart against GL 1200/4015.
+
+After deploying: **upload the GL register again** (older uploads don't have the deposit batches), re-attach
+Wise for Dec, Mar and May, and attach Incoming for Feb and May.
+
 ### A. The user does these (the agent can't)
 1. Deploy the latest `dist/monthclose.zip` (run `npm run package`) on the app's Deploy card in HAL.
 2. **Import workbook** → choose the old workbook → leave "Months already in the app" on the default
@@ -168,7 +186,7 @@ The Outgoing fix should improve some of these: July is expected to go from −3,
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (34 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (42 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

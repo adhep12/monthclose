@@ -8,6 +8,7 @@ import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivi
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
+import { depositChecks } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
@@ -36,6 +37,7 @@ export function adjKey(a) {
   if (a.id === 'auto-outgoing') return 'Outgoing Wire Sweep Net activity';
   if (a.id?.startsWith('auto-tr-')) return 'Transfers between accounts';
   if (a.id?.startsWith('auto-ex-')) return 'Deposits that aren’t revenue';
+  if (a.id?.startsWith('auto-glrev-')) return 'Revenue the GL took back';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
 }
 
@@ -73,13 +75,16 @@ export default async function (main, { user, rerender }) {
   const months = Array.from({ length: 12 }, (_, i) => addMonths(fyStart(fy), i));
   const cdFor = (m) => ({ ...monthSummary(cds, m), hasData: cds.some((x) => x.earned?.[m]) });
   const glFor = (m) => glFigures({ glActivity: glBy[m], soa: soaBy[m], month: m, config: cfg });
+  // Every deposit against the GL, all months at once (a batch one month uses, another can't).
+  const depChecks = depositChecks({ recs: byMonth, glBy, config: cfg });
+  const depFor = (m) => ({ deposits: depChecks[m] || null, priorDeposits: depChecks[addMonths(m, -1)] || null });
   const cols = months.map((m) => {
     const rec = byMonth[m];
     const gl = glFor(m);
     // A month with GL loaded but no proof of cash yet still shows its GL figures.
     if (!hasData(rec) && !gl) return { m, rec: null, c: null };
     const r = hasData(rec) ? rec : { ...blank(m), ...(rec || {}), source: undefined };
-    return { m, rec: hasData(rec) ? rec : null, c: computePoc(r, { prior: byMonth[addMonths(m, -1)], gl, cd: cdFor(m) }) };
+    return { m, rec: hasData(rec) ? rec : null, c: computePoc(r, { prior: byMonth[addMonths(m, -1)], gl, cd: cdFor(m), ...depFor(m) }) };
   });
   // YTD covers the months whose Cass Operating deposits are in — the main account, so a month
   // with only a stray figure or two entered doesn't pull its whole GL into the totals yet.
@@ -95,6 +100,9 @@ export default async function (main, { user, rerender }) {
       const l = line(c, id);
       if (id === 'stripe' && k === 'rev' && c.stripeCheck?.state === 'mismatch') return { mark: '⚠', title: stripeFlagText(c.stripeCheck) };
       if (id === 'wise' && k === 'rev' && rec && wiseOutgoingCheck(rec).some((x) => x.state === 'missing')) return { mark: '⚠', title: 'Money sent from Wise to one of our accounts hasn’t turned up as a deposit — open to check' };
+      if (id === 'cassOp' && k === 'rev' && c.warnings?.length) return { mark: '⚠', title: c.warnings.map((w) => w.text).join('\n') };
+      if (id === 'cassOp' && k === 'rev' && c.deposits?.noGl?.some((x) => !x.covered)) return { mark: '⚠', title: `${c.deposits.noGl.filter((x) => !x.covered).length} deposits the GL doesn’t have — open the month to check` };
+      if (id === 'wise' && k === 'rev' && rec?.bankStatements?.wise && !statementTies(rec, 'wise')) return { mark: '⚠', title: 'The Wise statement doesn’t tie to its own balances — attach it again' };
       if (l[k] == null) return null;
       const st = confirmationState(rec.bank?.[id], l.values);
       return { mark: st === 'confirmed' ? '✓' : st === 'stale' ? '!' : '', title: `${sourceOf(l) === 'Typed' ? 'Typed' : `From ${sourceOf(l) === 'Workbook import' ? 'the workbook' : sourceOf(l)}`}${st === 'confirmed' ? ` · confirmed by ${rec.bank[id].confirmation.by}` : st === 'stale' ? ' · changed since it was confirmed' : ' · not confirmed yet'}` };
@@ -115,7 +123,8 @@ export default async function (main, { user, rerender }) {
     ...(adjOpen ? adjRows() : []),
     { label: 'Total Bank Revenue / Interest', rev: (c) => round2(c.bankRev + c.adjTotal), int: (c) => c.bankInt, strong: true },
     { section: 'Adjustments for Timing' },
-    { label: 'Plus Deposit in Transit (change)', rev: (c) => c.ditChange, dit: true },
+    { label: 'Plus Deposit in Transit (change)', rev: (c) => c.ditChange, dit: true,
+      meta: { rev: (c) => (c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open the month` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) } },
     { label: 'Plus Accrued Interest', int: (c) => c.timing.accrued || 0 },
     { label: 'Less realized accrued interest from prior period', int: (c) => -(c.timing.realizedPrior || 0) },
     { label: 'Change in Restricted Revenue', rev: (c) => c.timing.restricted || null },
@@ -315,7 +324,7 @@ export default async function (main, { user, rerender }) {
       // Drop statements anywhere in the panel.
       dropTarget(body, doAttach);
       draw = () => {
-        const c = computePoc(rec, { prior, gl: glFor(m), cd: cdFor(m) });
+        const c = computePoc(rec, { prior, gl: glFor(m), cd: cdFor(m), ...depFor(m) });
         const l = line(c, id);
         const b = rec.bank[id] || (rec.bank[id] = {});
         const attached = id === 'cd' ? cdAttached(m) : attachedFor(rec, id);
@@ -577,6 +586,14 @@ export default async function (main, { user, rerender }) {
       if (rec) for (const w of wiseOutgoingCheck(rec).filter((x) => x.state !== 'paid')) {
         checks.push([monthName(m), 'Money out of Wise', { transfer: 'Matched — transfer', counted: 'Found, still counted as revenue', missing: 'NO MATCHING DEPOSIT' }[w.state], `${w.date} ${w.desc} ${money(w.amount, { dash: false })}`]);
       }
+      for (const w of c.warnings || []) checks.push([monthName(m), 'Statement missing', 'MISSING', w.text]);
+      const dep = c.deposits;
+      if (dep?.available && dep.hasStatements) {
+        const open = dep.noGl.filter((x) => !x.covered);
+        checks.push([monthName(m), 'Deposits vs GL', open.length ? `${open.length} NOT IN THE GL` : 'All matched',
+          `${dep.lines.filter((x) => x.match).length} of ${dep.lines.length} matched; ${Object.keys(dep.exclusions).length} not revenue per the GL${open.length ? `; not in the GL: ${open.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join(', ')}` : ''}`]);
+      }
+      if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
       if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
     }
     try {

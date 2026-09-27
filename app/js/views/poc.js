@@ -1,6 +1,7 @@
 import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } from '../ui.js';
-import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa } from '../data.js';
+import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa, loadPocMonths, listGlActivity } from '../data.js';
 import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions, statementTies } from '../poc/calc.js';
+import { depositChecks } from '../poc/gl-deposits.js';
 import { attachFiles } from '../poc/attach.js';
 import { stripeCheckBox } from './stripe-check.js';
 import { monthSummary } from '../cd/schedule.js';
@@ -11,6 +12,7 @@ import { addMonths } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
 import { stampEntered, confirmValues, confirmationState, logChange, stampBadge, when, nowIso } from '../audit.js';
 
+const REVIEW_TYPES = [['revenue', 'Revenue'], ['transfer', 'Transfer between accounts'], ['prior-period', 'Recognized in another month'], ['not-revenue', 'Not revenue (refund etc.)']];
 const KIND_LABEL = { operating: 'Operating …5884', incoming: 'Incoming Wires …5892', outgoing: 'Outgoing Wires …3410' };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const pct = (x) => (x == null ? '—' : `${(x * 100).toFixed(2)}%`);
@@ -22,9 +24,12 @@ function blank(month) {
 
 export default async function (main, { month, monthName, user, rerender }) {
   const prevMonth = addMonths(month, -1);
-  const [loaded, prior, glAct, tbThis, tbNext, cfg, faCfg, cds, soa] = await Promise.all([
+  const nextMonth = addMonths(month, 1);
+  const [loaded, prior, glAct, tbThis, tbNext, cfg, faCfg, cds, soa, allRecs, glActs] = await Promise.all([
     loadPocMonth(month), loadPocMonth(prevMonth), loadGlActivity(month), loadTrialBalance(month),
-    loadTrialBalance(addMonths(month, 1)), loadPocConfig(), loadConfig(), loadCds(), loadSoa(month)]);
+    loadTrialBalance(nextMonth), loadPocConfig(), loadConfig(), loadCds(), loadSoa(month), loadPocMonths(), listGlActivity()]);
+  const recsBy = Object.fromEntries(allRecs.map((r) => [r.month, r]));
+  const glBy = Object.fromEntries(glActs.map((g) => [g.month, g]));
   const DRAFT = `monthclose:poc-draft:${month}`;
   let draft = null;
   try { draft = JSON.parse(localStorage.getItem(DRAFT) || 'null'); } catch { /* ignore */ }
@@ -43,7 +48,20 @@ export default async function (main, { month, monthName, user, rerender }) {
     const stamps = cds.map((c) => c.earned?.[month]).filter(Boolean).sort((a, b) => (b.at || '').localeCompare(a.at || ''));
     return { ...s, hasData: cds.some((c) => c.earned?.[month]), by: stamps[0]?.by || 'CD schedule', at: stamps[0]?.at };
   }
-  const calc = () => computePoc(rec, { prior, gl, cd: cdSummary(), glBalances });
+  // The GL deposit check covers every month at once (a batch one month uses, the next can't), and
+  // it's worked out again only when something it depends on changes.
+  let depKey = null, depAll = {};
+  function deposits() {
+    const key = JSON.stringify([Object.entries(rec.statements || {}).map(([k, x]) => `${k}:${x.attachedAt || x.fileName || ''}`), rec.dismissed || {},
+      rec.ditGl || {}, (rec.adjustments || []).map((a) => a.amount), (rec.dit || []).map((d) => [d.id, d.amount])]);
+    if (key !== depKey) { depKey = key; depAll = depositChecks({ recs: { ...recsBy, [month]: rec }, glBy, config: cfg, names }); }
+    return depAll;
+  }
+  const glHasDeposits = !!glBy[month]?.receipts;
+  const calc = () => {
+    const d = deposits();
+    return computePoc(rec, { prior, gl, cd: cdSummary(), glBalances, deposits: d[month] || null, priorDeposits: d[prevMonth] || null });
+  };
 
   // ---- Saving: debounced, logged, with a browser copy until the save lands ------------------
   const saveState = h('span', { class: 'muted small' }, loaded ? `Saved · ${when(loaded.updatedAt)}` : 'Not saved yet');
@@ -98,11 +116,16 @@ export default async function (main, { month, monthName, user, rerender }) {
   const logHost = h('div');
   const signHost = h('div');
   const ditTotals = h('span', { class: 'small' });
+  const warnHost = h('div');
+  const glCheckHost = h('div');
+  const ditGlHost = h('div');
+  const showSettled = { on: false };
   const stripeHost = h('div');
 
   function refresh() {
     const c = calc();
     drawSummary(c); drawCards(c); drawAutoAdj(c); drawTiming(c); drawGl(c); drawSignoff(c);
+    drawWarnings(c); drawGlCheck(c); drawDitGl(c);
   }
 
   function drawSummary(c) {
@@ -226,26 +249,118 @@ export default async function (main, { month, monthName, user, rerender }) {
   function drawReview() {
     const deps = reviewableDeposits(rec);
     if (!deps.length) { mount(reviewHost); return; }
-    const flagged = deps.filter((t) => t.id in rec.excluded || /REFUND|TAX|RETURN|REVERSAL|IRS|TRANSFER|TRNSFR|BIBLE ?PROJECT/i.test(`${t.desc} ${t.detail || ''}`));
+    const dep = deposits()[month];
+    const glOf = new Map((dep?.lines || []).map((x) => [x.line.id, x.match]));
+    const noGl = new Set((dep?.noGl || []).filter((x) => !x.covered).map((x) => x.line.id));
+    // What's excluded now: the automatic findings (statements and GL) under anything set by hand.
+    const current = (t) => exclusionInfo(rec.excluded[t.id]) || exclusionInfo(dep?.exclusions?.[t.id]) || null;
+    const flagged = deps.filter((t) => current(t) || noGl.has(t.id) || /REFUND|TAX|RETURN|REVERSAL|IRS|TRANSFER|TRNSFR|BIBLE ?PROJECT/i.test(`${t.desc} ${t.detail || ''}`));
     const setKind = (t, v) => {
-      const had = exclusionInfo(rec.excluded[t.id]);
+      const had = current(t);
       if (v === 'revenue') { delete rec.excluded[t.id]; if (had?.auto) rec.dismissed = { ...(rec.dismissed || {}), [t.id]: true }; }
       else rec.excluded[t.id] = { type: v, note: had?.note || '' };
-      logChange(rec, user, `${t.date} ${t.desc} ${money(t.amount)}: ${v === 'revenue' ? 'counted as revenue' : v === 'transfer' ? 'marked as a transfer between accounts' : 'marked as not revenue'}`);
+      logChange(rec, user, `${t.date} ${t.desc} ${money(t.amount)}: ${v === 'revenue' ? 'counted as revenue' : `marked as ${(REVIEW_TYPES.find((x) => x[0] === v) || [, v])[1].toLowerCase()}`}`);
       drawReview(); changed();
     };
+    const glCell = (t) => {
+      if (t.kind === 'wise') return '';
+      const m = glOf.get(t.id);
+      if (m) {
+        const k = { revenue: ['Revenue', 'good'], stripe: ['Stripe', 'neutral'], transfer: ['Transfer', 'warn'], 'prior-period': ['Earlier month', 'warn'], 'not-revenue': ['Not revenue', 'warn'] }[m.kind];
+        return h('span', { class: 'small', title: `${m.batch} · ${m.date}${m.group > 1 ? ` · one of ${m.group} lines in the batch` : ''}${m.when !== 'this' ? ` · booked in ${m.when === 'prior' ? monthName(prevMonth) : monthName(nextMonth)}` : ''}` },
+          statusPill(k[0], k[1]), ' ', m.desc.slice(0, 48), m.when !== 'this' ? ` (${m.when === 'prior' ? 'last' : 'next'} month)` : '', ` · ${m.label}`);
+      }
+      if (!glHasDeposits) return h('span', { class: 'muted small' }, '—');
+      return noGl.has(t.id) ? statusPill('No GL deposit', 'bad') : h('span', { class: 'muted small' }, 'covered by an adjustment');
+    };
     const tableFor = (list) => table([
-      { label: 'Treat as', cell: (t) => select([['revenue', 'Revenue'], ['transfer', 'Transfer between accounts'], ['not-revenue', 'Not revenue (refund etc.)']],
-        exclusionInfo(rec.excluded[t.id])?.type || 'revenue', { onchange: (e) => setKind(t, e.target.value) }) },
+      { label: 'Treat as', cell: (t) => select(REVIEW_TYPES, current(t)?.type || 'revenue', { onchange: (e) => setKind(t, e.target.value) }) },
       { label: 'Account', cell: (t) => (t.kind === 'incoming' ? 'Cass Incoming' : t.kind === 'wise' ? 'Wise' : 'Cass Operating') },
       { label: 'Date', cell: (t) => t.date },
       { label: 'Description', cell: (t) => h('span', { title: t.detail || '' }, t.desc) },
       { label: 'Amount', num: true, cell: (t) => money(t.amount) },
-      { label: 'Note', cell: (t) => (t.id in rec.excluded ? textInput(() => exclusionInfo(rec.excluded[t.id]).note, (v) => { rec.excluded[t.id] = { ...exclusionInfo(rec.excluded[t.id]), note: v }; }, { placeholder: 'Why', size: 30 }) : '') },
+      { label: 'Per the GL', cell: glCell },
+      { label: 'Note', cell: (t) => (t.id in rec.excluded ? textInput(() => exclusionInfo(rec.excluded[t.id]).note, (v) => { rec.excluded[t.id] = { ...exclusionInfo(rec.excluded[t.id]), note: v }; }, { placeholder: 'Why', size: 30 })
+        : current(t)?.note ? h('span', { class: 'muted small wrap' }, current(t).note) : '') },
     ], list, { empty: 'Nothing flagged.' });
     mount(reviewHost, h('h2', {}, 'Deposits to review'),
-      h('p', { class: 'muted' }, 'Everything deposited counts as revenue unless it’s marked here. Money moving between our own accounts is found automatically (same amount leaving another account within 5 days) and taken out as a transfer; tax refunds are taken out as not revenue. Change any of them.'),
+      h('p', { class: 'muted' }, 'Everything deposited counts as revenue unless it’s marked here. Each deposit is matched to the GL batch that booked it: one booked to another of our accounts is taken out as a transfer, one booked to a receivable as revenue from an earlier month, and one booked anywhere else that isn’t revenue (a refund, a reimbursement, a pass-through) as not revenue. Money matching a payment out of another of our accounts, and tax refunds, are taken out too. Change any of them.'),
       tableFor(flagged), h('details', {}, h('summary', {}, `All ${deps.length} deposits`), tableFor(deps)));
+  }
+
+  // ---- Statements that should be here but aren't ------------------------------------------
+  function drawWarnings(c) {
+    mount(warnHost, c.warnings.length ? h('div', { class: 'notice warn' }, h('ul', {}, c.warnings.map((w) => h('li', {}, w.text)))) : null);
+  }
+
+  // ---- The statements against the GL -------------------------------------------------------
+  function drawGlCheck(c) {
+    const dep = c.deposits;
+    if (!glHasDeposits) {
+      mount(glCheckHost, h('p', { class: 'muted' }, glBy[month]
+        ? 'The GL register for this month was uploaded before deposits were checked against it. Upload it again (on the fiscal year page) to match every deposit to its GL batch and work out deposits in transit.'
+        : 'Upload the GL register (on the fiscal year page) to match every deposit to how the GL booked it.'));
+      return;
+    }
+    if (!dep?.hasStatements) { mount(glCheckHost, h('p', { class: 'muted' }, 'Attach the Cass statements to match their deposits to the GL.')); return; }
+    const matched = dep.lines.filter((x) => x.match).length;
+    const open = dep.noGl.filter((x) => !x.covered);
+    const glOnly = dep.glOnly.filter((x) => !(c.deposits.dit?.rows || []).some((r) => r.batch === x.receipt.batch && r.counts));
+    mount(glCheckHost,
+      h('p', {}, `${matched} of ${dep.lines.length} deposits matched to a GL batch. `,
+        Object.keys(dep.exclusions).length ? `${Object.keys(dep.exclusions).length} taken out as not revenue per the GL. ` : '',
+        dep.adjustments.length ? `${dep.adjustments.length} taken back by the GL. ` : ''),
+      open.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have'),
+        h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side of it. Usually revenue booked in another month (like credit card rewards for last quarter), or a batch that doesn’t add up to the deposit. Mark it on the deposit above, or add an adjustment.'),
+        table([{ label: 'Account', cell: (x) => KIND_LABEL[x.line.kind] }, { label: 'Date', cell: (x) => x.line.date }, { label: 'Description', cell: (x) => x.line.desc }, { label: 'Amount', num: true, cell: (x) => money(x.line.amount) }], open)) : null,
+      dep.covered.length ? h('details', { class: 'small' }, h('summary', {}, `${dep.covered.length} already covered by an adjustment entered by hand`),
+        h('ul', {}, dep.covered.map((x) => h('li', {}, `${x.line ? `${x.line.date} ${x.line.desc} ${money(x.line.amount)}` : `${x.adjustment.label} ${money(x.adjustment.amount)}`} — “${x.by.label}” ${money(x.by.amount)}`)))) : null,
+      glOnly.length ? h('details', { class: 'small' }, h('summary', {}, `${glOnly.length} GL deposits not on this month’s statements`),
+        h('p', { class: 'muted' }, 'Money the GL put into Cass that isn’t a deposit on these statements: transfers between GL accounts, refunds that landed in Outgoing Wires, or deposits on a statement that isn’t attached.'),
+        table([{ label: 'Batch', cell: (x) => x.receipt.batch }, { label: 'Date', cell: (x) => x.receipt.date }, { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.receipt.desc) },
+          { label: 'Booked to', cell: (x) => x.receipt.label }, { label: 'Amount', num: true, cell: (x) => money(x.receipt.amount) },
+          { label: '', cell: (x) => (x.landed ? `on the ${monthName(x.landed.month)} statement` : '') }], glOnly)) : null);
+  }
+
+  // ---- Deposits in transit, from the GL ----------------------------------------------------
+  function drawDitGl(c) {
+    const dit = c.deposits?.dit;
+    if (!dit) { mount(ditGlHost); return; }
+    const M = monthName(month, { short: true }).split(' ')[0], N = monthName(nextMonth, { short: true }).split(' ')[0];
+    const setChoice = (r, inTransit) => {
+      rec.ditGl = { ...(rec.ditGl || {}), [r.batch]: { in: inTransit, by: user, at: nowIso() } };
+      logChange(rec, user, `${r.desc} ${money(r.amount)}: ${inTransit ? `in transit at the end of ${monthName(month)}` : 'not in transit'}`);
+      changed({ now: true });
+    };
+    const confirmAll = () => {
+      const todo = dit.rows.filter((r) => r.flagged);
+      rec.ditGl = { ...(rec.ditGl || {}), ...Object.fromEntries(todo.map((r) => [r.batch, { in: r.suggested, by: user, at: nowIso() }])) };
+      logChange(rec, user, `Confirmed ${todo.length} deposits in transit as suggested`);
+      changed({ now: true });
+    };
+    const rows = dit.rows.filter((r) => showSettled.on || !r.settled || r.counts);
+    const bankIn = (r) => (r.settled ? h('span', {}, r.counts ? (r.sign > 0 ? `${N} — in transit` : `${M}, booked ${N}`) : r.sign > 0 ? M : N)
+      : select(r.sign > 0 ? [['in', `${N} — in transit`], ['out', M]] : [['in', `${M} — booked in ${N}`], ['out', N]], r.counts ? 'in' : 'out',
+        { onchange: (e) => setChoice(r, e.target.value === 'in') }));
+    mount(ditGlHost,
+      h('p', { class: 'muted' }, `From the GL: a deposit the GL booked in ${monthName(month)} that reached the bank in ${monthName(nextMonth)} is in transit, and so is one the other way round (a minus). The GL names the bank date in the batch (“3.3.2026 February Deposit”); the statements confirm it. `,
+        dit.nextIn ? '' : `${monthName(nextMonth)}’s statements aren’t attached yet, so deposits either side of month end are listed to confirm.`),
+      table([
+        { label: 'Hit the bank in', cell: bankIn },
+        { label: 'GL date', cell: (r) => r.date },
+        { label: 'Description', cell: (r) => h('span', { class: 'wrap' }, r.desc) },
+        { label: 'Amount', num: true, cell: (r) => money(r.sign * r.amount) },
+        { label: 'Why', cell: (r) => h('span', { class: 'small' }, r.evidence) },
+        { label: '', cell: (r) => (r.settled ? statusPill('Statement', 'good') : r.choice ? h('span', { class: 'small muted' }, `${r.choice.by} · ${when(r.choice.at)}`) : r.flagged ? statusPill('To confirm', 'warn') : '') },
+      ], rows, { empty: 'Nothing near month end.' }),
+      h('div', { class: 'row', style: { marginTop: '.5rem' } },
+        dit.flagged ? h('button', { onclick: confirmAll }, `Confirm ${dit.flagged} as suggested`) : null,
+        h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: showSettled.on, onchange: (e) => { showSettled.on = e.target.checked; drawDitGl(calc()); } }), ' Show deposits the statements already place'),
+        h('span', { class: 'small' }, `In transit from the GL ${money(dit.glTotal, { dash: false })}`,
+          dit.manual.length ? ` · typed ${money(dit.manual.filter((x) => !x.duplicate).reduce((t, x) => t + (x.d.amount || 0), 0), { dash: false })}` : '',
+          dit.workbookTotal != null ? ` · the old workbook had ${money(dit.workbookTotal, { dash: false })}` : '')),
+      dit.manual.some((x) => x.duplicate) ? h('p', { class: 'small warn-text' }, `Typed deposits in transit also on the GL’s list aren’t counted twice: ${dit.manual.filter((x) => x.duplicate).map((x) => money(x.d.amount)).join(', ')}.`) : null,
+      h('h3', {}, 'Other deposits in transit (typed)'));
   }
 
   // ---- Adjustments -------------------------------------------------------------------------
@@ -254,10 +369,11 @@ export default async function (main, { month, monthName, user, rerender }) {
     stripeHost.replaceChildren(stripeCheckBox(c.stripeCheck, { rec, user, onChange: () => changed({ now: true }) }));
     const stmt = rec.statements.operating || rec.statements.incoming || rec.statements.outgoing;
     mount(autoAdjHost, auto.length ? table([
-      { label: 'From the Cass statements', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null,
+      { label: 'From the Cass statements and the GL', cell: (a) => h('div', {}, a.label, a.why ? h('div', { class: 'muted small wrap' }, a.why) : null,
         a.detail?.length ? h('details', { class: 'small' }, h('summary', {}, `${a.detail.length} item${a.detail.length === 1 ? '' : 's'}`),
           h('ul', {}, a.detail.map((d) => h('li', {}, `${d.date} ${d.desc} ${money(d.amount)}`)))) : null) },
-      { label: 'Amount', num: true, cell: (a) => money(a.amount) },
+      { label: 'Amount', num: true, cell: (a) => h('span', {}, money(a.amount), a.id.startsWith('auto-glrev-') ? h('div', {}, h('button', { class: 'small-btn', title: 'The GL took this back, but it doesn’t affect this month’s deposits',
+        onclick: () => { rec.dismissed = { ...(rec.dismissed || {}), [a.id]: true }; logChange(rec, user, `Left out “${a.label}” ${money(a.amount)}`); changed({ now: true }); } }, 'Leave out')) : null) },
       { label: 'Entered / confirmed', cell: (a) => {
         const o = rec.autoConfirm[a.id] || (rec.autoConfirm[a.id] = {});
         return stampBadge({ enteredBy: stmt?.attachedBy, enteredAt: stmt?.attachedAt, obj: o, values: { amount: a.amount }, user,
@@ -298,7 +414,7 @@ export default async function (main, { month, monthName, user, rerender }) {
         { label: 'Entered / confirmed', cell: (d) => stampBadge({ enteredBy: d.enteredBy, enteredAt: d.enteredAt, obj: d, values: { amount: d.amount }, user,
           onConfirm: () => { confirmValues(d, user, { amount: d.amount }); logChange(rec, user, `Confirmed deposit in transit ${d.note || ''} ${money(d.amount)}`); drawDit(); changed({ now: true }); } }) },
         { label: '', cell: (d) => h('button', { class: 'small-btn danger', onclick: () => { rec.dit = rec.dit.filter((x) => x !== d); logChange(rec, user, `Removed deposit in transit ${d.note || ''} ${money(d.amount)}`); drawDit(); changed({ now: true }); } }, 'Remove') },
-      ], rec.dit, { empty: 'No deposits in transit entered.' }),
+      ], glHasDeposits ? rec.dit.filter((d) => !String(d.id || '').startsWith('imp-')) : rec.dit, { empty: glHasDeposits ? 'None — the GL’s list above is used.' : 'No deposits in transit entered.' }),
       h('div', { class: 'row', style: { marginTop: '.5rem' } },
         h('button', { onclick: () => { rec.dit.push(stampEntered({ id: uid(), date: '', amount: 0, note: '' }, user)); logChange(rec, user, 'Added a deposit in transit'); drawDit(); changed(); } }, 'Add deposit in transit'),
         ditTotals));
@@ -398,11 +514,12 @@ export default async function (main, { month, monthName, user, rerender }) {
     draft ? h('div', { class: 'notice warn' }, 'Restored changes that hadn’t saved yet. They’ll save now. ',
       h('button', { onclick: () => { try { localStorage.removeItem(DRAFT); } catch { /* ignore */ } rerender(); } }, 'Discard them instead')) : null,
     summaryHost,
-    h('h2', {}, 'Statements'), uploadHost,
+    h('h2', {}, 'Statements'), warnHost, uploadHost,
     h('h2', {}, 'Accounts'), cardsHost,
     reviewHost,
+    h('h2', {}, 'Checked against the GL'), glCheckHost,
     h('h2', {}, 'Adjustments'), stripeHost, autoAdjHost, h('h3', {}, 'Other adjustments'), adjHost,
-    h('h2', {}, 'Timing'), ditHost, timingHost,
+    h('h2', {}, 'Timing'), h('h3', {}, 'Deposits in transit'), ditGlHost, ditHost, timingHost,
     h('h2', {}, 'GL (statement of activities)'), glHost,
     h('h2', {}, 'Notes'),
     h('textarea', { rows: 3, style: { width: '100%' }, oninput: (e) => { track('notes', 'Notes', rec.notes, e.target.value); rec.notes = e.target.value; changed(); } }, rec.notes || ''),

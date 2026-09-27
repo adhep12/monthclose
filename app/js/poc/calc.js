@@ -171,9 +171,26 @@ export function wiseOutgoingCheck(recIn) {
 
 // What's excluded right now: automatic findings (re-worked out from the statements every time, so
 // attaching statements in any order gets the same answer) plus anything someone set by hand.
-export function effectiveExclusions(recIn) {
+// deposits: this month's GL deposit check (gl-deposits.js), when the GL register is loaded.
+export function effectiveExclusions(recIn, deposits = null) {
   const rec = asRec(recIn);
-  return { ...defaultExclusions(rec), ...(rec.excluded || {}) };
+  return { ...defaultExclusions(rec), ...(deposits?.exclusions || {}), ...(rec.excluded || {}) };
+}
+
+// A wire account that sweeps into Operating but whose statement isn't attached: its deposits
+// (Wise transfers, DAF gifts, refunds) can't be checked, and a transfer looks like revenue.
+export function missingStatements(rec) {
+  const st = rec.statements || {};
+  const op = st.operating;
+  const out = [];
+  if (!op) {
+    if (st.incoming || st.outgoing) out.push({ kind: 'operating', text: 'The Operating (…5884) statement isn’t attached. Cass bank activity is Operating’s deposits, so the month can’t be worked out without it.' });
+    return out;
+  }
+  const swept = (acct) => op.transactions.some((t) => isSweep(t) && new RegExp(`${acct}\\b`).test(t.desc));
+  if (!st.incoming && swept(INCOMING_ACCT)) out.push({ kind: 'incoming', text: 'Operating has sweeps from Incoming Wires (…5892), but that statement isn’t attached. Wires in there (Wise transfers, DAF gifts, refunds) can’t be checked, so a transfer would count as revenue.' });
+  if (!st.outgoing && swept(OUTGOING_ACCT)) out.push({ kind: 'outgoing', text: 'Operating has sweeps from Outgoing Wires (…3410), but that statement isn’t attached. What landed there (refunds, Fidelity transfers) can’t be checked.' });
+  return out;
 }
 
 // Delap Fidelity money that reached Cass this month — a withdrawal from Delap, so it's added back
@@ -200,7 +217,7 @@ export function defaultExclusions(recIn) {
 }
 
 // Adjustments that come straight off the statements. Each carries the account it belongs to.
-export function statementAdjustments(rec) {
+export function statementAdjustments(rec, deposits = null) {
   const st = rec.statements || {};
   const adj = [];
   if (st.operating) {
@@ -238,15 +255,18 @@ export function statementAdjustments(rec) {
         why: `${money2(sum(landed, (t) => t.amount))} landed in Outgoing${landed.length ? ` (${landed.map((x) => `${x.date} ${x.desc} ${money2(x.amount)}`).join('; ')})` : ''}. Only ${money2(sum(back, (t) => t.amount))} of it swept back into Operating’s credits; the rest reduced Operating’s transfers out.` });
     }
   }
-  const deposits = reviewableDeposits(rec);
-  for (const [id, v] of Object.entries(effectiveExclusions(rec))) {
-    const t = deposits.find((x) => x.id === id);
+  const reviewable = reviewableDeposits(rec);
+  for (const [id, v] of Object.entries(effectiveExclusions(rec, deposits))) {
+    const t = reviewable.find((x) => x.id === id);
     const info = exclusionInfo(v);
     if (!t || !info) continue;
     const transfer = info.type === 'transfer';
-    adj.push({ id: `${transfer ? 'auto-tr-' : 'auto-ex-'}${id}`, account: t.account, type: info.type, label: `${transfer ? 'Transfer between accounts' : 'Not revenue'}: ${t.desc}`,
-      amount: -t.amount, auto: true, note: info.note, detail: [{ date: t.date, amount: t.amount, desc: t.desc, note: info.note }] });
+    const what = transfer ? 'Transfer between accounts' : info.type === 'prior-period' ? 'Recognized in another month' : 'Not revenue';
+    adj.push({ id: `${transfer ? 'auto-tr-' : 'auto-ex-'}${id}`, account: t.account, type: info.type, label: `${what}: ${t.desc}`,
+      amount: -t.amount, auto: true, note: info.note, gl: info.gl, detail: [{ date: t.date, amount: t.amount, desc: t.desc, note: info.note }] });
   }
+  // Revenue the GL took back out after it was deposited (chargebacks, a deposit reclassed).
+  for (const a of deposits?.adjustments || []) adj.push(a);
   return adj;
 }
 
@@ -318,7 +338,9 @@ export function autoFigures(rec, cd = null, prior = null) {
   return auto;
 }
 
-export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances = null } = {}) {
+// deposits / priorDeposits: the GL deposit check for this month and last (gl-deposits.js). With
+// them, deposits in transit come from the GL; without, from what was typed or imported.
+export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances = null, deposits = null, priorDeposits = null } = {}) {
   const bank = rec.bank || {};
   const auto = autoFigures(rec, cd, prior);
   const lines = BANK_SOURCES.map((s) => {
@@ -339,11 +361,11 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
   const bankRev = round2(sum(lines, (l) => l.rev));
   const bankInt = round2(sum(lines, (l) => l.int));
 
-  const adjustments = [...statementAdjustments(rec), ...(rec.adjustments || []).map((a) => ({ ...a, auto: false }))];
+  const adjustments = [...statementAdjustments(rec, deposits), ...(rec.adjustments || []).map((a) => ({ ...a, auto: false }))];
   const adjTotal = round2(sum(adjustments, (a) => a.amount));
 
-  const ditTotal = round2(sum(rec.dit || [], (d) => d.amount));
-  const priorDit = prior ? round2(sum(prior.dit || [], (d) => d.amount)) : null;
+  const ditTotal = deposits?.dit ? deposits.dit.total : round2(sum(rec.dit || [], (d) => d.amount));
+  const priorDit = priorDeposits?.dit ? priorDeposits.dit.total : prior ? round2(sum(prior.dit || [], (d) => d.amount)) : null;
   const ditChange = priorDit == null ? null : round2(ditTotal - priorDit);
 
   // Accrued and realized CD interest come from the CD schedule when it has the month.
@@ -370,6 +392,7 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
     revAdjusted, intAdjusted,
     glRev, glInt, glSource, gl, workbookGl,
     stripeCheck: stripePayoutCheck(rec),
+    warnings: missingStatements(rec), deposits, ditFromGl: !!deposits?.dit,
     diffRev, diffInt,
     pctRev: diffRev == null || !glRev ? null : diffRev / glRev,
     pctInt: diffInt == null || !glInt ? null : diffInt / glInt,
