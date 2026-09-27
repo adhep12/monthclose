@@ -181,3 +181,6 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0 .3re
 td.src { font-size: .7rem; color: var(--muted); }
 .cell-statement { color: var(--good); }
 .cell-typed { color: var(--warn); }
+tr.section-row td { background: color-mix(in srgb, var(--accent-soft) 60%, var(--panel)); font-weight: 650; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+tr.strong-row td { font-weight: 650; }
+td.indent { padding-left: 1.5rem; }
