@@ -37,7 +37,7 @@ export function parseWise(lines) {
     const desc = m[1].trim() || (all[i - 1] || '').trim();
     const dm = (all[i + 1] || '').match(/^(\w+) (\d{1,2}), (\d{4})/);
     if (!dm) continue;
-    items.push({ desc, amount: amt(m[2]), balance: amt(m[3]), date: iso(Number(dm[3]), MONTHS.indexOf(dm[1].toLowerCase()) + 1, Number(dm[2])) });
+    items.push({ id: `wise-${items.length}`, desc, amount: amt(m[2]), balance: amt(m[3]), date: iso(Number(dm[3]), MONTHS.indexOf(dm[1].toLowerCase()) + 1, Number(dm[2])) });
   }
   // Newest first. Direction from the running balance where we can, else from the wording.
   for (let i = 0; i < items.length; i++) {

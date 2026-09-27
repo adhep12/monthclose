@@ -1,13 +1,13 @@
-import { h, mount, table, toast, fileButton, statusPill } from '../ui.js';
+import { h, mount, table, toast, fileButton, statusPill, ask, askValue, notify } from '../ui.js';
 import { loadCds, saveCd, loadTrialBalance, loadConfig } from '../data.js';
 import { monthSummary, fyMonths, applyCdarsStatement, applyIntrafiExport, parseCdarsWorkbook, cdInterestJE, expectedInterest, earnedThrough } from '../cd/schedule.js';
 import { readStatementFile, ACCEPT } from '../ingest.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { jeRows } from '../fa/je.js';
-import { jeTable } from './fa-asset.js';
+import { jeTable } from './je-table.js';
 import { balanceAtEndOf } from '../tb.js';
 import { money, parseAmount, round2 } from '../money.js';
-import { fiscalYear, monthName, addMonths, lastDayOfMonth, monthOfDate } from '../fiscal.js';
+import { fiscalYear, monthName, addMonths, lastDayOfMonth, monthOfDate, currentMonth } from '../fiscal.js';
 import { explain, uploadFile, filesAvailable } from '../store.js';
 import { when } from '../audit.js';
 
@@ -21,8 +21,16 @@ export async function gl1150(month, account = '1150') {
   return v == null ? null : { balance: v, tb };
 }
 
-export default async function (main, { month, user, rerender }) {
-  const [cds, gl, cfg] = await Promise.all([loadCds(), gl1150(month), loadConfig()]);
+const MONTH_KEY = 'monthclose:cd-month';
+
+export default async function (main, { user, rerender }) {
+  const cdsFirst = await loadCds();
+  // The month shown: last picked on this browser, else the latest month with CD interest.
+  let month = null;
+  try { month = localStorage.getItem(MONTH_KEY); } catch { /* ignore */ }
+  if (!month) month = cdsFirst.flatMap((c) => Object.keys(c.earned || {})).sort().pop() || addMonths(currentMonth(), -1);
+  const pickMonth = (m) => { try { localStorage.setItem(MONTH_KEY, m); } catch { /* ignore */ } rerender(); };
+  const [cds, gl, cfg] = [cdsFirst, await gl1150(month), await loadConfig()];
   const fy = fiscalYear(month);
   const months = fyMonths(fy);
   const s = monthSummary(cds, month);
@@ -44,11 +52,11 @@ export default async function (main, { month, user, rerender }) {
         touched.forEach((cd) => { cd.files = { ...(cd.files || {}), [r.data.date]: { name: file.name, key: fileKey } }; });
         await persist(touched, `${file.name}: updated ${touched.map((c) => `…${c.last4}`).join(', ')} for ${monthName(r.data.month)}.`);
       } else if (r.type === 'intrafi-export') {
-        const m = prompt('Accrued interest in this export runs through which month end? (YYYY-MM — if you ran it on the 1st, it’s the month before)', month);
+        const m = await askValue('Which month is this export for?', 'Accrued interest in the export runs through the day before you ran it — run on the 1st, it’s the month before.', { type: 'month', value: month, ok: 'Apply' });
         if (!m || !/^\d{4}-\d{2}$/.test(m)) return;
         const notes = applyIntrafiExport(cds, r.data, m, { user });
         await persist(cds.filter((c) => c.earned?.[m]?.source === 'export'), `Updated accruals for ${monthName(m)} from the IntraFi export.`);
-        if (notes.length) alert(notes.join('\n\n'));
+        if (notes.length) notify('From the IntraFi export', notes);
       } else {
         toast(`${file.name} is a ${r.type} file — attach it on the Proof of cash page.`, 'error');
       }
@@ -61,7 +69,7 @@ export default async function (main, { month, user, rerender }) {
       const res = parseCdarsWorkbook(XLSX, wb);
       const existing = new Set(cds.map((c) => c.id));
       const fresh = res.cds.filter((c) => !existing.has(c.id));
-      if (!confirm(`${res.cds.length} CDs in “${res.sheetName}”. ${fresh.length} are new; ${res.cds.length - fresh.length} already in the app will keep their statement figures and take the workbook’s only for months that have none. Import?`)) return;
+      if (!(await ask('Import CDARS workbook', `${res.cds.length} CDs in “${res.sheetName}”. ${fresh.length} are new; ${res.cds.length - fresh.length} already here keep their statement figures and take the workbook’s only for months that have none.`, { ok: 'Import' }))) return;
       const merged = res.cds.map((w) => {
         const cur = cds.find((c) => c.id === w.id);
         if (!cur) return { ...w, importedBy: user, importedAt: new Date().toISOString() };
@@ -124,6 +132,7 @@ export default async function (main, { month, user, rerender }) {
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, `CD schedule — FY${fy}`), h('p', { class: 'muted' }, 'CDARS ladder, interest earned each month, interest paid at maturity, and the GL 1150 tie-out.')),
       h('div', { class: 'actions' },
+        h('label', { class: 'month-pick' }, h('span', {}, 'Month'), h('input', { type: 'month', value: month, onchange: (e) => e.target.value && pickMonth(e.target.value) })),
         fileButton('Upload CDARS statements / IntraFi export…', ACCEPT, onUpload, { class: 'primary' }),
         fileButton('Import CDARS workbook…', '.xlsx', onWorkbook))),
 

@@ -80,6 +80,13 @@ export function parseIcsStatement(lines) {
     rate: Number(g(/Interest Rate at End of Statement Period ([\d.]+)%/)) / 100 || null,
   };
   if (res.ending == null) throw new Error('Couldn’t read the ICS ending balance.');
+  // Transaction detail: "07/31/2026 Interest Capitalization $9,215.38 $3,621,600.72"
+  res.items = [];
+  const txRe = new RegExp(`^(\\d{2}/\\d{2}/\\d{4}) (.+?) (\\(?)\\$?(${AMT})\\)? \\$?(${AMT})$`);
+  for (const x of all) {
+    const m = x.match(txRe);
+    if (m) res.items.push({ date: mdY(m[1]), type: m[2], amount: amt(m[4]), withdrawal: !!m[3] || /withdraw/i.test(m[2]) });
+  }
   res.ties = round2((res.opening || 0) + res.deposits - res.withdrawals + res.interest) === round2(res.ending);
   return res;
 }

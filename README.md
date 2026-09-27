@@ -1,7 +1,11 @@
 # Month Close
 
-BibleProject accounting's month-end processes as a bp-vibes app: fixed asset depreciation today;
-CD interest, proof of cash and inventory next. See `docs/discovery.md` for how each process works
+BibleProject accounting's proof of cash and CDARS schedule, as a bp-vibes app. The landing page
+is the fiscal-year proof of cash sheet (FY2026 = October 2025 – September 2026): click an
+account's cell for a month to attach its statement or type its figures. The fixed asset module
+(depreciation engine, FA listing import, JE export) is parked — its views were removed from the
+app in favor of a focused proof of cash tool; the engine in `app/js/fa/` and its tests remain, and
+the views are in git history. See `docs/discovery.md` for how each process works
 and `CLAUDE.md` for the platform rules.
 
 - `app/` — everything that gets deployed (static HTML + ES modules, no build step).

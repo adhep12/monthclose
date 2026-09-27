@@ -32,7 +32,8 @@ export default async function (main, { user }) {
             await replacePocMonth({ ...r, importedBy: user, importedAt: new Date().toISOString() });
             n++;
           }
-          toast(`Imported ${n} months.`);
+          toast(`Imported ${n} months into FY${res.fiscalYear}.`);
+          try { localStorage.setItem('monthclose:poc-fy', String(res.fiscalYear)); } catch { /* ignore */ }
           location.hash = '#/poc';
         } catch (err) { toast(explain(err, `Stopped after ${n} months.`), 'error'); go.disabled = false; }
       });

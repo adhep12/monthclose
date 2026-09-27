@@ -64,55 +64,112 @@ export function isSweep(t) {
   return SWEEP_IN.test(t.desc) || SWEEP_OUT.test(t.desc);
 }
 
-// Deposits someone may reasonably mark as "not revenue": credits on Operating and Incoming
-// that aren't internal sweeps. (Outgoing's non-sweep credits are already taken out as a group.)
-export function excludableCredits(statements) {
+// ---- Deposits that aren't revenue --------------------------------------------------------
+// rec.excluded[id] = { type: 'transfer' | 'not-revenue', note, auto }   (older records: a string
+// note, meaning not-revenue). rec.dismissed[id] = true when someone un-ticks an automatic one,
+// so re-attaching a statement doesn't tick it again.
+
+export function exclusionInfo(v) {
+  if (v == null) return null;
+  return typeof v === 'string' ? { type: 'not-revenue', note: v } : v;
+}
+
+// Accept either a month record or (older callers) its Cass statements object.
+const asRec = (x) => (x && (x.operating || x.incoming || x.outgoing) && !x.statements ? { statements: x } : x || {});
+
+// Money arriving that counts as revenue unless someone marks it: Cass Operating and Incoming
+// credits (not the internal sweeps, not Stripe — that's handled as its own line) and money
+// received into Wise.
+export function reviewableDeposits(recIn) {
+  const rec = asRec(recIn);
+  const st = rec.statements || {};
   const out = [];
   for (const kind of ['operating', 'incoming']) {
-    const s = statements?.[kind];
+    const s = st[kind];
     if (!s) continue;
-    for (const t of s.transactions) if (t.section === 'credit' && !isSweep(t)) out.push({ ...t, kind });
+    for (const t of s.transactions) if (t.section === 'credit' && !isSweep(t) && !STRIPE.test(t.desc)) out.push({ ...t, kind, account: 'cassOp' });
   }
+  const w = rec.bankStatements?.wise;
+  (w?.items || []).forEach((it, i) => {
+    if (it.kind === 'received') out.push({ id: it.id || `wise-${i}`, date: it.date, amount: Math.abs(it.amount), desc: it.desc, kind: 'wise', account: 'wise' });
+  });
+  return out;
+}
+export const excludableCredits = reviewableDeposits;
+
+// Money leaving one of our accounts — the other half of a transfer.
+export function outgoingItems(recIn) {
+  const rec = asRec(recIn);
+  const st = rec.statements || {};
+  const out = [];
+  for (const kind of ['operating', 'incoming', 'outgoing']) {
+    for (const t of st[kind]?.transactions || []) if (t.section !== 'credit' && !isSweep(t)) out.push({ ...t, account: 'cassOp', kind });
+  }
+  (rec.bankStatements?.wise?.items || []).forEach((it) => { if (it.kind === 'sent') out.push({ date: it.date, amount: Math.abs(it.amount), desc: it.desc, account: 'wise' }); });
+  (rec.ics?.items || []).forEach((it) => { if (it.withdrawal) out.push({ date: it.date, amount: it.amount, desc: `ICS ${it.type}`, account: 'ics' }); });
   return out;
 }
 
-export function defaultExclusions(statements) {
-  const ex = {};
-  for (const t of excludableCredits(statements)) {
-    if (AUTO_EXCLUDE.test(`${t.desc} ${t.detail || ''}`)) ex[t.id] = 'Tax refund — not revenue (excluded automatically)';
+const daysApart = (a, b) => (a && b ? Math.abs(Date.parse(a) - Date.parse(b)) / 86400000 : 99);
+
+// Deposits that are really money moving between our own accounts: the same amount (at least
+// $1,000) left another of our accounts within 5 days, or Wise shows it came from BibleProject.
+export function detectTransfers(recIn) {
+  const rec = asRec(recIn);
+  const outs = outgoingItems(rec);
+  const found = {};
+  for (const d of reviewableDeposits(rec)) {
+    if (d.account === 'wise' && /bible ?project/i.test(d.desc)) { found[d.id] = { type: 'transfer', note: 'Sent from our own account', auto: true }; continue; }
+    if (d.amount < 1000) continue;
+    const m = outs.find((o) => o.account !== d.account && Math.abs(o.amount - d.amount) < 0.005 && daysApart(o.date, d.date) <= 5);
+    if (m) found[d.id] = { type: 'transfer', note: `Matches ${m.date} ${m.desc} leaving ${m.account === 'cassOp' ? 'Cass' : m.account}`, auto: true };
   }
+  return found;
+}
+
+export function defaultExclusions(recIn) {
+  const rec = asRec(recIn);
+  const ex = {};
+  for (const t of reviewableDeposits(rec)) {
+    if (AUTO_EXCLUDE.test(`${t.desc} ${t.detail || ''}`)) ex[t.id] = { type: 'not-revenue', note: 'Tax refund — not revenue (excluded automatically)', auto: true };
+  }
+  Object.assign(ex, detectTransfers(rec));
+  for (const id of Object.keys(rec.dismissed || {})) delete ex[id];
   return ex;
 }
 
-// Adjustments that come straight off the statements.
+// Adjustments that come straight off the statements. Each carries the account it belongs to.
 export function statementAdjustments(rec) {
   const st = rec.statements || {};
   const adj = [];
   if (st.operating) {
     const stripe = st.operating.transactions.filter((t) => t.section === 'credit' && STRIPE.test(t.desc));
     if (stripe.length) {
-      adj.push({ id: 'auto-stripe', label: 'Stripe transfers into Cass', amount: -round2(sum(stripe, (t) => t.amount)), auto: true,
+      adj.push({ id: 'auto-stripe', account: 'cassOp', type: 'transfer', label: 'Stripe transfers into Cass', amount: -round2(sum(stripe, (t) => t.amount)), auto: true,
         detail: stripe.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc })),
-        why: 'Stripe revenue is counted on the Stripe line, so its transfers into Cass come out here.' });
+        why: 'Money moving from Stripe to Cass — Stripe revenue is already counted on the Stripe line.' });
     }
   }
   if (st.incoming) {
     const out = st.incoming.transactions.filter((t) => t.section !== 'credit' && !isSweep(t));
-    adj.push({ id: 'auto-incoming', label: 'Incoming Wires — money out that isn’t the sweep', amount: -round2(sum(out, (t) => t.amount)), auto: true,
+    adj.push({ id: 'auto-incoming', account: 'cassOp', type: 'refund', label: 'Incoming Wires — money out that isn’t the sweep', amount: -round2(sum(out, (t) => t.amount)), auto: true,
       detail: out.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc })),
       why: 'Every Incoming deposit counts as revenue, so anything returned from Incoming reduces deposits.' });
   }
   if (st.outgoing) {
     const inn = st.outgoing.transactions.filter((t) => t.section === 'credit' && !isSweep(t));
-    adj.push({ id: 'auto-outgoing', label: 'Outgoing Wires — money in that isn’t the sweep', amount: -round2(sum(inn, (t) => t.amount)), auto: true,
+    adj.push({ id: 'auto-outgoing', account: 'cassOp', type: 'refund', label: 'Outgoing Wires — money in that isn’t the sweep', amount: -round2(sum(inn, (t) => t.amount)), auto: true,
       detail: inn.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc })),
       why: 'Refunds and returns landing in Outgoing reach Operating through the sweep but aren’t revenue.' });
   }
-  const credits = excludableCredits(st);
-  for (const [id, note] of Object.entries(rec.excluded || {})) {
-    const t = credits.find((x) => x.id === id);
-    if (t) adj.push({ id: `auto-ex-${id}`, label: `Not revenue: ${t.desc}`, amount: -t.amount, auto: true, note,
-      detail: [{ date: t.date, amount: t.amount, desc: t.desc }] });
+  const deposits = reviewableDeposits(rec);
+  for (const [id, v] of Object.entries(rec.excluded || {})) {
+    const t = deposits.find((x) => x.id === id);
+    const info = exclusionInfo(v);
+    if (!t || !info) continue;
+    const transfer = info.type === 'transfer';
+    adj.push({ id: `${transfer ? 'auto-tr-' : 'auto-ex-'}${id}`, account: t.account, type: info.type, label: `${transfer ? 'Transfer between accounts' : 'Not revenue'}: ${t.desc}`,
+      amount: -t.amount, auto: true, note: info.note, detail: [{ date: t.date, amount: t.amount, desc: t.desc, note: info.note }] });
   }
   return adj;
 }

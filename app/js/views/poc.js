@@ -1,12 +1,13 @@
-import { h, mount, table, toast, statusPill, select } from '../ui.js';
+import { h, mount, table, toast, statusPill, select, ask, notify } from '../ui.js';
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa } from '../data.js';
-import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, excludableCredits, defaultExclusions, balanceMethodInterest } from '../poc/calc.js';
-import { monthSummary, applyCdarsStatement, applyIntrafiExport } from '../cd/schedule.js';
-import { readStatementFile, ACCEPT } from '../ingest.js';
+import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest } from '../poc/calc.js';
+import { attachFiles } from '../poc/attach.js';
+import { monthSummary } from '../cd/schedule.js';
+import { ACCEPT } from '../ingest.js';
 import { balanceAtEndOf } from '../tb.js';
 import { money, parseAmount, round2 } from '../money.js';
 import { addMonths } from '../fiscal.js';
-import { explain, uploadFile, fileUrl, filesAvailable } from '../store.js';
+import { explain, fileUrl } from '../store.js';
 import { stampEntered, confirmValues, confirmationState, logChange, stampBadge, when, nowIso } from '../audit.js';
 
 const KIND_LABEL = { operating: 'Operating …5884', incoming: 'Incoming Wires …5892', outgoing: 'Outgoing Wires …3410' };
@@ -134,47 +135,10 @@ export default async function (main, { month, monthName, user, rerender }) {
 
   // ---- Uploads -----------------------------------------------------------------------------
   async function onFiles(files) {
-    for (const file of files) {
-      try {
-        const r = await readStatementFile(file);
-        const d = r.data;
-        const fileMonth = r.type === 'stripe' || r.type === 'intrafi-export' ? month : d.month;
-        if (fileMonth && fileMonth !== month && !confirm(`${file.name} is for ${monthName(fileMonth)}, but you’re closing ${monthName(month)}. Use it anyway?`)) continue;
-        let fileKey = null;
-        if (filesAvailable()) { try { fileKey = (await uploadFile('statements', file))?.key || null; } catch (err) { toast(explain(err, `Couldn’t store ${file.name}; its numbers are still used.`), 'error'); } }
-        const meta = { fileName: file.name, fileKey, attachedBy: user, attachedAt: nowIso() };
-        if (r.type === 'cass') {
-          rec.statements[d.kind] = { ...d, ...meta };
-          for (const [id, note] of Object.entries(defaultExclusions({ [d.kind]: d }))) if (!(id in rec.excluded)) rec.excluded[id] = note;
-          const dup = /stripe transfers|wire sweep/i;
-          rec.adjustments = rec.adjustments.filter((a) => !(a.note === 'From the workbook' && dup.test(a.label)));
-          if (!d.check.creditsOk || !d.check.debitsOk) toast(`${file.name}: what I read doesn’t add up to the statement totals — check it.`, 'error');
-          logChange(rec, user, `Attached Cass ${d.kind} statement ${file.name}`);
-        } else if (r.type === 'stripe') {
-          const m = d.months.find((x) => x.month === month);
-          if (!m) { toast(`${file.name} has no ${monthName(month)} column.`, 'error'); continue; }
-          if (d.partialMonthEnding && d.partialMonthEnding.slice(0, 7) === month) toast(`Stripe marks ${monthName(month)} as a partial month in this file — download it again after month end.`, 'error');
-          rec.stripe = { ...m, ...meta };
-          logChange(rec, user, `Attached Stripe CSV ${file.name}: revenue ${money(m.revenue)}, payouts ${money(m.payouts)}`);
-        } else if (r.type === 'ics') {
-          rec.ics = { ...d, ...meta };
-          logChange(rec, user, `Attached ICS statement ${file.name}: interest ${money(d.interest)}`);
-        } else if (r.type === 'bank') {
-          rec.bankStatements[d.source] = { ...d, ...meta };
-          logChange(rec, user, `Attached ${BANK_SOURCES.find((s) => s.id === d.source)?.label} statement ${file.name}`);
-        } else if (r.type === 'cdars') {
-          const touched = applyCdarsStatement(cds, d, { user, file: file.name });
-          for (const cd of touched) { cd.files = { ...(cd.files || {}), [d.date]: { name: file.name, key: fileKey } }; await saveCd(cd); }
-          logChange(rec, user, `Attached CDARS statement ${file.name} (${touched.map((c) => `…${c.last4}`).join(', ')})`);
-          toast(`CD schedule updated from ${file.name}.`);
-        } else if (r.type === 'intrafi-export') {
-          const notes = applyIntrafiExport(cds, d, month, { user });
-          for (const cd of cds.filter((c) => c.earned?.[month]?.source === 'export')) await saveCd(cd);
-          logChange(rec, user, `Applied IntraFi export ${file.name} to ${monthName(month)} CD accruals`);
-          if (notes.length) alert(notes.join('\n\n'));
-        }
-      } catch (err) { console.error(err); toast(`${file.name}: ${explain(err, '')}`, 'error'); }
-    }
+    const { messages } = await attachFiles({ files, rec, cds, month, user, ask, saveCd });
+    const bad = messages.filter((m) => m.bad);
+    if (bad.length) notify('Please check', bad.map((m) => m.text));
+    else if (messages.length) toast(messages.map((m) => m.text).join(' · '));
     drawUploads(); drawReview(); drawAdj(); changed({ now: true });
   }
 
@@ -200,7 +164,7 @@ export default async function (main, { month, monthName, user, rerender }) {
         { label: 'Reads cleanly', cell: (x) => (x.ok ? statusPill('Ties to its own totals', 'good') : statusPill('Doesn’t tie — check', 'bad')) },
         { label: '', cell: (x) => h('div', { class: 'row' },
           x.s.fileKey ? h('button', { class: 'small-btn', onclick: async () => { const u = await fileUrl('statements', x.s.fileKey).catch(() => null); if (u) window.open(u, '_blank', 'noopener'); else toast('Couldn’t open the stored file.', 'error'); } }, 'View') : null,
-          h('button', { class: 'small-btn danger', onclick: () => { if (!confirm(`Detach ${x.label}?`)) return; x.detach(); logChange(rec, user, `Detached ${x.label} statement ${x.s.fileName || ''}`); drawUploads(); drawReview(); changed({ now: true }); } }, 'Detach')) },
+          h('button', { class: 'small-btn danger', onclick: async () => { if (!(await ask('Detach statement', `Detach ${x.label} (${x.s.fileName || ''})? Its figures come out of this month.`, { ok: 'Detach', danger: true }))) return; x.detach(); logChange(rec, user, `Detached ${x.label} statement ${x.s.fileName || ''}`); drawUploads(); drawReview(); changed({ now: true }); } }, 'Detach')) },
       ], list) : null);
   }
 
@@ -254,26 +218,30 @@ export default async function (main, { month, monthName, user, rerender }) {
         onUnconfirm: () => { delete b.confirmation; logChange(rec, user, `Removed confirmation on ${l.label}`); changed({ now: true }); } }));
   }
 
-  // ---- Cass deposits to review -------------------------------------------------------------
+  // ---- Deposits to review -----------------------------------------------------------------
   function drawReview() {
-    const credits = excludableCredits(rec.statements);
-    if (!credits.length) { mount(reviewHost); return; }
-    const flagged = credits.filter((t) => t.id in rec.excluded || /REFUND|TAX|RETURN|REVERSAL|IRS/i.test(`${t.desc} ${t.detail || ''}`));
+    const deps = reviewableDeposits(rec);
+    if (!deps.length) { mount(reviewHost); return; }
+    const flagged = deps.filter((t) => t.id in rec.excluded || /REFUND|TAX|RETURN|REVERSAL|IRS|TRANSFER|TRNSFR|BIBLE ?PROJECT/i.test(`${t.desc} ${t.detail || ''}`));
+    const setKind = (t, v) => {
+      const had = exclusionInfo(rec.excluded[t.id]);
+      if (v === 'revenue') { delete rec.excluded[t.id]; if (had?.auto) rec.dismissed = { ...(rec.dismissed || {}), [t.id]: true }; }
+      else rec.excluded[t.id] = { type: v, note: had?.note || '' };
+      logChange(rec, user, `${t.date} ${t.desc} ${money(t.amount)}: ${v === 'revenue' ? 'counted as revenue' : v === 'transfer' ? 'marked as a transfer between accounts' : 'marked as not revenue'}`);
+      drawReview(); changed();
+    };
     const tableFor = (list) => table([
-      { label: 'Not revenue', cell: (t) => h('input', { type: 'checkbox', checked: t.id in rec.excluded, onchange: (e) => {
-        if (e.target.checked) rec.excluded[t.id] = ''; else delete rec.excluded[t.id];
-        logChange(rec, user, `${e.target.checked ? 'Marked' : 'Unmarked'} as not revenue: ${t.date} ${t.desc} ${money(t.amount)}`);
-        drawReview(); changed();
-      } }) },
-      { label: 'Account', cell: (t) => (t.kind === 'incoming' ? 'Incoming' : 'Operating') },
+      { label: 'Treat as', cell: (t) => select([['revenue', 'Revenue'], ['transfer', 'Transfer between accounts'], ['not-revenue', 'Not revenue (refund etc.)']],
+        exclusionInfo(rec.excluded[t.id])?.type || 'revenue', { onchange: (e) => setKind(t, e.target.value) }) },
+      { label: 'Account', cell: (t) => (t.kind === 'incoming' ? 'Cass Incoming' : t.kind === 'wise' ? 'Wise' : 'Cass Operating') },
       { label: 'Date', cell: (t) => t.date },
       { label: 'Description', cell: (t) => h('span', { title: t.detail || '' }, t.desc) },
       { label: 'Amount', num: true, cell: (t) => money(t.amount) },
-      { label: 'Note', cell: (t) => (t.id in rec.excluded ? textInput(() => rec.excluded[t.id], (v) => { rec.excluded[t.id] = v; }, { placeholder: 'Why it isn’t revenue', size: 30 }) : '') },
+      { label: 'Note', cell: (t) => (t.id in rec.excluded ? textInput(() => exclusionInfo(rec.excluded[t.id]).note, (v) => { rec.excluded[t.id] = { ...exclusionInfo(rec.excluded[t.id]), note: v }; }, { placeholder: 'Why', size: 30 }) : '') },
     ], list, { empty: 'Nothing flagged.' });
-    mount(reviewHost, h('h2', {}, 'Cass deposits to review'),
-      h('p', { class: 'muted' }, 'Everything deposited to Operating and Incoming counts as revenue unless it’s marked here. Refunds and tax refunds are flagged; tax refunds are excluded automatically.'),
-      tableFor(flagged), h('details', {}, h('summary', {}, `All ${credits.length} deposits`), tableFor(credits)));
+    mount(reviewHost, h('h2', {}, 'Deposits to review'),
+      h('p', { class: 'muted' }, 'Everything deposited counts as revenue unless it’s marked here. Money moving between our own accounts is found automatically (same amount leaving another account within 5 days) and taken out as a transfer; tax refunds are taken out as not revenue. Change any of them.'),
+      tableFor(flagged), h('details', {}, h('summary', {}, `All ${deps.length} deposits`), tableFor(deps)));
   }
 
   // ---- Adjustments -------------------------------------------------------------------------
@@ -305,7 +273,7 @@ export default async function (main, { month, monthName, user, rerender }) {
         { label: 'Note', cell: (a) => textInput(() => a.note, (v) => { a.note = v; }, { size: 20 }) },
         { label: 'Entered / confirmed', cell: (a) => stampBadge({ enteredBy: a.enteredBy, enteredAt: a.enteredAt, obj: a, values: { amount: a.amount, account: a.account }, user,
           onConfirm: () => { confirmValues(a, user, { amount: a.amount, account: a.account }); logChange(rec, user, `Confirmed adjustment “${a.label}” ${money(a.amount)}`); drawAdj(); changed({ now: true }); } }) },
-        { label: '', cell: (a) => h('button', { class: 'small-btn danger', onclick: () => { if (!confirm(`Remove “${a.label}”?`)) return; rec.adjustments = rec.adjustments.filter((x) => x !== a); logChange(rec, user, `Removed adjustment “${a.label}” ${money(a.amount)}`); drawAdj(); changed({ now: true }); } }, 'Remove') },
+        { label: '', cell: (a) => h('button', { class: 'small-btn danger', onclick: async () => { if (!(await ask('Remove adjustment', `Remove “${a.label}” (${money(a.amount)})?`, { ok: 'Remove', danger: true }))) return; rec.adjustments = rec.adjustments.filter((x) => x !== a); logChange(rec, user, `Removed adjustment “${a.label}” ${money(a.amount)}`); drawAdj(); changed({ now: true }); } }, 'Remove') },
       ], rec.adjustments, { empty: 'No other adjustments.' }),
       h('div', { class: 'row', style: { marginTop: '.5rem' } },
         h('button', { onclick: () => {
@@ -421,7 +389,7 @@ export default async function (main, { month, monthName, user, rerender }) {
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, `Proof of cash — ${monthName(month)}`),
         h('p', { class: 'muted' }, 'Each bank account’s statement against Acumatica: who entered each figure, who confirmed it, and every adjustment in between.')),
-      h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/cds' }, 'CD schedule'), h('a', { class: 'btn', href: '#/poc' }, 'Back to the year'), h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'))),
+      h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/poc' }, '← Back to the fiscal year'))),
     draft ? h('div', { class: 'notice warn' }, 'Restored changes that hadn’t saved yet. They’ll save now. ',
       h('button', { onclick: () => { try { localStorage.removeItem(DRAFT); } catch { /* ignore */ } rerender(); } }, 'Discard them instead')) : null,
     summaryHost,
