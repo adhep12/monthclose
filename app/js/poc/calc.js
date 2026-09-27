@@ -35,7 +35,9 @@ export const BANK_SOURCES = [
 export function balanceMethodInterest(b = {}, priorB = {}) {
   const prior = b.priorEnding ?? priorB?.ending ?? null;
   if (b.ending == null || prior == null) return null;
-  return round2(b.ending - prior - (b.netDeposits || 0));
+  // Fees the manager takes out of the account are booked as an expense, with the gain grossed up
+  // by the same amount — so they're added back here.
+  return round2(b.ending - prior - (b.netDeposits || 0) + (b.fees || 0));
 }
 
 export const ADJUSTMENT_TYPES = {
@@ -57,7 +59,12 @@ export const DEFAULT_POC_CONFIG = {
 
 const SWEEP_IN = /Trnsfr from Checking/i;
 const SWEEP_OUT = /Trnsfr to Checking/i;
+const INCOMING_ACCT = '5892';
+const OUTGOING_ACCT = '3410';
+const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const STRIPE = /^STRIPE/i;
+// Money from the Delap Fidelity account arriving in Cass (Fidelity's MoneyLine transfers).
+export const FIDELITY = /FID BKG SVC|MONEYLINE/i;
 // Deposits that are almost never revenue; excluded by default, and anyone can put them back.
 const AUTO_EXCLUDE = /TAX ?REFUND|IRS TREAS|US TREASURY/i;
 
@@ -115,6 +122,11 @@ export function outgoingItems(recIn) {
   return out;
 }
 
+// The same transfer seen from both ends. Sent to ourselves by name, a wire fee or a day or two
+// in transit is allowed for; otherwise the amounts must match to the cent within 5 days.
+const sameMoney = (a, b, own) => (own
+  ? Math.abs(a.amount - b.amount) <= Math.max(0.005, Math.min(100, a.amount * 0.0005)) && daysApart(a.date, b.date) <= 7
+  : Math.abs(a.amount - b.amount) < 0.005 && daysApart(a.date, b.date) <= 5);
 const daysApart = (a, b) => (a && b ? Math.abs(Date.parse(a) - Date.parse(b)) / 86400000 : 99);
 
 // Deposits that are really money moving between our own accounts: the same amount (at least
@@ -125,7 +137,8 @@ export function detectTransfers(recIn) {
   const found = {};
   for (const d of reviewableDeposits(rec)) {
     if (d.account === 'wise' && /bible ?project/i.test(d.desc)) { found[d.id] = { type: 'transfer', note: 'Sent from our own account', auto: true }; continue; }
-    const m = outs.find((o) => o.account !== d.account && Math.abs(o.amount - d.amount) < 0.005 && daysApart(o.date, d.date) <= 5);
+    if (d.account !== 'wise' && FIDELITY.test(`${d.desc} ${d.detail || ''}`)) { found[d.id] = { type: 'transfer', note: 'From the Delap Fidelity account', auto: true }; continue; }
+    const m = outs.find((o) => o.account !== d.account && sameMoney(o, d, OWN.test(o.desc)));
     // Under $1,000 a same-amount match could be coincidence, unless the money was sent to us by name.
     if (m && (d.amount >= 1000 || OWN.test(m.desc))) found[d.id] = { type: 'transfer', note: `Matches ${m.date} ${m.desc} leaving ${m.account === 'cassOp' ? 'Cass' : m.account}`, auto: true };
   }
@@ -140,11 +153,30 @@ export function wiseOutgoingCheck(recIn) {
   return wiseItems(rec).filter((it) => it.kind === 'sent').map((it) => {
     const amount = Math.abs(it.amount);
     const toOwn = OWN.test(it.desc);
-    const landed = deposits.find((d) => Math.abs(d.amount - amount) < 0.005 && daysApart(d.date, it.date) <= 5 && (amount >= 1000 || toOwn));
-    const excluded = landed ? rec.excluded?.[landed.id] : null;
+    const landed = deposits.find((d) => sameMoney({ amount, date: it.date }, d, toOwn) && (amount >= 1000 || toOwn));
+    const excluded = landed ? effectiveExclusions(rec)[landed.id] : null;
     const state = landed ? (excluded?.type === 'transfer' ? 'transfer' : 'counted') : toOwn ? 'missing' : 'paid';
     return { ...it, amount, toOwn, landed, state };
   });
+}
+
+// What's excluded right now: automatic findings (re-worked out from the statements every time, so
+// attaching statements in any order gets the same answer) plus anything someone set by hand.
+export function effectiveExclusions(recIn) {
+  const rec = asRec(recIn);
+  return { ...defaultExclusions(rec), ...(rec.excluded || {}) };
+}
+
+// Delap Fidelity money that reached Cass this month — a withdrawal from Delap, so it's added back
+// when working out Delap's gain, and a transfer (not revenue) on the Cass side.
+export function fidelityTransfers(recIn) {
+  const rec = asRec(recIn);
+  const st = rec.statements || {};
+  const items = [];
+  for (const kind of ['operating', 'incoming', 'outgoing']) {
+    for (const t of st[kind]?.transactions || []) if (t.section === 'credit' && !isSweep(t) && FIDELITY.test(`${t.desc} ${t.detail || ''}`)) items.push({ ...t, kind });
+  }
+  return { items, total: round2(sum(items, (t) => t.amount)) };
 }
 
 export function defaultExclusions(recIn) {
@@ -170,20 +202,35 @@ export function statementAdjustments(rec) {
         why: 'Money moving from Stripe to Cass — Stripe revenue is already counted on the Stripe line.' });
     }
   }
+  // The wire accounts reach Operating only through the daily sweeps, so what they add to
+  // Operating's credits is exactly the "Trnsfr from Checking Acct Ending in …" lines.
+  const sweepsFrom = (acct) => (st.operating?.transactions || []).filter((t) => t.section === 'credit' && SWEEP_IN.test(t.desc) && new RegExp(`${acct}\\b`).test(t.desc));
   if (st.incoming) {
-    const out = st.incoming.transactions.filter((t) => t.section !== 'credit' && !isSweep(t));
-    adj.push({ id: 'auto-incoming', account: 'cassOp', type: 'refund', label: 'Incoming Wires — money out that isn’t the sweep', amount: -round2(sum(out, (t) => t.amount)), auto: true,
-      detail: out.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc })),
-      why: 'Every Incoming deposit counts as revenue, so anything returned from Incoming reduces deposits.' });
+    // Every Incoming deposit is revenue. Operating only sees what was swept across — short by
+    // anything paid out of Incoming first (an insurance premium, say) or still sitting there.
+    const deposits = st.incoming.transactions.filter((t) => t.section === 'credit' && !isSweep(t));
+    const paidOut = st.incoming.transactions.filter((t) => t.section !== 'credit' && !isSweep(t));
+    const swept = st.operating ? round2(sum(sweepsFrom(INCOMING_ACCT), (t) => t.amount)) : null;
+    const amount = swept == null ? round2(sum(paidOut, (t) => t.amount)) : round2(sum(deposits, (t) => t.amount) - swept);
+    adj.push({ id: 'auto-incoming', account: 'cassOp', type: 'other', label: 'Incoming Wires — deposits not swept into Operating', amount, auto: true,
+      detail: paidOut.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc, note: 'Paid out of Incoming before the sweep' })),
+      why: `Incoming deposits ${money2(sum(deposits, (t) => t.amount))}${swept == null ? '' : `, swept into Operating ${money2(swept)}`}. The gap — payments made out of Incoming, or money not yet swept — is revenue Operating never saw, so it’s added back.` });
   }
-  if (st.outgoing) {
-    const inn = st.outgoing.transactions.filter((t) => t.section === 'credit' && !isSweep(t));
-    adj.push({ id: 'auto-outgoing', account: 'cassOp', type: 'refund', label: 'Outgoing Wires — money in that isn’t the sweep', amount: -round2(sum(inn, (t) => t.amount)), auto: true,
-      detail: inn.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc })),
-      why: 'Refunds and returns landing in Outgoing reach Operating through the sweep but aren’t revenue.' });
+  if (st.operating) {
+    // Money landing in Outgoing (refunds, Fidelity transfers) isn't revenue. Most of it just
+    // shrinks what Operating sends over; only a day that ends with Outgoing in credit sweeps back
+    // into Operating's credits, and that's what comes out.
+    const back = sweepsFrom(OUTGOING_ACCT);
+    const landed = (st.outgoing?.transactions || []).filter((t) => t.section === 'credit' && !isSweep(t));
+    if (back.length || landed.length) {
+      adj.push({ id: 'auto-outgoing', account: 'cassOp', type: 'refund', label: 'Outgoing Wires — swept back into Operating', amount: -round2(sum(back, (t) => t.amount)) || 0, auto: true,
+        detail: back.map((t) => ({ date: t.date, amount: t.amount, desc: t.desc,
+          note: landed.filter((x) => x.date <= t.date && daysApart(x.date, t.date) <= 3).map((x) => `${x.desc} ${money2(x.amount)}`).join(', ') })),
+        why: `${money2(sum(landed, (t) => t.amount))} landed in Outgoing${landed.length ? ` (${landed.map((x) => `${x.date} ${x.desc} ${money2(x.amount)}`).join('; ')})` : ''}. Only ${money2(sum(back, (t) => t.amount))} of it swept back into Operating’s credits; the rest reduced Operating’s transfers out.` });
+    }
   }
   const deposits = reviewableDeposits(rec);
-  for (const [id, v] of Object.entries(rec.excluded || {})) {
+  for (const [id, v] of Object.entries(effectiveExclusions(rec))) {
     const t = deposits.find((x) => x.id === id);
     const info = exclusionInfo(v);
     if (!t || !info) continue;
@@ -249,7 +296,9 @@ export function autoFigures(rec, cd = null, prior = null) {
     auto[id] = { rev: t.revenue, int: t.interest, ending: b.ending, from: `${b.fileName || 'statement'}`, by: b.attachedBy, at: b.attachedAt };
   }
   for (const s of BANK_SOURCES.filter((x) => x.method === 'balance')) {
-    const b = rec.bank?.[s.id];
+    let b = rec.bank?.[s.id];
+    // Fidelity money that reached Cass left Delap: a withdrawal, unless someone typed net deposits.
+    if (s.id === 'delap' && b && b.netDeposits == null) { const fid = fidelityTransfers(rec).total; if (fid) b = { ...b, netDeposits: -fid }; }
     const int = balanceMethodInterest(b, prior?.bank?.[s.id]);
     if (int != null) auto[s.id] = { int, from: 'change in balance', by: b.enteredBy, at: b.enteredAt, computed: true };
   }

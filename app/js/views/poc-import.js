@@ -1,11 +1,12 @@
 import { h, mount, table, toast, fileButton } from '../ui.js';
-import { loadPocMonths, replacePocMonth } from '../data.js';
+import { loadPocMonths, loadPocMonth, replacePocMonth } from '../data.js';
 import { readWorkbook } from '../xlsx-io.js';
 import { parsePocWorkbook } from '../poc/import.js';
 import { computePoc } from '../poc/calc.js';
 import { money } from '../money.js';
 import { addMonths, monthName } from '../fiscal.js';
 import { explain } from '../store.js';
+import { logChange } from '../audit.js';
 
 export default async function (main, { user }) {
   const existing = await loadPocMonths();
@@ -21,17 +22,27 @@ export default async function (main, { user }) {
         r, exists: existing.some((e) => e.month === r.month),
         c: r.source.ditOnly ? null : computePoc(r, { prior: byMonth[addMonths(r.month, -1)] }),
       }));
-      const overwrite = h('input', { type: 'checkbox' });
+      // Months already in the app: skip them, add only what statements can't supply, or replace them.
+      const mode = h('select', {}, h('option', { value: 'merge', selected: true }, 'Add deposits in transit and hand adjustments only — keep attached statements and typed figures'),
+        h('option', { value: 'skip' }, 'Skip them'), h('option', { value: 'overwrite' }, 'Replace them with the workbook (removes attached statements)'));
       const go = h('button', { class: 'primary' }, 'Import');
       go.addEventListener('click', async () => {
         go.disabled = true;
         let n = 0;
         try {
+          const merged = [];
           for (const { r, exists } of rows) {
-            if (exists && !overwrite.checked) continue;
+            if (exists && mode.value === 'skip') continue;
+            if (exists && mode.value === 'merge') {
+              const cur = await loadPocMonth(r.month);
+              const added = mergeFromWorkbook(cur, r, user);
+              if (added.length) { await replacePocMonth(cur); merged.push(`${monthName(r.month)}: ${added.join(', ')}`); n++; }
+              continue;
+            }
             await replacePocMonth({ ...r, importedBy: user, importedAt: new Date().toISOString() });
             n++;
           }
+          if (merged.length) console.info('Merged from the workbook:\n' + merged.join('\n'));
           toast(`Imported ${n} months into FY${res.fiscalYear}.`);
           try { localStorage.setItem('monthclose:poc-fy', String(res.fiscalYear)); } catch { /* ignore */ }
           location.hash = '#/poc';
@@ -47,7 +58,8 @@ export default async function (main, { user }) {
           { label: 'Difference', num: true, cell: (x) => (x.c?.diffRev != null ? money(x.c.diffRev) : '') },
           { label: '', cell: (x) => (x.exists ? h('span', { class: 'pill warn' }, 'already in the app') : '') },
         ], rows),
-        rows.some((x) => x.exists) ? h('label', { class: 'row', style: { marginTop: '.5rem' } }, overwrite, 'Overwrite months already in the app') : null,
+        rows.some((x) => x.exists) ? h('label', { class: 'field', style: { marginTop: '.5rem' } }, h('span', { class: 'field-label' }, 'Months already in the app'), mode,
+          h('span', { class: 'field-hint' }, 'Adding brings in the workbook’s deposits in transit (for months with none entered) and its hand-entered adjustments — CC rewards, reimbursements, returned wires, transfers into Operating. It leaves out Stripe transfers, wire sweeps, Wise and Fidelity transfers, which the statements work out.')) : null,
         res.warnings.length ? h('div', { class: 'notice warn' }, h('ul', {}, res.warnings.map((w) => h('li', {}, w)))) : null,
         h('div', { class: 'row', style: { marginTop: '.75rem' } }, go));
     } catch (err) {
@@ -61,4 +73,22 @@ export default async function (main, { user }) {
     h('p', { class: 'muted' }, 'Brings in each month’s bank lines, adjustments, deposits in transit and GL figures, so the fiscal year view is complete and next month’s deposit-in-transit change has something to compare with.'),
     h('div', { class: 'row' }, fileButton('Choose workbook…', '.xlsx,.xls', onFile, { class: 'primary' })),
     out);
+}
+
+// Bring the parts of a workbook month that statements can't supply into a month already in the
+// app. Returns what was added, for the log.
+const FROM_STATEMENTS = /stripe transfers|wire sweep|wise transfers|fidelity investment transfer/i;
+export function mergeFromWorkbook(cur, r, user) {
+  const added = [];
+  cur.dit ||= []; cur.adjustments ||= []; cur.timing ||= {};
+  if (!cur.dit.length && r.dit.length) { cur.dit = r.dit.map((d) => ({ ...d })); added.push(`${r.dit.length} deposits in transit`); }
+  for (const a of r.adjustments) {
+    if (FROM_STATEMENTS.test(a.label)) continue;
+    if (cur.adjustments.some((x) => x.label === a.label && x.amount === a.amount)) continue;
+    cur.adjustments.push({ ...a, enteredBy: user, enteredAt: new Date().toISOString() });
+    added.push(`${a.label} ${money(a.amount)}`);
+  }
+  for (const k of ['restricted', 'merchAR']) if (cur.timing[k] == null && r.timing[k] != null) { cur.timing[k] = r.timing[k]; added.push(k === 'restricted' ? 'restricted revenue change' : 'merchandise AR'); }
+  if (added.length) logChange(cur, user, `From the workbook: ${added.join(', ')}`);
+  return added;
 }

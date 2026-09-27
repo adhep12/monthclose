@@ -6,7 +6,7 @@
 import { h, mount, toast, fileButton, ask, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
@@ -21,7 +21,7 @@ const SHOW_KEY = 'monthclose:poc-show';
 const ADJ_OPEN_KEY = 'monthclose:poc-adj-open';
 // Accounts whose empty cells turn into an undo "−" once something is attached or typed.
 const UNDOABLE = ['ics', 'cd', 'delap', 'tschetter'];
-const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits'];
+const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits', 'fees'];
 // Row order of the workbook's "Per Bank Statement" block.
 const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp'];
 const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
@@ -356,7 +356,9 @@ export default async function (main, { user, rerender }) {
                   field('Ending value', inp('ending')),
                   field(`${monthName(addMonths(m, -1))} ending value`, prior?.bank?.[id]?.ending != null && b.priorEnding == null
                     ? h('span', {}, money(prior.bank[id].ending, { dash: false }), h('span', { class: 'muted small' }, ' (from last month)')) : inp('priorEnding')),
-                  field('Net deposits (withdrawals)', inp('netDeposits'), 'Money put in is positive, taken out negative.'),
+                  field('Net deposits (withdrawals)', inp('netDeposits'), id === 'delap' && fidelityTransfers(rec).total && b.netDeposits == null
+                    ? `Left blank: Cass received ${money(fidelityTransfers(rec).total, { dash: false })} from Fidelity this month, so that’s used as a withdrawal.` : 'Money put in is positive; taken out (withdrawals, fees) negative.'),
+                  field('Fees taken out', inp('fees'), 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
                   field('Revenue', inp('rev')),
                   h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Gain / interest'), h('strong', {}, money(balanceMethodInterest(b, prior?.bank?.[id]), { dash: false }))))
                 : h('div', { class: 'form-grid' }, field('Revenue (deposits)', inp('rev')), field('Interest', inp('int')), field('Ending balance', inp('ending'))),

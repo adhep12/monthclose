@@ -149,10 +149,15 @@ test('Wise money sent to our own account is matched to the Cass deposit, however
   const wise = { items: [{ id: 'wise-0', desc: 'Sent money to BibleProject', amount: -250, balance: 1000, date: '2025-10-10' }] };
   const operating = { transactions: [{ id: '5884-0', section: 'credit', date: '2025-10-13', amount: 250, desc: 'ACH CREDIT WISE US INC' }] };
   const rec = { bankStatements: { wise }, statements: { operating }, excluded: {} };
-  assert.equal(wiseOutgoingCheck(rec)[0].state, 'counted');
   const found = detectTransfers(rec);
   assert.equal(found['5884-0']?.type, 'transfer');
-  rec.excluded = found;
-  assert.equal(wiseOutgoingCheck(rec)[0].state, 'transfer');
+  assert.equal(wiseOutgoingCheck(rec)[0].state, 'transfer'); // found automatically, no re-attach needed
+  rec.dismissed = { '5884-0': true }; // someone said it's revenue after all
+  assert.equal(wiseOutgoingCheck(rec)[0].state, 'counted');
   assert.equal(wiseOutgoingCheck({ bankStatements: { wise } })[0].state, 'missing');
+});
+
+test('Tschetter fees are added back to the gain', () => {
+  // October: statement change 25,429.91 + quarterly fee 3,135.59 = 28,565.50, as the GL books it.
+  assert.equal(balanceMethodInterest({ ending: 5051641.68, fees: 3135.59 }, { ending: 5026211.77 }), 28565.5);
 });

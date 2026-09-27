@@ -1,6 +1,6 @@
 import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } from '../ui.js';
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa } from '../data.js';
-import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions } from '../poc/calc.js';
 import { attachFiles } from '../poc/attach.js';
 import { stripeCheckBox } from './stripe-check.js';
 import { monthSummary } from '../cd/schedule.js';
@@ -29,6 +29,8 @@ export default async function (main, { month, monthName, user, rerender }) {
   let draft = null;
   try { draft = JSON.parse(localStorage.getItem(DRAFT) || 'null'); } catch { /* ignore */ }
   const rec = Object.assign(blank(month), structuredClone(draft || loaded || {}));
+  // Show automatic findings (transfers, tax refunds) as set, whatever order the statements came in.
+  rec.excluded = { ...defaultExclusions(rec), ...(rec.excluded || {}) };
   const gl = glFigures({ glActivity: glAct, tb: tbThis, soa, month, config: cfg });
   const names = faCfg.accountNames || {};
 
@@ -196,8 +198,9 @@ export default async function (main, { month, monthName, user, rerender }) {
       ? h('div', { class: 'figs' },
         h('span', {}, 'Ending value'), h('span', { class: 'num' }, inp('ending', 'ending value')),
         h('span', {}, `${monthName(prevMonth, { short: true })} ending value`), h('span', { class: 'num' }, priorB?.ending != null && b.priorEnding == null ? fmtV(priorB.ending) : inp('priorEnding', 'prior month ending')),
-        h('span', { title: 'Money put in is positive, money taken out is negative' }, 'Net deposits (withdrawals)'), h('span', { class: 'num' }, inp('netDeposits', 'net deposits')),
-        h('span', {}, h('strong', {}, 'Gain / interest')), h('span', { class: 'num' }, h('strong', {}, fmtV(balanceMethodInterest(b, priorB)))),
+        h('span', { title: 'Money put in is positive, money taken out is negative. Left blank for Delap, Fidelity MoneyLine transfers into Cass are used.' }, 'Net deposits (withdrawals)'), h('span', { class: 'num' }, inp('netDeposits', 'net deposits')),
+        h('span', { title: 'Management fees deducted from the account. The GL books them as an expense and grosses up the gain, so they’re added back.' }, 'Fees taken out'), h('span', { class: 'num' }, inp('fees', 'fees')),
+        h('span', {}, h('strong', {}, 'Gain / interest')), h('span', { class: 'num' }, h('strong', {}, fmtV(l.int ?? balanceMethodInterest(b, priorB)))),
         h('span', {}, 'Revenue'), h('span', { class: 'num' }, inp('rev', 'revenue')))
       : h('div', { class: 'figs' }, fig('Revenue', 'rev'), fig('Interest', 'int'), fig('Ending balance', 'ending'));
     const glRev = src.revenueGl && gl ? gl.revenue[src.revenueGl] : null;

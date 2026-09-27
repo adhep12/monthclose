@@ -65,16 +65,16 @@ test('proof of cash follows the Cass rules', () => {
   assert.equal(Object.keys(excluded).length, 1); // the Ohio tax refund
   const adj = Object.fromEntries(statementAdjustments({ statements, excluded }).map((a) => [a.id.startsWith('auto-ex') ? 'ex' : a.id, a.amount]));
   assert.equal(adj['auto-stripe'], -1000000);
-  assert.equal(adj['auto-incoming'], -0); // only sweeps left Incoming
-  assert.equal(adj['auto-outgoing'], -2497.84); // WEX refund + People Center
+  assert.equal(adj['auto-incoming'], 0); // every Incoming deposit was swept into Operating
+  assert.equal(adj['auto-outgoing'], 0); // the WEX refund paid the plane bill; nothing swept back into Operating
   assert.equal(adj.ex, -400.03);
 
   const rec = { month: '2026-07', statements, excluded, bank: { stripe: { rev: 1000000 } }, dit: [{ amount: 300 }], gl: { revenue: 1102500 } };
   const c = computePoc(rec, { prior: { dit: [{ amount: 500 }] } });
   assert.equal(c.bankRev, 2105400.03); // Stripe 1,000,000 + Operating credits 1,105,400.03
   assert.equal(c.ditChange, -200);
-  assert.equal(c.revAdjusted, 1102302.16);
-  assert.equal(c.diffRev, -197.84);
+  assert.equal(c.revAdjusted, 1104800); // the WEX refund never reached Operating, so nothing comes out for it
+  assert.equal(c.diffRev, 2300);
 });
 
 test('interest side: bank interest plus accrual less prior accrual realized', () => {
@@ -110,4 +110,32 @@ test('an ignored Stripe transfer drops out of the payout check only', async () =
   assert.equal(chk.state, 'match');
   assert.equal(chk.ignored.length, 1);
   assert.equal(statementAdjustments(rec).find((a) => a.id === 'auto-stripe').amount, -1042.5);
+});
+
+test('wire accounts count by what swept into Operating; Fidelity MoneyLine money is a Delap withdrawal', async () => {
+  const { statementAdjustments, computePoc } = await import('../app/js/poc/calc.js');
+  const statements = {
+    operating: { summary: { credits: { total: 178622.14, count: 2 }, ending: 0 }, transactions: [
+      { id: 'op-0', section: 'credit', date: '2025-12-04', amount: 93972.75, desc: 'Trnsfr from Checking Acct Ending in 5892' },
+      { id: 'op-1', section: 'credit', date: '2025-12-29', amount: 84649.39, desc: 'Trnsfr from Checking Acct Ending in 3410' },
+    ] },
+    incoming: { transactions: [
+      { id: 'in-0', section: 'credit', date: '2025-12-02', amount: 100000, desc: 'WIRE IN/DONOR' },
+      { id: 'in-1', section: 'debit', date: '2025-12-03', amount: 6027.25, desc: 'BROTHERHOOD/PREM PYMT' },
+      { id: 'in-2', section: 'debit', date: '2025-12-04', amount: 93972.75, desc: 'Trnsfr to Checking Acct Ending in 5884' },
+    ] },
+    outgoing: { transactions: [
+      { id: 'out-0', section: 'credit', date: '2025-12-16', amount: 2460.68, desc: 'WEX COBRA/DBI COBRA' },
+      { id: 'out-1', section: 'credit', date: '2025-12-01', amount: 57.14, desc: 'FID BKG SVC LLC/MONEYLINE' },
+      { id: 'out-2', section: 'credit', date: '2025-12-29', amount: 84649.39, desc: 'FID BKG SVC LLC/MONEYLINE' },
+    ] },
+  };
+  const adj = Object.fromEntries(statementAdjustments({ statements }).map((a) => [a.id, a.amount]));
+  assert.equal(adj['auto-incoming'], 6027.25); // the premium paid out of Incoming is added back
+  assert.equal(adj['auto-outgoing'], -84649.39); // only what swept back into Operating comes out
+  // Delap: 5,084,983.41 − 5,145,263.38 + 84,706.53 withdrawn = 24,426.56 (the workbook's December figure)
+  const c = computePoc({ month: '2025-12', statements, bank: { delap: { ending: 5084983.41 } } }, { prior: { bank: { delap: { ending: 5145263.38 } } } });
+  assert.equal(c.lines.find((l) => l.id === 'delap').int, 24426.56);
+  const typed = computePoc({ month: '2025-12', statements, bank: { delap: { ending: 5084983.41, netDeposits: 0 } } }, { prior: { bank: { delap: { ending: 5145263.38 } } } });
+  assert.equal(typed.lines.find((l) => l.id === 'delap').int, -60279.97); // typed net deposits win
 });
