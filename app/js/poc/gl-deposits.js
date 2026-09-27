@@ -255,6 +255,10 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const x = (res.fees ||= {})[f.account] || (res.fees[f.account] = { amount: 0, batches: [] });
       x.amount = round2(x.amount + f.amount); x.batches.push(f);
     }
+    for (const g of glBy[m]?.investmentGl || []) {
+      const x = (res.investment ||= {})[g.account] || (res.investment[g.account] = { gain: 0, batches: [] });
+      x.gain = round2(x.gain + g.gain); x.batches.push(g);
+    }
     if (!receipts && !byLine.size && !glBy[m]?.keyReceipts) return res;
 
     // Hand-entered adjustments (typed, or from the workbook) already cover some of these. One

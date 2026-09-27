@@ -50,6 +50,7 @@ export function parseGlRegister(XLSX, wb) {
     p.noCashRevenue = noCashRevenue(p.batches);
     p.stripeReclass = stripeReclasses(p.batches);
     p.investmentFees = investmentFees(p.batches);
+    p.investmentGl = investmentGl(p.batches);
     delete p.batches;
   }
   if (!lines) throw new Error('No journal lines found in that file.');
@@ -128,6 +129,21 @@ function investmentFees(batches) {
     const acct = Object.keys(INVESTMENT_GL).find((a) => a in b.accounts);
     const fee = round2(b.accounts['8070'] || 0);
     if (acct && fee) out.push({ account: INVESTMENT_GL[acct], batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: fee });
+  }
+  return out;
+}
+
+// What the GL booked for each investment account's month: the change in value (Dr 1171), the gain
+// (Cr 8999) and any fee (Dr 8070), batch by batch, so the gain worked out from the statements can
+// be shown against it.
+function investmentGl(batches) {
+  const out = [];
+  for (const b of batches) {
+    const acct = Object.keys(INVESTMENT_GL).find((a) => a in b.accounts);
+    if (!acct || !('8999' in b.accounts || '4050' in b.accounts)) continue;
+    const gain = round2(-((b.accounts['8999'] || 0) + (b.accounts['4050'] || 0)));
+    if (!gain && !b.accounts['8070']) continue;
+    out.push({ account: INVESTMENT_GL[acct], batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), value: round2(b.accounts[acct] || 0), gain, fee: round2(b.accounts['8070'] || 0) });
   }
   return out;
 }

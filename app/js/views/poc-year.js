@@ -29,23 +29,42 @@ const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
 const short = (m) => monthName(m, { short: true }).split(' ')[0];
 const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } } };
 
-// Adjustment detail rows, named the way the workbook names them, so imported months and months
-// built from statements land on the same row.
-export function adjKey(a) {
-  if (a.id === 'auto-stripe') return 'Stripe Transfers';
-  if (a.id === 'auto-incoming') return 'Incoming Wire Sweep Net activity';
-  if (a.id === 'auto-outgoing') return 'Outgoing Wire Sweep Net activity';
-  if (a.id?.startsWith('auto-tr-')) return 'Transfers between accounts';
-  if (a.id?.startsWith('auto-ex-')) return 'Deposits that aren’t revenue';
-  if (a.id?.startsWith('auto-glrev-')) return 'Revenue the GL took back';
-  if (a.id?.startsWith('auto-glstripe-')) return 'Stripe shipping, sales tax (per the GL)';
+// What each adjustment is, specifically — the subheading it sits under when a row is opened, and
+// the "Line" in the export. Workbook imports keep their own names.
+export function adjDetail(a) {
+  if (a.id === 'auto-stripe') return 'Stripe payouts into Cass';
+  if (a.id === 'auto-incoming') return 'Incoming Wires sweep';
+  if (a.id === 'auto-outgoing') return 'Outgoing Wires sweep';
+  if (a.id?.startsWith('auto-tr-')) return 'Money from another of our accounts';
+  if (a.id?.startsWith('auto-ex-')) return a.type === 'prior-period' ? 'Deposits recognized in another month' : 'Refunds, reimbursements and other non-revenue deposits';
+  if (a.id?.startsWith('auto-glrev-')) return 'Chargebacks and reversals';
+  if (a.id?.startsWith('auto-glstripe-')) return 'Stripe shipping and sales tax';
   if (a.id === 'auto-stripe-disputes') return 'Stripe disputes';
-  if (a.id?.startsWith('auto-glpaypal-')) return 'PayPal given back to donors (per the GL)';
-  if (a.id === 'auto-glwise-fees') return 'Wise fees on incoming gifts (per the GL)';
-  if (a.id?.startsWith('auto-glkey-')) return 'KeyBank deposits (per the GL)';
-  if (a.id?.startsWith('auto-glnocash-')) return 'Revenue with no cash this month (per the GL)';
+  if (a.id?.startsWith('auto-glpaypal-')) return 'PayPal given back to donors';
+  if (a.id === 'auto-glwise-fees') return 'Wise fees on incoming gifts';
+  if (a.id?.startsWith('auto-glkey-')) return a.type === 'transfer' ? 'KeyBank deposits from our accounts' : a.amount > 0 ? 'KeyBank cash gifts spent before deposit' : 'KeyBank deposits that aren’t giving';
+  if (a.id?.startsWith('auto-glnocash-')) return 'Revenue booked with no cash this month';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
 }
+
+// The rows on the sheet: adjustments by what they are, whichever account or report they came from.
+export const ADJ_GROUPS = ['Transfers between our accounts', 'Wire sweeps', 'Deposits that aren’t revenue', 'Fees, refunds & reclasses', 'Timing'];
+export function adjGroup(a) {
+  const id = a.id || '';
+  if (id === 'auto-stripe' || id.startsWith('auto-tr-')) return ADJ_GROUPS[0];
+  if (id === 'auto-incoming' || id === 'auto-outgoing') return ADJ_GROUPS[1];
+  if (id.startsWith('auto-ex-')) return a.type === 'prior-period' ? ADJ_GROUPS[4] : ADJ_GROUPS[2];
+  if (id.startsWith('auto-glrev-')) return ADJ_GROUPS[2];
+  if (id.startsWith('auto-glnocash-')) return ADJ_GROUPS[4];
+  if (id.startsWith('auto-glkey-')) return a.type === 'transfer' ? ADJ_GROUPS[0] : a.amount > 0 ? ADJ_GROUPS[3] : ADJ_GROUPS[2];
+  if (id === 'auto-stripe-disputes' || id.startsWith('auto-glstripe-') || id.startsWith('auto-glpaypal-') || id === 'auto-glwise-fees') return ADJ_GROUPS[3];
+  // Entered by hand, or from the workbook: by the type chosen.
+  if (a.type === 'transfer') return /wire sweep/i.test(a.label || '') ? ADJ_GROUPS[1] : ADJ_GROUPS[0];
+  if (a.type === 'timing' || a.type === 'prior-period') return ADJ_GROUPS[4];
+  if (a.type === 'refund' || a.type === 'not-revenue') return ADJ_GROUPS[2];
+  return ADJ_GROUPS[3];
+}
+export const adjKey = adjGroup;
 
 // Where the sheet was scrolled (sideways and down), per fiscal year. Kept for the whole visit so
 // attaching a statement, or going to a month and back, returns you to the same spot.
@@ -118,16 +137,21 @@ export default async function (main, { user, rerender }) {
     };
     return { label: label(id), account: id, rev: (c) => line(c, id).rev, int: (c) => line(c, id).int, meta: { rev: mark('rev'), int: mark('int') } };
   });
-  const adjLabels = [];
-  for (const { c } of cols.filter((x) => x.c)) for (const a of c.adjustments) { const k = adjKey(a); if (!adjLabels.includes(k)) adjLabels.push(k); }
-  const adjFor = (k) => (c) => { const list = c.adjustments.filter((a) => adjKey(a) === k); return list.length ? round2(sum(list, (a) => a.amount)) : null; };
+  // Timing includes the change in deposits in transit.
+  const TIMING = ADJ_GROUPS[4];
+  const adjLabels = ADJ_GROUPS.filter((k) => cols.some((x) => x.c && (x.c.adjustments.some((a) => adjKey(a) === k) || (k === TIMING && x.c.ditChange))));
+  const adjFor = (k) => (c) => {
+    const list = c.adjustments.filter((a) => adjKey(a) === k);
+    const dit = k === TIMING && c.ditChange != null ? c.ditChange : null;
+    return list.length || dit != null ? round2(sum(list, (a) => a.amount) + (dit || 0)) : null;
+  };
 
   // Deposits in transit sit with the other adjustments: this month's in transit, less last month's
   // that reached the bank this month. Opening it lists both, from the GL.
   const ditMeta = { rev: (c) => (c.priorDitMissing ? { mark: '?', title: 'Last month’s deposits in transit aren’t known, so this month’s count in full — open to see' } : c.deposits?.dit?.flagged ? { mark: '?', title: `${c.deposits.dit.flagged} GL deposits near month end to confirm — open to see` } : c.ditFromGl ? { mark: '', title: 'From the GL' } : null) };
-  const adjRows = () => [...adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
-    meta: k === 'Stripe Transfers' ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Matches the Stripe CSV payouts' } : null) } : null })),
-    { label: 'Deposits in transit (change)', rev: (c) => c.ditChange, indent: true, ditDetail: true, meta: ditMeta }];
+  const adjRows = () => adjLabels.map((k) => ({ label: k, rev: adjFor(k), indent: true, adjKey: k,
+    meta: k === ADJ_GROUPS[0] ? { rev: (c) => (c.stripeCheck?.state === 'mismatch' ? { mark: '⚠', title: stripeFlagText(c.stripeCheck) } : c.stripeCheck?.state === 'match' ? { mark: '✓', title: 'Stripe payouts match the Stripe CSV' } : null) }
+      : k === TIMING ? ditMeta : null }));
   const withDit = (c) => round2(c.adjTotal + (c.ditChange || 0));
   const screenRows = [
     { section: 'Per Bank Statement' },
@@ -374,7 +398,7 @@ export default async function (main, { user, rerender }) {
               rowKV('Ending balance', l.ending == null ? '—' : money(l.ending, { dash: false })), rowKV('Source', l.from))
             : h('div', {},
               src.method === 'balance'
-                ? h('div', { class: 'form-grid' },
+                ? [gainWorking(id, m, b, prior, rec, c, l), h('div', { class: 'form-grid' },
                   field('Ending value', inp('ending')),
                   field(`${monthName(addMonths(m, -1))} ending value`, prior?.bank?.[id]?.ending != null && b.priorEnding == null
                     ? h('span', {}, money(prior.bank[id].ending, { dash: false }), h('span', { class: 'muted small' }, ' (from last month)')) : inp('priorEnding')),
@@ -384,7 +408,7 @@ export default async function (main, { user, rerender }) {
                     ? `Left blank: the GL booked ${money(c.deposits.fees[id].amount, { dash: false })} in fees this month (${c.deposits.fees[id].batches.map((x) => x.batch).join(', ')}, Dr 8070), so that’s added back.`
                     : 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
                   field('Revenue', inp('rev')),
-                  h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Gain / interest'), h('strong', {}, money(balanceMethodInterest(b, prior?.bank?.[id]), { dash: false }))))
+                  h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Gain / interest'), h('strong', {}, money(l.int ?? balanceMethodInterest(b, prior?.bank?.[id]), { dash: false }))))]
                 : h('div', { class: 'form-grid' }, field('Revenue (deposits)', inp('rev')), field('Interest', inp('int')), field('Ending balance', inp('ending'))),
               h('div', { class: 'row', style: { marginTop: '.5rem' } },
                 h('button', { class: 'primary', onclick: async () => {
@@ -473,7 +497,7 @@ export default async function (main, { user, rerender }) {
     const cassAdj = c.adjustments.filter((a) => a.account === 'cassOp' || a.auto);
     return h('div', {}, h('h3', {}, 'Taken out of Cass deposits'),
       cassAdj.length ? table([
-        { label: 'What', cell: (a) => h('div', {}, adjKey(a), a.detail?.length ? h('div', { class: 'muted small wrap' }, a.detail.slice(0, 6).map((d) => `${d.date} ${d.desc} ${money(d.amount)}`).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null) },
+        { label: 'What', cell: (a) => h('div', {}, adjDetail(a), a.detail?.length ? h('div', { class: 'muted small wrap' }, a.detail.slice(0, 6).map((d) => `${d.date} ${d.desc} ${money(d.amount)}`).join(' · '), a.detail.length > 6 ? ` … +${a.detail.length - 6} more` : '') : null) },
         { label: 'Type', cell: (a) => ADJUSTMENT_TYPES[a.type] || '' },
         { label: 'Amount', num: true, cell: (a) => money(a.amount) },
       ], cassAdj) : h('p', { class: 'muted' }, 'Nothing yet — attach the Cass statements.'),
@@ -485,6 +509,7 @@ export default async function (main, { user, rerender }) {
     const col = cols.find((x) => x.m === m);
     if (!col?.c) return;
     const list = col.c.adjustments.filter((a) => adjKey(a) === key);
+    const c = col.c;
     await panel(`${key} — ${monthName(m)}`, (body) => {
       // Detail lines carry the transaction's own (positive) amount; show them with the adjustment's sign.
       const items = list.flatMap((a) => (a.detail?.length ? a.detail.map((d) => ({ ...d, a, shown: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, note: a.note, a, shown: a.amount }]));
@@ -502,20 +527,61 @@ export default async function (main, { user, rerender }) {
       for (const x of items) if (!x.note) x.note = fromGl(x) || x.note;
       const what = (x) => (plumbing.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
       const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
+      const withNotes = items.some((x) => extra(x));
+      const cols_ = [
+        { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
+        { label: 'Date', cell: (x) => x.date || '' },
+        { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, what(x), x.a.statement ? h('div', { class: 'small muted' }, x.a.statement) : null) },
+        { label: 'Amount', num: true, cell: (x) => money(x.shown) },
+        { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
+        ...(withNotes ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small' }, extra(x)) }] : []),
+      ];
+      // One section per kind of item, each with its reason and subtotal.
+      const kinds = [...new Set(list.map(adjDetail))];
+      const section = (kind) => {
+        const as = list.filter((a) => adjDetail(a) === kind);
+        const its = items.filter((x) => as.includes(x.a));
+        const why = [...new Set(as.map((a) => a.why).filter(Boolean))][0];
+        return h('div', { class: 'adj-section' },
+          h('div', { class: 'row' }, h('h3', {}, kind), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(round2(sum(as, (a) => a.amount))))),
+          why ? h('p', { class: 'muted small' }, why) : null,
+          table(cols_, its));
+      };
+      const dit = key === TIMING && c.ditChange != null ? h('div', { class: 'adj-section' },
+        h('div', { class: 'row' }, h('h3', {}, 'Deposits in transit (change)'), h('span', { class: 'spacer' }), h('strong', { class: 'num' }, money(c.ditChange))),
+        h('p', { class: 'muted small' }, `${monthName(m)} in transit ${money(c.ditTotal, { dash: false })}, less ${monthName(addMonths(m, -1))}’s ${c.priorDit == null ? '(not known)' : money(c.priorDit, { dash: false })}. `,
+          h('button', { class: 'small-btn', onclick: () => openDit(m) }, 'See each deposit'))) : null;
       mount(body,
-        h('p', { class: 'muted' }, list[0]?.why || 'Each item comes out of bank deposits because it isn’t revenue.'),
-        table([
-          { label: 'Account', cell: (x) => label(x.a.account || 'cassOp') },
-          { label: 'Type', cell: (x) => ADJUSTMENT_TYPES[x.a.type] || (x.a.auto ? 'From the statements' : 'Entered') },
-          { label: 'Date', cell: (x) => x.date || '' },
-          { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, what(x), x.a.statement ? h('div', { class: 'small muted' }, x.a.statement) : null) },
-          { label: 'Amount', num: true, cell: (x) => money(x.shown) },
-          { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
-          ...(items.some((x) => extra(x)) ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small' }, extra(x)) }] : []),
-        ], items, { foot: (c) => (c.label === 'Amount' ? money(round2(sum(list, (a) => a.amount))) : c.label === 'Account' ? 'Total' : '') }),
+        dit, kinds.map(section),
+        h('div', { class: 'recon', style: { marginTop: '.75rem' } }, rowKV(`${key}, total`, h('strong', {}, money(round2(sum(list, (a) => a.amount) + (dit ? c.ditChange : 0)))))),
         evidenceSummary(list),
         h('p', { class: 'small' }, h('a', { href: `#/poc/${m}` }, `Change these on the ${monthName(m)} page →`)));
     }, { wide: true });
+  }
+
+  // ---- Investment gain, step by step (Delap, Tschetter) -----------------------------------------
+  // Each figure with where it comes from, then what the GL booked, so the interest line can be
+  // followed without opening anything else.
+  function gainWorking(id, m, b, prior, rec, c, l) {
+    const priorEnding = b.priorEnding ?? prior?.bank?.[id]?.ending ?? null;
+    if (b.ending == null || priorEnding == null) return h('p', { class: 'muted small' }, `Enter the ending value${priorEnding == null ? ` (and ${monthName(addMonths(m, -1))}’s)` : ''} from the statement to work out the gain.`);
+    const fid = id === 'delap' && b.netDeposits == null ? fidelityTransfers(rec).total : 0;
+    const net = b.netDeposits ?? (fid ? -fid : 0);
+    const glFee = c.deposits?.fees?.[id];
+    const fee = b.fees ?? glFee?.amount ?? 0;
+    const inv = c.deposits?.investment?.[id];
+    const step = (what, amount, from) => h('div', { class: 'recon-row' }, h('span', {}, what, from ? h('div', { class: 'muted small' }, from) : null), h('span', { class: 'num' }, money(amount, { dash: false })));
+    const gain = l.int;
+    const diff = inv ? round2(gain - inv.gain) : null;
+    return h('div', { class: 'recon', style: { marginBottom: '.75rem' } },
+      h('h3', {}, 'How the gain is worked out'),
+      step('Ending value', b.ending, 'From the statement'),
+      step(`Less ${monthName(addMonths(m, -1))} ending value`, -priorEnding, b.priorEnding != null ? 'Typed' : 'From last month’s statement'),
+      net ? step(net < 0 ? 'Plus money taken out' : 'Less money put in', -net, b.netDeposits != null ? 'Typed' : `Fidelity MoneyLine transfers into Cass this month: ${fidelityTransfers(rec).items.map((t) => `${t.date} ${money(t.amount)}`).join(', ')}`) : null,
+      fee ? step('Plus fees taken out', fee, b.fees != null ? 'Typed' : `Per the GL: ${glFee.batches.map((x) => `${x.batch} ${x.desc} (Dr 8070 ${money(x.amount)})`).join('; ')} — the GL books the gain before the fee and the fee as an expense`) : null,
+      h('div', { class: 'recon-row total' }, h('span', {}, 'Gain / interest'), h('span', { class: 'num' }, h('strong', {}, money(gain, { dash: false })))),
+      inv ? h('div', { class: 'recon-row' }, h('span', {}, 'The GL booked', h('div', { class: 'muted small' }, inv.batches.map((x) => `${x.batch} ${x.desc}: gain ${money(x.gain)}${x.fee ? `, fee ${money(x.fee)}` : ''}`).join('; '))),
+        h('span', { class: 'num' }, money(inv.gain, { dash: false }), ' ', Math.abs(diff) < 0.005 ? statusPill('Ties', 'good') : statusPill(`${money(diff, { dash: false })} different`, 'bad'))) : null);
   }
 
   // ---- Evidence --------------------------------------------------------------------------------
@@ -640,14 +706,14 @@ export default async function (main, { user, rerender }) {
       sheetRows.push([r.label, r.rev ? ytd(r.rev) : null, r.int ? ytd(r.int) : null, ...cols.flatMap(({ c }) => [at(r.rev, c), at(r.int, c)])]);
     }
 
-    const adj = [['Month', 'Line', 'Account', 'Type', 'Date', 'Description', 'Amount', 'Evidence', 'Note', 'Statement', 'Entered by', 'Entered at']];
+    const adj = [['Month', 'Group', 'Line', 'Account', 'Type', 'Date', 'Description', 'Amount', 'Evidence', 'Note', 'Statement', 'Entered by', 'Entered at']];
     const src = [['Month', 'Account', 'Revenue', 'Interest', 'Ending balance', 'Source', 'Entered / attached by', 'When', 'Confirmation']];
     const checks = [['Month', 'Check', 'Result', 'Detail']];
     for (const { m, c, rec } of cols) {
       if (!c) continue;
       for (const a of c.adjustments) {
         const items = a.detail?.length ? a.detail.map((d) => ({ date: d.date, desc: d.desc, amount: (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) })) : [{ date: a.date || '', desc: a.label, amount: a.amount }];
-        for (const it of items) adj.push([monthName(m), adjKey(a), label(a.account || 'cassOp'), ADJUSTMENT_TYPES[a.type] || (a.auto ? 'From the statements' : ''), it.date || '', it.desc, it.amount, (EVIDENCE[a.evidence] || EVIDENCE.statement).label, a.note || '', a.statement || '', a.enteredBy || '', a.enteredAt ? when(a.enteredAt) : '']);
+        for (const it of items) adj.push([monthName(m), adjKey(a), adjDetail(a), label(a.account || 'cassOp'), ADJUSTMENT_TYPES[a.type] || (a.auto ? 'From the statements' : ''), it.date || '', it.desc, it.amount, (EVIDENCE[a.evidence] || EVIDENCE.statement).label, a.note || '', a.statement || '', a.enteredBy || '', a.enteredAt ? when(a.enteredAt) : '']);
       }
       for (const l of c.lines) {
         if (l.rev == null && l.int == null && l.ending == null) continue;
@@ -672,7 +738,7 @@ export default async function (main, { user, rerender }) {
           `${dep.lines.filter((x) => x.match).length} of ${dep.lines.length} matched; ${Object.keys(dep.exclusions).length} not revenue per the GL${open.length ? `; not in the GL: ${open.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join(', ')}` : ''}`]);
       }
       { const glOnly = c.adjustments.filter((a) => a.evidence === 'gl');
-        if (glOnly.length) checks.push([monthName(m), 'Evidence: GL only', money(round2(sum(glOnly, (a) => Math.abs(a.amount))), { dash: false }), `${glOnly.length} adjustments no statement shows: ${glOnly.map((a) => `${adjKey(a)} ${money(a.amount, { dash: false })}`).join('; ')}`]); }
+        if (glOnly.length) checks.push([monthName(m), 'Evidence: GL only', money(round2(sum(glOnly, (a) => Math.abs(a.amount))), { dash: false }), `${glOnly.length} adjustments no statement shows: ${glOnly.map((a) => `${adjDetail(a)} ${money(a.amount, { dash: false })}`).join('; ')}`]); }
       if (dep?.conflicts?.length) checks.push([monthName(m), 'Rule vs GL', `${dep.conflicts.length} TO DECIDE`, dep.conflicts.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}: rule says ${x.rule.type}, GL ${x.match.batch} says revenue`).join('; ')]);
       if (dep?.keyBank) { const kl = c.lines.find((x) => x.id === 'keyOp'); if (kl?.rev != null) checks.push([monthName(m), 'KeyBank deposits vs GL', Math.abs((kl?.rev || 0) - dep.keyBank.glIn) < 0.005 ? 'Match' : 'DIFFERENT', `Statement ${money(kl?.rev || 0, { dash: false })}; GL into 1061 ${money(dep.keyBank.glIn, { dash: false })}`]); }
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
@@ -681,7 +747,7 @@ export default async function (main, { user, rerender }) {
     try {
       await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
         { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
-        { name: 'Adjustments detail', rows: adj, cols: [14, 32, 18, 20, 11, 60, 14, 22, 50, 50, 16, 20] },
+        { name: 'Adjustments detail', rows: adj, cols: [14, 28, 36, 18, 20, 11, 60, 14, 22, 50, 50, 16, 20] },
         { name: 'Sources', rows: src, cols: [14, 26, 15, 13, 16, 44, 20, 20, 32] },
         { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
       ]);
