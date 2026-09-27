@@ -108,15 +108,31 @@ export function parsePaypal(lines) {
   if (!p) throw new Error('Couldn’t find the PayPal statement period.');
   const date = iso(2000 + Number(p[6]), Number(p[4]), Number(p[5]));
   const g = (label) => amt((j.match(new RegExp(`${label} (${AMT})`)) || [])[1]) ?? 0;
+  // The first figure on each Activity Summary line is USD (other currencies follow).
   const res = {
     source: 'paypal', date, month: date.slice(0, 7),
     beginning: g('Beginning Available Balance'), ending: g('Ending Available Balance'),
-    revenue: g('Payments received'), interest: 0,
+    received: g('Payments received'), interest: 0,
     paymentsSent: g('Payments sent'), withdrawals: Math.abs(g('Withdrawals and Debits')),
-    depositsCredits: g('Deposits and Credits'), fees: g('Fees'),
+    depositsCredits: g('Deposits and Credits'), fees: g('Fees'), transfers: g('Transfers'),
   };
-  res.ties = round(res.beginning + res.revenue - Math.abs(res.paymentsSent) - res.withdrawals + res.depositsCredits + res.fees) === round(res.ending);
+  res.revenue = paypalRevenue(res);
+  res.ties = paypalTies(res);
   return res;
+}
+
+// USD payments sent out of PayPal are money given back to donors: the GL books each as a
+// "Payment Refund" against 4012 (Feb and Mar 2026: 15,337 returned to a donor who gave by check
+// instead). Payments to vendors go out in other currencies, after a currency conversion. The
+// card's "Revenue vs GL 4012" shows it if a USD payment sent was ever something else.
+// Statements attached before this kept only payments received as revenue.
+export function paypalRevenue(b) {
+  const received = b.received ?? b.revenue;
+  return received == null ? null : round(received + Math.min(0, b.paymentsSent || 0));
+}
+export function paypalTies(b) {
+  if (b.transfers == null) return b.ties;
+  return round(b.beginning + (b.received ?? b.revenue) - Math.abs(b.paymentsSent) - b.withdrawals + b.depositsCredits + b.fees + b.transfers) === round(b.ending);
 }
 
 export function parseKeybank(lines) {

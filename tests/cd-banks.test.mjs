@@ -114,6 +114,20 @@ test('Wise descriptions that wrap onto a second line are still read, and the sta
   assert.equal(statementTies({ bankStatements: { wise: w } }, 'wise'), true);
 });
 
+test('PayPal: money sent back to donors comes off revenue, and transfers count toward the tie', () => {
+  // February 2026's summary: 15,337 returned to a donor; 100 converted to pay a vendor in BRL.
+  const feb = parsePaypal(L(['Merchant Account ID: X PayPal ID: y 2/1/26 - 2/28/26', 'Activity Summary (2/1/26 - 2/28/26)', 'USD BRL',
+    'Beginning Available Balance 205,920.71 0.00', 'Payments received 16,358.48 0.00', 'Payments sent -15,337.00 -508.56',
+    'Withdrawals and Debits 0.00 0.00', 'Deposits and Credits 0.00 0.00', 'Fees -800.00 0.00', 'Transfers -100.00 508.56',
+    'Ending Available Balance 206,042.19 0.00']));
+  assert.equal(feb.revenue, 1021.48); // = GL 4012 for February
+  assert.equal(feb.received, 16358.48);
+  assert.ok(feb.ties);
+  // Attached before the fix: revenue was payments received, no transfers kept.
+  const old = { source: 'paypal', revenue: 16358.48, paymentsSent: -15337, ties: false };
+  assert.equal(computePoc({ month: '2026-02', bankStatements: { paypal: old } }).lines.find((l) => l.id === 'paypal').rev, 1021.48);
+});
+
 test('Delap/Tschetter gain = change in value less money moved in', () => {
   assert.equal(balanceMethodInterest({ ending: 5186270.92 }, { ending: 5161886.70 }), 24384.22);
   assert.equal(balanceMethodInterest({ ending: 5084983.41, netDeposits: -84706.53 }, { ending: 5145263.38 }), 24426.56);

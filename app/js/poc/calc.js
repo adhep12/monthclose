@@ -11,7 +11,7 @@
 //   timing:      { accrued, realizedPrior, restricted, merchAR }
 //   gl:          { revenue, interest, note }        typed override of the GL figures
 
-import { classifyWiseItems, wiseTotals, wiseTies, wiseSender } from './banks.js';
+import { classifyWiseItems, wiseTotals, wiseTies, wiseSender, paypalRevenue, paypalTies } from './banks.js';
 import { stripeRevenue } from './stripe.js';
 import { round2, sum } from '../money.js';
 
@@ -93,6 +93,7 @@ export function statementTies(rec, id) {
   const b = rec.bankStatements?.[id];
   if (!b) return true;
   if (id === 'wise' && b.items?.length) return wiseTies(wiseItems(rec), b.ending);
+  if (id === 'paypal') return paypalTies(b) !== false;
   return b.ties !== false;
 }
 // Money sent to, or received from, another of our own accounts.
@@ -322,7 +323,8 @@ export function autoFigures(rec, cd = null, prior = null) {
   const st = rec.statements || {};
   const auto = {};
   for (const [id, b] of Object.entries(rec.bankStatements || {})) {
-    const t = id === 'wise' && b.items?.length ? wiseTotals(wiseItems(rec)) : { revenue: b.revenue, interest: b.interest };
+    const t = id === 'wise' && b.items?.length ? wiseTotals(wiseItems(rec))
+      : id === 'paypal' ? { revenue: paypalRevenue(b), interest: b.interest } : { revenue: b.revenue, interest: b.interest };
     auto[id] = { rev: t.revenue, int: t.interest, ending: b.ending, from: `${b.fileName || 'statement'}`, by: b.attachedBy, at: b.attachedAt };
   }
   for (const s of BANK_SOURCES.filter((x) => x.method === 'balance')) {
