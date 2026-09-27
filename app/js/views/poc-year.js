@@ -186,7 +186,7 @@ export default async function (main, { user, rerender }) {
             cols.map(({ m, c, rec }) => {
               const click = onCell(r, m);
               // Files dropped on an account's cell attach to that account and month.
-              const droppable = (td) => (td && r.account && ACCOUNT_FILES[r.account]?.accept ? dropTarget(td, (files) => openAccount(r.account, m, files)) : td);
+              const droppable = (td) => (td && r.account && ACCOUNT_FILES[r.account]?.accept ? dropTarget(td, (files) => quickAttach(r.account, m, files, td)) : td);
               const intExtra = span > 1 ? 'int' : '';
               if (!c) {
                 return [showRev ? droppable(valueCell(null, { onclick: r.rev ? click : null, empty: r.account || r.gl ? '+' : '' })) : null,
@@ -204,6 +204,37 @@ export default async function (main, { user, rerender }) {
   async function saveRec(rec) {
     rec.updatedBy = user; rec.updatedAt = nowIso();
     await savePocMonth(rec);
+  }
+
+  // Dropping a statement on a cell: attach it and update the sheet, without opening anything.
+  // Only a question that needs an answer (wrong account or month) or a problem interrupts.
+  // Drops queue up and run one at a time, so two drops on the same month can't collide; the
+  // sheet redraws once the queue is empty.
+  let queue = Promise.resolve();
+  let pending = 0;
+  let anyChanged = false;
+  function quickAttach(id, m, files, td) {
+    pending++;
+    const was = [...td.childNodes];
+    td.classList.add('busy');
+    td.textContent = 'Queued…';
+    const restore = () => { td.replaceChildren(...was); td.classList.remove('busy'); };
+    queue = queue.then(async () => {
+      td.textContent = 'Reading…';
+      try {
+        const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+        const res = await attachFiles({ files, rec, cds, month: m, user, expectAccount: id, ask, saveCd });
+        if (res.changed) { await saveRec(rec); anyChanged = true; td.textContent = 'Saved'; } else restore();
+        const bad = res.messages.filter((x) => x.bad);
+        if (bad.length) await notify('Please check', bad.map((x) => x.text));
+        else if (res.messages.length) toast(`${monthName(m)} · ${res.messages.map((x) => x.text).join(' · ')}`);
+      } catch (err) {
+        restore();
+        toast(explain(err, 'Couldn’t attach that.'), 'error');
+      } finally {
+        if (--pending === 0 && anyChanged) rerender();
+      }
+    });
   }
 
   async function openAccount(id, m, droppedFiles = null) {
@@ -403,7 +434,7 @@ export default async function (main, { user, rerender }) {
   mount(main,
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, `FY${fy} Proof of Cash`),
-        h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Click an account’s cell — or drop its statement on the cell — to attach it or type its figures; click a month to open all of it. `,
+        h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Drop a statement on an account’s cell to attach it (the number updates in place); click a cell to see its detail or type figures; click a month to open all of it. `,
           'Dots: green reviewed, blue prepared, amber in progress, grey from the workbook. ✓ confirmed, ! changed since confirmed.')),
       h('div', { class: 'actions' },
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),

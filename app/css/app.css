@@ -263,3 +263,4 @@ main.content { margin: 0 auto; }
 .check-box.bad > .row strong { color: var(--bad); }
 .check-box.info { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .check-box .recon { max-width: 26rem; margin-top: .35rem; }
+.sheet td.busy { color: var(--accent); font-style: italic; background: var(--accent-soft); }
