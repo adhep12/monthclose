@@ -83,7 +83,7 @@ export function parsePocWorkbook(XLSX, wb) {
   // The itemized adjustments (the rows that add up to "Cass Operating - Total Adjustments").
   if (adjStart != null) {
     for (let r = adjStart; r < (adjEnd ?? range.e.r); r++) {
-      const label = text(at(r, 1)).replace(/^\(|\)$/g, '').trim();
+      const label = text(at(r, 1)).trim().replace(/^\((.*)\)$/, '$1').trim();
       if (!label) continue;
       for (const k of cols) {
         const v = num(at(r, k.rev));

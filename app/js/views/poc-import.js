@@ -33,7 +33,7 @@ export default async function (main, { user }) {
             n++;
           }
           toast(`Imported ${n} months.`);
-          location.hash = '#/poc/ytd';
+          location.hash = '#/poc';
         } catch (err) { toast(explain(err, `Stopped after ${n} months.`), 'error'); go.disabled = false; }
       });
       mount(out,

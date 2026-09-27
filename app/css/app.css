@@ -184,3 +184,26 @@ td.src { font-size: .7rem; color: var(--muted); }
 tr.section-row td { background: color-mix(in srgb, var(--accent-soft) 60%, var(--panel)); font-weight: 650; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
 tr.strong-row td { font-weight: 650; }
 td.indent { padding-left: 1.5rem; }
+
+/* Fiscal-year proof of cash sheet */
+.tabs { gap: .35rem; margin-bottom: .75rem; }
+.tab { border-radius: 999px; padding: .3rem .85rem; }
+.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { .tab.active { color: #10131f; } }
+.tab.add { border-style: dashed; color: var(--muted); }
+.sheet table { font-size: .82rem; }
+.sheet th, .sheet td { padding: .3rem .55rem; }
+.sheet .label-col { position: sticky; left: 0; background: var(--panel); z-index: 1; min-width: 17rem; white-space: normal; }
+.sheet thead .label-col { z-index: 3; }
+.sheet th.month { text-align: center; border-left: 1px solid var(--line); }
+.sheet th.month a { font-weight: 650; }
+.sheet th.sub { font-weight: 550; font-size: .72rem; }
+.sheet td.int, .sheet th.int { background: color-mix(in srgb, var(--bg) 55%, var(--panel)); }
+.sheet .ytd { background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel)); }
+.sheet th.ytd { text-align: center; }
+.sheet tbody td:nth-child(2) { border-left: 1px solid var(--line); }
+.sheet tr.section-row td { position: sticky; left: 0; }
+.sheet tr.strong-row td { border-top: 1px solid var(--line); }
+.sheet td.neg { color: var(--bad); }
+.sheet td.pos { color: var(--warn); }
+.sheet tr.pct-row td { color: var(--muted); font-size: .76rem; }

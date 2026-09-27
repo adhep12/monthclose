@@ -421,7 +421,7 @@ export default async function (main, { month, monthName, user, rerender }) {
     h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, `Proof of cash — ${monthName(month)}`),
         h('p', { class: 'muted' }, 'Each bank account’s statement against Acumatica: who entered each figure, who confirmed it, and every adjustment in between.')),
-      h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/cds' }, 'CD schedule'), h('a', { class: 'btn', href: '#/poc/ytd' }, 'Fiscal year view'), h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'))),
+      h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/cds' }, 'CD schedule'), h('a', { class: 'btn', href: '#/poc' }, 'Back to the year'), h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'))),
     draft ? h('div', { class: 'notice warn' }, 'Restored changes that hadn’t saved yet. They’ll save now. ',
       h('button', { onclick: () => { try { localStorage.removeItem(DRAFT); } catch { /* ignore */ } rerender(); } }, 'Discard them instead')) : null,
     summaryHost,

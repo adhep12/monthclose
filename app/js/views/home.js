@@ -41,7 +41,7 @@ export default async function (main, { month, monthName }) {
         pc && pc.diffRev != null
           ? h('p', {}, h('span', { class: 'big' }, money(pc.diffRev)), h('br'), h('span', { class: 'muted small' }, `revenue difference · ${Object.keys(poc.statements || {}).length}/3 Cass statements`))
           : h('p', { class: 'muted' }, poc ? `${Object.keys(poc.statements || {}).length}/3 Cass statements attached${glAct ? '' : ' · GL not uploaded'}` : 'Attach the Cass statements and fill in the other bank lines.'),
-        '#/poc', 'Open proof of cash'),
+        '#/poc/month', 'Open this month'),
       card('Inventory', statusPill('Later', 'neutral'), h('p', { class: 'muted' }, 'Cost of goods by department.')),
     ),
   );
