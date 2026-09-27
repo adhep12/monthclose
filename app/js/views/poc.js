@@ -1,6 +1,6 @@
 import { h, mount, table, toast, statusPill, select, ask, notify, dropTarget } from '../ui.js';
 import { loadPocMonth, savePocMonth, loadGlActivity, loadTrialBalance, loadPocConfig, loadCds, saveCd, loadConfig, loadSoa, loadPocMonths, listGlActivity } from '../data.js';
-import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions, statementTies } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, ADJUSTMENT_TYPES, reviewableDeposits, exclusionInfo, balanceMethodInterest, defaultExclusions, statementTies, effectiveExclusions } from '../poc/calc.js';
 import { depositChecks } from '../poc/gl-deposits.js';
 import { attachFiles } from '../poc/attach.js';
 import { stripeCheckBox } from './stripe-check.js';
@@ -34,8 +34,6 @@ export default async function (main, { month, monthName, user, rerender }) {
   let draft = null;
   try { draft = JSON.parse(localStorage.getItem(DRAFT) || 'null'); } catch { /* ignore */ }
   const rec = Object.assign(blank(month), structuredClone(draft || loaded || {}));
-  // Show automatic findings (transfers, tax refunds) as set, whatever order the statements came in.
-  rec.excluded = { ...defaultExclusions(rec), ...(rec.excluded || {}) };
   const gl = glFigures({ glActivity: glAct, tb: tbThis, soa, month, config: cfg });
   const names = faCfg.accountNames || {};
 
@@ -52,7 +50,7 @@ export default async function (main, { month, monthName, user, rerender }) {
   // it's worked out again only when something it depends on changes.
   let depKey = null, depAll = {};
   function deposits() {
-    const key = JSON.stringify([Object.entries(rec.statements || {}).map(([k, x]) => `${k}:${x.attachedAt || x.fileName || ''}`), rec.dismissed || {},
+    const key = JSON.stringify([Object.entries(rec.statements || {}).map(([k, x]) => `${k}:${x.attachedAt || x.fileName || ''}`), rec.dismissed || {}, rec.excluded || {},
       rec.ditGl || {}, (rec.adjustments || []).map((a) => a.amount), (rec.dit || []).map((d) => [d.id, d.amount])]);
     if (key !== depKey) { depKey = key; depAll = depositChecks({ recs: { ...recsBy, [month]: rec }, glBy, config: cfg, names }); }
     return depAll;
@@ -253,12 +251,16 @@ export default async function (main, { month, monthName, user, rerender }) {
     const glOf = new Map((dep?.lines || []).map((x) => [x.line.id, x.match]));
     const noGl = new Set((dep?.noGl || []).filter((x) => !x.covered).map((x) => x.line.id));
     // What's excluded now: the automatic findings (statements and GL) under anything set by hand.
-    const current = (t) => exclusionInfo(rec.excluded[t.id]) || exclusionInfo(dep?.exclusions?.[t.id]) || null;
-    const flagged = deps.filter((t) => current(t) || noGl.has(t.id) || /REFUND|TAX|RETURN|REVERSAL|IRS|TRANSFER|TRNSFR|BIBLE ?PROJECT/i.test(`${t.desc} ${t.detail || ''}`));
-    const setKind = (t, v) => {
+    const eff = effectiveExclusions(rec, dep);
+    const current = (t) => exclusionInfo(eff[t.id]) || null;
+    const conflicts = dep?.conflicts || [];
+    const flagged = deps.filter((t) => current(t) || noGl.has(t.id) || conflicts.some((x) => x.line.id === t.id) || /REFUND|TAX|RETURN|REVERSAL|IRS|TRANSFER|TRNSFR|BIBLE ?PROJECT/i.test(`${t.desc} ${t.detail || ''}`));
+    const automatic = (t) => !!(defaultExclusions(rec)[t.id] || dep?.exclusions?.[t.id]);
+    const setKind = (t, v, note) => {
       const had = current(t);
-      if (v === 'revenue') { delete rec.excluded[t.id]; if (had?.auto) rec.dismissed = { ...(rec.dismissed || {}), [t.id]: true }; }
-      else rec.excluded[t.id] = { type: v, note: had?.note || '' };
+      delete rec.excluded[t.id];
+      if (v === 'revenue') { if (automatic(t)) rec.dismissed = { ...(rec.dismissed || {}), [t.id]: true }; }
+      else rec.excluded[t.id] = { type: v, note: note ?? had?.note ?? '' };
       logChange(rec, user, `${t.date} ${t.desc} ${money(t.amount)}: ${v === 'revenue' ? 'counted as revenue' : `marked as ${(REVIEW_TYPES.find((x) => x[0] === v) || [, v])[1].toLowerCase()}`}`);
       drawReview(); changed();
     };
@@ -280,10 +282,23 @@ export default async function (main, { month, monthName, user, rerender }) {
       { label: 'Description', cell: (t) => h('span', { title: t.detail || '' }, t.desc) },
       { label: 'Amount', num: true, cell: (t) => money(t.amount) },
       { label: 'Per the GL', cell: glCell },
-      { label: 'Note', cell: (t) => (t.id in rec.excluded ? textInput(() => exclusionInfo(rec.excluded[t.id]).note, (v) => { rec.excluded[t.id] = { ...exclusionInfo(rec.excluded[t.id]), note: v }; }, { placeholder: 'Why', size: 30 })
+      { label: 'Note', cell: (t) => (rec.excluded[t.id] && !exclusionInfo(rec.excluded[t.id]).auto ? textInput(() => exclusionInfo(rec.excluded[t.id]).note, (v) => { rec.excluded[t.id] = { ...exclusionInfo(rec.excluded[t.id]), note: v }; }, { placeholder: 'Why', size: 30 })
         : current(t)?.note ? h('span', { class: 'muted small wrap' }, current(t).note) : '') },
     ], list, { empty: 'Nothing flagged.' });
-    mount(reviewHost, h('h2', {}, 'Deposits to review'),
+    const decide = conflicts.length ? h('div', { class: 'notice warn' },
+      h('strong', {}, `${conflicts.length} deposit${conflicts.length === 1 ? '' : 's'} to decide: a rule says ${conflicts.length === 1 ? 'it isn’t' : 'they aren’t'} revenue, the GL booked ${conflicts.length === 1 ? 'it' : 'them'} as revenue`),
+      h('p', { class: 'small' }, 'Counted as revenue (the way the GL has it) until you decide.'),
+      table([
+        { label: 'Date', cell: (x) => x.line.date },
+        { label: 'Deposit', cell: (x) => h('span', { title: x.line.detail || '' }, x.line.desc) },
+        { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
+        { label: 'The rule says', cell: (x) => h('span', { class: 'small wrap' }, `${(REVIEW_TYPES.find((r) => r[0] === x.rule.type) || [, x.rule.type])[1]} — ${x.rule.note}`) },
+        { label: 'The GL says', cell: (x) => h('span', { class: 'small wrap' }, `Revenue — ${x.match.batch} ${x.match.desc} (${x.match.label})`) },
+        { label: '', cell: (x) => h('div', { class: 'row' },
+          h('button', { class: 'small-btn', onclick: () => setKind(x.line, x.rule.type, `Confirmed: ${x.rule.note}`) }, x.rule.type === 'transfer' ? 'It’s a transfer' : 'Not revenue'),
+          h('button', { class: 'small-btn', onclick: () => setKind(x.line, 'revenue') }, 'It’s revenue')) },
+      ], conflicts)) : null;
+    mount(reviewHost, h('h2', {}, 'Deposits to review'), decide,
       h('p', { class: 'muted' }, 'Everything deposited counts as revenue unless it’s marked here. Each deposit is matched to the GL batch that booked it: one booked to another of our accounts is taken out as a transfer, one booked to a receivable as revenue from an earlier month, and one booked anywhere else that isn’t revenue (a refund, a reimbursement, a pass-through) as not revenue. Money matching a payment out of another of our accounts, and tax refunds, are taken out too. Change any of them.'),
       tableFor(flagged), h('details', {}, h('summary', {}, `All ${deps.length} deposits`), tableFor(deps)));
   }
@@ -294,20 +309,44 @@ export default async function (main, { month, monthName, user, rerender }) {
   }
 
   // ---- The statements against the GL -------------------------------------------------------
+  // KeyBank's statement only has a total. Deposits are cash giving unless the GL says a deposit came
+  // from another of our accounts (taken out automatically); a total that differs from what the GL
+  // put into 1061 is flagged, with a one-click way to take the difference out as a transfer.
+  function keyBankCheck(c) {
+    const kb = c.deposits?.keyBank;
+    const stmt = c.lines.find((l) => l.id === 'keyOp')?.rev;
+    if (stmt == null && !kb?.glIn) return null;
+    if (!kb) return h('p', { class: 'muted small' }, 'KeyBank Operating: upload the GL register again to check its deposits against the GL.');
+    const diff = round2((stmt || 0) - kb.glIn);
+    const took = c.adjustments.filter((a) => a.account === 'keyOp').reduce((t, a) => t + a.amount, 0);
+    return h('div', {}, h('h3', {}, 'KeyBank Operating'),
+      h('p', { class: 'small' }, `Deposits per the statement ${stmt == null ? '(not entered)' : money(stmt, { dash: false })}; the GL booked ${money(kb.glIn, { dash: false })} into KeyBank (1061)${kb.batches.length ? ` — ${kb.batches.map((b) => `${b.batch} ${b.desc}`).join('; ')}` : ''}. `,
+        took ? `${money(-took, { dash: false })} taken out as transfers. ` : '',
+        stmt == null ? statusPill('Statement not entered', 'neutral') : Math.abs(diff) < 0.005 ? statusPill('Matches the GL', 'good')
+          : diff > 0 ? statusPill(`${money(diff, { dash: false })} deposited that the GL doesn’t have`, 'bad') : statusPill(`The GL has ${money(-diff, { dash: false })} more than the statement`, 'bad')),
+      stmt != null && diff >= 0.005 ? h('p', { class: 'small' }, 'Deposits count as cash giving. If some of this was money moved from another of our accounts, take it out: ',
+        h('button', { class: 'small-btn', onclick: () => {
+          rec.adjustments.push(stampEntered({ id: uid(), account: 'keyOp', type: 'transfer', date: '', label: 'KeyBank deposit from another of our accounts', amount: -diff, note: 'Not in the GL as a deposit' }, user));
+          logChange(rec, user, `Took ${money(diff)} out of KeyBank Operating as a transfer`); drawAdj(); changed({ now: true });
+        } }, `Take ${money(diff, { dash: false })} out as a transfer`)) : null);
+  }
+
   function drawGlCheck(c) {
     const dep = c.deposits;
+    const kb = keyBankCheck(c);
     if (!glHasDeposits) {
-      mount(glCheckHost, h('p', { class: 'muted' }, glBy[month]
+      mount(glCheckHost, kb, h('p', { class: 'muted' }, glBy[month]
         ? 'The GL register for this month was uploaded before deposits were checked against it. Upload it again (on the fiscal year page) to match every deposit to its GL batch and work out deposits in transit.'
         : 'Upload the GL register (on the fiscal year page) to match every deposit to how the GL booked it.'));
       return;
     }
-    if (!dep?.hasStatements) { mount(glCheckHost, h('p', { class: 'muted' }, 'Attach the Cass statements to match their deposits to the GL.')); return; }
+    if (!dep?.hasStatements) { mount(glCheckHost, h('p', { class: 'muted' }, 'Attach the Cass statements to match their deposits to the GL.'), kb); return; }
     const matched = dep.lines.filter((x) => x.match).length;
     const open = dep.noGl.filter((x) => !x.covered);
     const glOnly = dep.glOnly.filter((x) => !(c.deposits.dit?.rows || []).some((r) => r.batch === x.receipt.batch && r.counts));
     mount(glCheckHost,
       h('p', {}, `${matched} of ${dep.lines.length} deposits matched to a GL batch. `,
+        dep.conflicts.length ? h('strong', {}, `${dep.conflicts.length} to decide (see Deposits to review). `) : '',
         Object.keys(dep.exclusions).length ? `${Object.keys(dep.exclusions).length} taken out as not revenue per the GL. ` : '',
         dep.adjustments.length ? `${dep.adjustments.length} taken back by the GL. ` : ''),
       open.length ? h('div', {}, h('h3', {}, 'Deposits the GL doesn’t have'),
@@ -319,7 +358,8 @@ export default async function (main, { month, monthName, user, rerender }) {
         h('p', { class: 'muted' }, 'Money the GL put into Cass that isn’t a deposit on these statements: transfers between GL accounts, refunds that landed in Outgoing Wires, or deposits on a statement that isn’t attached.'),
         table([{ label: 'Batch', cell: (x) => x.receipt.batch }, { label: 'Date', cell: (x) => x.receipt.date }, { label: 'Description', cell: (x) => h('span', { class: 'wrap' }, x.receipt.desc) },
           { label: 'Booked to', cell: (x) => x.receipt.label }, { label: 'Amount', num: true, cell: (x) => money(x.receipt.amount) },
-          { label: '', cell: (x) => (x.landed ? `on the ${monthName(x.landed.month)} statement` : '') }], glOnly)) : null);
+          { label: '', cell: (x) => (x.landed ? `on the ${monthName(x.landed.month)} statement` : '') }], glOnly)) : null,
+      kb);
   }
 
   // ---- Deposits in transit, from the GL ----------------------------------------------------

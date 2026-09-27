@@ -102,6 +102,8 @@ export default async function (main, { user, rerender }) {
       if (id === 'stripe' && k === 'rev' && c.stripeCheck?.state === 'mismatch') return { mark: '⚠', title: stripeFlagText(c.stripeCheck) };
       if (id === 'wise' && k === 'rev' && rec && wiseOutgoingCheck(rec).some((x) => x.state === 'missing')) return { mark: '⚠', title: 'Money sent from Wise to one of our accounts hasn’t turned up as a deposit — open to check' };
       if (id === 'cassOp' && k === 'rev' && c.warnings?.length) return { mark: '⚠', title: c.warnings.map((w) => w.text).join('\n') };
+      if (id === 'cassOp' && k === 'rev' && c.deposits?.conflicts?.length) return { mark: '⚠', title: `${c.deposits.conflicts.length} deposits a rule takes out but the GL booked as revenue — open the month to decide` };
+      if (id === 'keyOp' && k === 'rev' && l.rev != null && c.deposits?.keyBank && Math.abs(l.rev - c.deposits.keyBank.glIn) >= 0.005) return { mark: '⚠', title: `KeyBank deposits ${money(l.rev || 0, { dash: false })}; the GL booked ${money(c.deposits.keyBank.glIn, { dash: false })} into 1061 — open the month to check` };
       if (id === 'cassOp' && k === 'rev' && c.deposits?.noGl?.some((x) => !x.covered)) return { mark: '⚠', title: `${c.deposits.noGl.filter((x) => !x.covered).length} deposits the GL doesn’t have — open the month to check` };
       if (id === 'wise' && k === 'rev' && rec?.bankStatements?.wise && !statementTies(rec, 'wise')) return { mark: '⚠', title: 'The Wise statement doesn’t tie to its own balances — attach it again' };
       if (l[k] == null) return null;
@@ -594,6 +596,8 @@ export default async function (main, { user, rerender }) {
         checks.push([monthName(m), 'Deposits vs GL', open.length ? `${open.length} NOT IN THE GL` : 'All matched',
           `${dep.lines.filter((x) => x.match).length} of ${dep.lines.length} matched; ${Object.keys(dep.exclusions).length} not revenue per the GL${open.length ? `; not in the GL: ${open.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join(', ')}` : ''}`]);
       }
+      if (dep?.conflicts?.length) checks.push([monthName(m), 'Rule vs GL', `${dep.conflicts.length} TO DECIDE`, dep.conflicts.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}: rule says ${x.rule.type}, GL ${x.match.batch} says revenue`).join('; ')]);
+      if (dep?.keyBank) { const kl = c.lines.find((x) => x.id === 'keyOp'); if (kl?.rev != null) checks.push([monthName(m), 'KeyBank deposits vs GL', Math.abs((kl?.rev || 0) - dep.keyBank.glIn) < 0.005 ? 'Match' : 'DIFFERENT', `Statement ${money(kl?.rev || 0, { dash: false })}; GL into 1061 ${money(dep.keyBank.glIn, { dash: false })}`]); }
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
       if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
     }

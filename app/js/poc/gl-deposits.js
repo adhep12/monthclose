@@ -21,7 +21,7 @@
 
 import { round2, sum } from '../money.js';
 import { addMonths, lastDayOfMonth } from '../fiscal.js';
-import { DEFAULT_POC_CONFIG, isSweep } from './calc.js';
+import { DEFAULT_POC_CONFIG, isSweep, defaultExclusions, manualExclusions, exclusionInfo } from './calc.js';
 
 const STRIPE = /^STRIPE/i;
 const DAY = 86400000;
@@ -45,7 +45,7 @@ export function glKind(r, config = DEFAULT_POC_CONFIG, names = {}) {
   if (!other.length) return { kind: 'revenue', revenue, label };
   const main = other[0][0];
   if (main === '1200') return { kind: 'stripe', revenue, label };
-  if (/^10\d\d$/.test(main) || ['1150', '1160', '1170', '1171'].includes(main)) return { kind: 'transfer', revenue, label };
+  if (/^10\d\d$/.test(main) || ['1100', '1150', '1160', '1170', '1171'].includes(main)) return { kind: 'transfer', revenue, label };
   if (/^12[1-9]\d$/.test(main)) return { kind: 'prior-period', revenue, label };
   return { kind: 'not-revenue', revenue, label };
 }
@@ -218,8 +218,9 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     const receipts = receiptsBy[m] || null;
     const { lines, byLine } = matched[m] || { lines: [], byLine: new Map() };
     const hasStatements = !!(rec.statements?.operating || rec.statements?.incoming);
-    const res = { month: m, available: !!receipts, hasStatements, lines: [], exclusions: {}, adjustments: [], covered: [], noGl: [], glOnly: [], dit: null };
-    if (!receipts && !byLine.size) return res;
+    const res = { month: m, available: !!receipts, hasStatements, lines: [], exclusions: {}, adjustments: [], covered: [], noGl: [], glOnly: [], dit: null,
+      conflicts: [], suspended: [], keyBank: null };
+    if (!receipts && !byLine.size && !glBy[m]?.keyReceipts) return res;
 
     // Hand-entered adjustments (typed, or from the workbook) already cover some of these. One
     // adjustment covers one finding of the same amount, so nothing comes out twice.
@@ -230,6 +231,11 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       return h?.a || null;
     };
     const dismissed = rec.dismissed || {};
+    // The statement rules (a matching payment out of another account, a tax refund, Fidelity
+    // wording) against the GL: when the GL booked the deposit as revenue, the rule waits for a
+    // person. Until then it counts as revenue, the way the GL has it.
+    const rules = defaultExclusions(rec);
+    const manual = manualExclusions(rec);
 
     for (const l of lines) {
       const x = byLine.get(l);
@@ -237,6 +243,11 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       res.lines.push({ line: l, match: x ? { ...x.r, when: x.when, group: x.group, ...k } : null });
       if (!x) {
         if (!STRIPE.test(l.desc) && l.kind !== 'outgoing') res.noGl.push({ line: l, covered: coveredBy(l.amount) });
+        continue;
+      }
+      if (k.kind === 'revenue' && rules[l.id] && !manual[l.id]) {
+        res.conflicts.push({ line: l, rule: exclusionInfo(rules[l.id]), match: { ...x.r, ...k, when: x.when } });
+        res.suspended.push(l.id);
         continue;
       }
       // Outgoing credits reach Operating only through the sweep, which the sweep rule already takes out.
@@ -278,6 +289,26 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
           why: 'Stripe’s gross includes sales the GL doesn’t count as revenue — shipping (9050) and sales tax (2042) on merchandise — and the GL sometimes adds a stray Stripe transfer to giving.',
           detail: [{ date: x.date, amount: net, desc: x.desc }] });
       }
+    }
+    // KeyBank: the statement only gives a total, so the GL says what went in. Money from another of
+    // our accounts comes out; the rest is cash giving (the usual case).
+    const key = glBy[m]?.keyReceipts;
+    if (key) {
+      const ins = key.filter((r) => r.amount > 0);
+      for (const r of ins) {
+        const own = Object.entries(r.accounts).filter(([a, v]) => v > 0 && ['transfer'].includes(glKind({ accounts: { [a]: v } }, config).kind));
+        const amount = round2(sum(own, ([, v]) => v));
+        if (!amount) continue;
+        const id = `auto-glkey-${r.batch}`;
+        const adj = { id, account: 'keyOp', type: 'transfer', label: `KeyBank deposit from another of our accounts: ${r.desc}`, amount: -amount, auto: true, gl: r.batch,
+          note: `GL ${r.batch} (${r.date}): from ${own.map(([a]) => accountName(a, names)).join(', ')}`,
+          why: 'The GL booked this KeyBank deposit as money from another of our accounts, not giving.',
+          detail: [{ date: r.date, amount, desc: r.desc }] };
+        const by = coveredBy(-amount);
+        if (by) res.covered.push({ adjustment: adj, by });
+        else if (!dismissed[id]) res.adjustments.push(adj);
+      }
+      res.keyBank = { glIn: round2(sum(ins, (r) => r.amount)), batches: ins };
     }
     res.dit = ditFor(m, rec);
     return res;

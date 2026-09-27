@@ -128,6 +128,46 @@ test('Stripe sales the GL moves out of revenue (shipping, sales tax) come off th
   assert.match(adj[0].note, /to 9050 .* 606\.57/);
 });
 
+test('a rule and the GL disagree: flagged to decide, counted as revenue until then', () => {
+  // A 5,000 gift lands in Cass two days after Wise paid a vendor 5,000: the matching rule calls it
+  // a transfer, but the GL booked it as a gift.
+  const rec = feb();
+  rec.statements.operating.transactions.push(cr('5884-7', '2026-02-10', 5000, 'DEPOSIT CONNECTION DEPOSIT'));
+  rec.bankStatements = { wise: { items: [{ id: 'w1', desc: 'Sent money to A Vendor Ltd', amount: -5000, balance: 100, date: '2026-02-08' }] } };
+  const g = glBy();
+  g['2026-02'].receipts.push(gl('G10', '2026-02-10', 5000, { 4010: 5000 }, '2.10.2026 February Deposit'));
+  const check = () => depositChecks({ recs: { '2026-02': rec }, glBy: g })['2026-02'];
+  let d = check();
+  assert.equal(d.conflicts.length, 1);
+  assert.equal(d.conflicts[0].rule.type, 'transfer');
+  assert.equal(d.conflicts[0].match.batch, 'G10');
+  assert.ok(!computePoc(rec, { deposits: d }).adjustments.some((a) => a.id === 'auto-tr-5884-7')); // revenue for now
+  // "It's a transfer": set by hand, so it comes out and the flag clears.
+  rec.excluded = { '5884-7': { type: 'transfer', note: 'Confirmed' } };
+  d = check();
+  assert.equal(d.conflicts.length, 0);
+  assert.ok(computePoc(rec, { deposits: d }).adjustments.some((a) => a.id === 'auto-tr-5884-7' && a.amount === -5000));
+  // "It's revenue": the rule is overruled, and stays that way.
+  rec.excluded = {}; rec.dismissed = { '5884-7': true };
+  d = check();
+  assert.equal(d.conflicts.length, 0);
+  assert.ok(!computePoc(rec, { deposits: d }).adjustments.some((a) => a.id === 'auto-tr-5884-7'));
+  // An automatic finding stored on an older record doesn't count as someone deciding.
+  rec.dismissed = {}; rec.excluded = { '5884-7': { type: 'transfer', note: 'x', auto: true } };
+  assert.equal(check().conflicts.length, 1);
+});
+
+test('KeyBank: deposits are giving unless the GL says they came from another of our accounts', () => {
+  const g = glBy();
+  g['2026-02'].keyReceipts = [
+    gl('K1', '2026-02-12', 155, { 4010: 100, 4075: 55 }, 'Keybank Cash Giving + Cheers Club'),
+    gl('K2', '2026-02-20', 2000, { 1100: 2000 }, 'Transfer Cass Operating to KeyBank'),
+  ];
+  const d = depositChecks({ recs: { '2026-02': feb() }, glBy: g })['2026-02'];
+  assert.equal(d.keyBank.glIn, 2155);
+  assert.deepEqual(d.adjustments.filter((a) => a.account === 'keyOp').map((a) => [a.id, a.type, a.amount]), [['auto-glkey-K2', 'transfer', -2000]]);
+});
+
 test('GL helpers: bank dates in batch names, what a batch was booked to, duplicates', () => {
   assert.deepEqual(bankWindow({ desc: '8.18.2026-8.19.2026 August Mobile Deposits', date: '2026-08-18' }), { from: '2026-08-18', to: '2026-08-19', named: true });
   assert.equal(bankWindow({ desc: 'DAF Gifts', date: '2026-02-13' }).from, '2026-02-13');

@@ -174,9 +174,17 @@ export function wiseOutgoingCheck(recIn) {
 // What's excluded right now: automatic findings (re-worked out from the statements every time, so
 // attaching statements in any order gets the same answer) plus anything someone set by hand.
 // deposits: this month's GL deposit check (gl-deposits.js), when the GL register is loaded.
+// Automatic findings are worked out fresh; rec.excluded keeps only what a person set (older
+// records also stored automatic ones, marked auto, which are ignored here). A rule the GL
+// contradicts (deposits.suspended) waits for a person to decide.
+export function manualExclusions(rec) {
+  return Object.fromEntries(Object.entries(rec.excluded || {}).filter(([, v]) => !exclusionInfo(v)?.auto));
+}
 export function effectiveExclusions(recIn, deposits = null) {
   const rec = asRec(recIn);
-  return { ...defaultExclusions(rec), ...(deposits?.exclusions || {}), ...(rec.excluded || {}) };
+  const rules = defaultExclusions(rec);
+  for (const id of deposits?.suspended || []) delete rules[id];
+  return { ...rules, ...(deposits?.exclusions || {}), ...manualExclusions(rec) };
 }
 
 // A wire account that sweeps into Operating but whose statement isn't attached: its deposits

@@ -40,6 +40,7 @@ export function parseGlRegister(XLSX, wb) {
   for (const p of Object.values(periods)) {
     for (const k of Object.keys(p.accounts)) p.accounts[k] = round2(p.accounts[k]);
     p.receipts = cashReceipts(p.batches);
+    p.keyReceipts = cashReceipts(p.batches, KEYBANK_GL);
     p.stripeReclass = stripeReclasses(p.batches);
     delete p.batches;
   }
@@ -59,13 +60,14 @@ export function parseGlRegister(XLSX, wb) {
 //                                                                amount < 0: money out, e.g. a
 //                                                                reversal of revenue (chargeback)
 export const CASS_GL = '1100';
-function cashReceipts(batches) {
+export const KEYBANK_GL = '1061';
+function cashReceipts(batches, cashGl = CASS_GL) {
   const out = [];
   for (const b of batches) {
-    const cash = round2(b.accounts[CASS_GL] || 0);
+    const cash = round2(b.accounts[cashGl] || 0);
     if (!cash || b.module === 'AP') continue;
     const other = {};
-    for (const [acct, net] of Object.entries(b.accounts)) if (acct !== CASS_GL && Math.abs(net) >= 0.005) other[acct] = round2(-net);
+    for (const [acct, net] of Object.entries(b.accounts)) if (acct !== cashGl && Math.abs(net) >= 0.005) other[acct] = round2(-net);
     // Only money in, and money out that takes revenue back (a chargeback, a deposit reclassed).
     if (cash < 0 && !Object.entries(other).some(([acct, v]) => /^4/.test(acct) && v < 0)) continue;
     out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: cash, accounts: other });
