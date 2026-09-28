@@ -183,3 +183,27 @@ test('a check booked to PayPal revenue counts as a check', async () => {
   assert.equal(givingChannel({ batch, a: '4012', d: 'BP receiving check' }), 'Check');
   assert.equal(givingChannel({ batch, a: '4012', d: 'Paypal Giving "Payments received Total"' }), 'PayPal');
 });
+
+test('an explanation typed by a person counts as explained, with who entered it', () => {
+  const r = reconcileMonth({
+    sf: { month: '2025-11', methods: { Wire: { amount: 369171.33 } }, adjustments: [{ id: 'a1', channel: 'Wire', sponsor: 'NCF', type: 'not-received', amount: 100000, note: 'Duplicate of the 12/11 grant, being verified', by: 'Alex', at: '2026-09-29T10:00:00Z' }] },
+    giving: { channels: { Wire: 269171.33 } },
+  });
+  assert.equal(r.unexplained, 0);
+  const x = r.reasons.find((y) => y.id === 'a1');
+  assert.equal(x.evidence, 'typed');
+  assert.match(x.what, /In Salesforce, money not received \(NCF\): Duplicate of the 12\/11 grant/);
+  assert.match(x.why, /Entered by Alex on 2026-09-29/);
+});
+
+test('running totals: each giving type and sponsor, Salesforce against the GL, from the first month', () => {
+  const res = reconcileYear(['2025-10', '2025-11', '2025-12', '2026-01', '2026-02'].map((m, i) => ({
+    sf: { month: m, methods: { Patreon: { amount: 2300 }, Wire: { amount: 500 } }, gifts: [[`${m}-05`, 500, 'National Christian Foundation', 'c', 'W']] },
+    giving: { channels: { Patreon: i === 4 ? 100478.47 : 0, Wire: 500 }, payers: { Wire: { NCF: 500 } } },
+  })));
+  const feb = res[4].toDate;
+  assert.equal(feb.from, '2025-10');
+  assert.deepEqual(feb.channels.Patreon, { sf: 11500, gl: 100478.47 });
+  assert.deepEqual(feb.sponsors.NCF, { sf: 2500, gl: 2500 });
+  assert.deepEqual(res[0].toDate.channels.Patreon, { sf: 2300, gl: 0 });
+});

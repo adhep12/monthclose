@@ -155,6 +155,18 @@ export function parseSalesforceReport(XLSX, wb) {
 // Salesforce's payment methods, in the GL's channels (anything else is counted as its own).
 export const channelOf = (method) => ({ stripe: 'Stripe', paypal: 'PayPal', check: 'Check', wire: 'Wire', patreon: 'Patreon', cash: 'Cash' }[String(method).toLowerCase()] || 'Other');
 
+// What a person can say a difference is, when they explain it themselves.
+export const SF_ADJ_TYPES = {
+  timing: 'Timing: the other side has it in another month',
+  restricted: 'Restricted gift',
+  agency: 'Agency / pass-through gift',
+  'not-received': 'In Salesforce, money not received',
+  'not-in-sf': 'In the GL, not in Salesforce',
+  'prior-period': 'Belongs to an earlier or later period',
+  channel: 'Recorded under a different giving type',
+  other: 'Other',
+};
+
 // ---- Who a gift came from -------------------------------------------------------------------
 // Salesforce names a wire's donor-advised fund ("National Christian Foundation"); the GL line names
 // who paid ("NCF"). The same sponsor, one name, on both sides. Names not listed stay as they are.
@@ -221,6 +233,12 @@ export function reconcileMonth({ sf, giving, found = {} }) {
   // Revenue the GL took back out after booking it (moved to agency as a pass-through gift, reversed,
   // a chargeback): Salesforce still has the gift.
   for (const x of found.reversals || []) add(x.channel || 'Check', x.amount, `Taken back out of revenue by the GL: ${x.desc}`, 'The GL booked this as a gift, then took it back out (to agency as a pass-through gift, a reversal or a returned item); Salesforce still has it as a gift.', x.source);
+  // Explanations a person entered for the month (kept on the Salesforce month, sf.adjustments).
+  for (const x of sf?.adjustments || []) {
+    if (!x.amount) continue;
+    reasons.push({ channel: x.channel, amount: round2(x.amount), what: `${SF_ADJ_TYPES[x.type] || x.type}${x.sponsor ? ` (${x.sponsor})` : ''}${x.note ? `: ${x.note}` : ''}`,
+      why: `Entered by ${x.by || 'someone'}${x.at ? ` on ${String(x.at).slice(0, 10)}` : ''}.`, source: 'Typed', evidence: 'typed', id: x.id });
+  }
   for (const x of found.releases || []) add(x.channel || 'Wire', -x.amount, `Released from a liability by the GL: ${x.desc}`, 'Part of this deposit’s revenue was a gift the GL had held back earlier; Salesforce recorded it when it was given.', x.source);
   // A GL channel far above what Salesforce has for it: likely a line booked to the wrong payer.
   for (const r of rows) {
@@ -308,6 +326,15 @@ export function reconcileYear(inputs) {
       }
     }
   }
+  // Running totals from the first month: each giving type, and each wire sponsor, Salesforce against
+  // the GL. A lump payout (Patreon's February) reads against everything Salesforce had built up.
+  const run = { channels: {}, sponsors: {} };
+  out.forEach((m, i) => {
+    for (const r of m.rows) { const x = (run.channels[r.channel] ||= { sf: 0, gl: 0 }); x.sf = round2(x.sf + r.sf); x.gl = round2(x.gl + r.gl); }
+    if (both(i)) for (const n of new Set([...Object.keys(sfSp[i]), ...Object.keys(glSp[i])])) { const x = (run.sponsors[n] ||= { sf: 0, gl: 0 }); x.sf = round2(x.sf + (sfSp[i][n] || 0)); x.gl = round2(x.gl + (glSp[i][n] || 0)); }
+    m.toDate = { from: out[0].month, channels: structuredClone(run.channels), sponsors: both(i) ? structuredClone(run.sponsors) : null,
+      thisMonth: both(i) ? { sf: sfSp[i], gl: glSp[i] } : null };
+  });
   for (const m of out) {
     m.explained = round2(sum(m.reasons, (x) => x.amount)); m.unexplained = round2(m.diff - m.explained);
     m.explainedShare = m.diff ? Math.max(0, Math.min(1, 1 - Math.abs(m.unexplained) / Math.abs(m.diff))) : 1;

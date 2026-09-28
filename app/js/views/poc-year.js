@@ -17,7 +17,7 @@ import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
-import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
+import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS, SF_ADJ_TYPES } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
@@ -204,7 +204,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const glBy = Object.fromEntries(glActs.map((g) => [g.month, recentGl[g.month] && String(recentGl[g.month].uploadedAt || '') > String(g.uploadedAt || '') ? recentGl[g.month] : g]));
   for (const [m_, g_] of Object.entries(recentGl)) if (!glBy[m_]) glBy[m_] = g_;
   const soaBy = Object.fromEntries(soas.map((s) => [s.month, s]));
-  const sfBy = Object.fromEntries(sfList.map((x) => [x.month, recentSf[x.month] && String(recentSf[x.month].uploadedAt || '') > String(x.uploadedAt || '') ? recentSf[x.month] : x]));
+  const sfStamp = (x) => String(x?.updatedAt || x?.uploadedAt || '');
+  const sfBy = Object.fromEntries(sfList.map((x) => [x.month, recentSf[x.month] && sfStamp(recentSf[x.month]) > sfStamp(x) ? recentSf[x.month] : x]));
   for (const [m_, x_] of Object.entries(recentSf)) if (!sfBy[m_]) sfBy[m_] = x_;
   main.classList.add('wide-page');
 
@@ -1431,7 +1432,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     }
     const byChannel = [['Month', 'Channel', 'Salesforce', 'Salesforce gifts', 'GL', 'Difference', 'Explained', 'Not explained', 'In YTD']];
     const reasons = [['Month', 'Channel', 'Reason', 'Why', 'Source', 'Evidence', 'Amount']];
-    const EV = { gl: 'GL', pattern: 'Pattern across months', flag: 'To check' };
+    const EV = { gl: 'GL', pattern: 'Pattern across months', flag: 'To check', typed: 'Typed' };
+    const toDate = [['Month', 'Giving type / sponsor', 'Salesforce this month', 'GL this month', 'Salesforce to date', 'GL to date', 'Difference to date']];
     const restricted = [['Month', 'Date', 'GL batch', 'GL line', 'Payer', 'Batch description', 'Channel', 'Amount']];
     const largest = [['Month', 'Channel', 'Not explained in the channel', 'Date', 'GL line', 'Payer', 'Batch description', 'Amount']];
     for (const m of ms) {
@@ -1439,6 +1441,13 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       for (const x of r.rows) byChannel.push([monthName(m), x.channel, x.sf, x.count || null, x.gl, x.diff, x.explained, x.unexplained, ytdMs.includes(m) ? 'Yes' : 'No — GL not complete']);
       byChannel.push([monthName(m), 'Total', r.sfTotal, null, r.glTotal, r.diff, r.explained, r.unexplained, ytdMs.includes(m) ? 'Yes' : 'No — GL not complete']);
       for (const x of r.reasons) reasons.push([monthName(m), x.channel, x.what, x.why, x.source || '', EV[x.evidence] || x.evidence || '', x.flag ? 'CHECK' : x.amount]);
+      if (r.toDate) {
+        for (const x of r.rows) { const t = r.toDate.channels[x.channel]; if (t) toDate.push([monthName(m), x.channel, x.sf, x.gl, t.sf, t.gl, round2(t.sf - t.gl)]); }
+        for (const [n, t] of Object.entries(r.toDate.sponsors || {}).sort((a, b) => Math.abs(b[1].sf - b[1].gl) - Math.abs(a[1].sf - a[1].gl))) {
+          const a = r.toDate.thisMonth?.sf?.[n] || 0, b = r.toDate.thisMonth?.gl?.[n] || 0;
+          if (Math.abs(t.sf - t.gl) >= 1000 || a >= 1000 || b >= 1000) toDate.push([monthName(m), `    Wire: ${n}`, a, b, t.sf, t.gl, round2(t.sf - t.gl)]);
+        }
+      }
       for (const x of r.restricted) restricted.push([monthName(m), x.date, x.batch, x.line, x.payer, x.desc, x.channel, x.amount]);
       for (const row of r.rows.filter((x) => Math.abs(x.unexplained) >= 1000 && x.channel !== 'Stripe')) {
         for (const l of (glBy[m]?.giving?.big?.[row.channel] || []).slice(0, 20)) largest.push([monthName(m), row.channel, row.unexplained, l.date, l.line, l.payer, l.desc, l.amount]);
@@ -1451,6 +1460,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { name: 'Salesforce vs GL', rows: summary, cols: [42, 16, ...ms.map(() => 16)], freeze: { xSplit: 1, ySplit: 5 } },
         { name: 'By channel', rows: byChannel, cols: [16, 12, 16, 12, 16, 16, 16, 16, 22] },
         { name: 'Reasons', rows: reasons, cols: [16, 10, 50, 80, 50, 20, 16] },
+        { name: 'Running totals', rows: toDate, cols: [16, 44, 16, 16, 16, 16, 16], freeze: { ySplit: 1 } },
         { name: 'Restricted gifts', rows: restricted, cols: [16, 12, 12, 16, 30, 40, 10, 14] },
         { name: 'Largest GL lines', rows: largest, cols: [16, 10, 18, 12, 16, 30, 40, 14] },
         { name: 'Sources', rows: sources, cols: [16, 40, 12, 18, 20, 70, 40, 18, 20] },
@@ -1491,23 +1501,93 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     });
     const n = Object.keys(winner).length;
     const line_ = (l) => h('span', { style: { display: 'block', marginLeft: l.startsWith('  ') ? '1rem' : 0, marginTop: l.startsWith('  ') ? 0 : '.5rem' } }, l.trim());
-    const text_ = [...lines.flat().map(line_), line_('Every other month stays as it is.')];
+    const kept = Object.keys(winner).filter((m) => sfBy[m]?.adjustments?.length);
+    const text_ = [...lines.flat().map(line_), line_(`Every other month stays as it is.${kept.length ? ` Explanations you typed for ${kept.map(short).join(', ')} are kept.` : ''}`)];
     if (!(await ask('Load Salesforce reports', text_, { ok: `Load ${n} month${n === 1 ? '' : 's'}` }))) return false;
     try {
       for (const [m, { file, res }] of Object.entries(winner).sort()) {
         const mo = res.months.find((x) => x.month === m);
+        // Explanations someone typed for the month stay with it.
         const rec = { ...mo, kind: res.kind, excludes: res.excludes, fileName: file.name, asOf: res.asOf, filters: res.filters, uploadedBy: user, uploadedAt: nowIso(),
-          ...(res.covered?.partial?.includes(m) ? { partial: true } : {}) };
+          ...(res.covered?.partial?.includes(m) ? { partial: true } : {}), ...(sfBy[m]?.adjustments?.length ? { adjustments: sfBy[m].adjustments } : {}) };
         await saveSfGiving(rec); sfBy[m] = rec; recentSf[m] = rec;
       }
       toast(`Salesforce loaded for ${n} month${n === 1 ? '' : 's'}: ${Object.keys(winner).sort().map(short).join(', ')}.`);
     } catch (err) { notify('Couldn’t save the Salesforce figures', [explain(err, 'Some months may not have saved — upload again.')]); }
     return true;
   }
+  // Explaining a difference by hand: which giving type (and sponsor), what it is, how much of the
+  // Salesforce − GL difference it accounts for, and why. Kept on the Salesforce month.
+  async function saveSfAdj(m, change, what, close) {
+    try {
+      const rec = structuredClone(sfBy[m]);
+      rec.adjustments ||= [];
+      change(rec);
+      rec.updatedAt = nowIso(); rec.updatedBy = user;
+      await saveSfGiving(rec); sfBy[m] = rec; recentSf[m] = rec;
+      toast(what);
+      reopenAfter = { kind: 'sf', m };
+      carryScroll(topPanelScroll());
+      const opened = nextDialog(); await rerender(); await opened; close?.(true);
+    } catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
+  }
+  async function removeSfAdj(m, x, close) {
+    if (!(await ask('Remove explanation', `Remove “${x.what}” (${money(x.amount, { dash: false })})?`, { ok: 'Remove', danger: true }))) return;
+    saveSfAdj(m, (rec) => { rec.adjustments = rec.adjustments.filter((y) => y.id !== x.id); }, 'Explanation removed', close);
+  }
+  function sfAdjForm(m, r, close) {
+    const left = (ch) => r.rows.find((x) => x.channel === ch)?.unexplained ?? 0;
+    const first = r.rows.slice().sort((a, b) => Math.abs(b.unexplained) - Math.abs(a.unexplained))[0]?.channel || 'Wire';
+    const sponsors = Object.keys(r.toDate?.sponsors || {}).filter((n) => n !== '(none)').sort();
+    const fx = {
+      channel: h('select', {}, [...new Set([...SF_CHANNELS, ...r.rows.map((x) => x.channel)])].map((ch) => h('option', { value: ch, selected: ch === first }, ch))),
+      sponsor: h('input', { type: 'text', size: 18, placeholder: 'Sponsor (optional)', list: `sf-sponsors-${m}` }),
+      type: h('select', {}, Object.entries(SF_ADJ_TYPES).map(([v, t]) => h('option', { value: v }, t))),
+      amount: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 12, value: String(round2(left(first))) }),
+      note: h('input', { type: 'text', size: 32, placeholder: 'Why (for anyone checking)' }),
+    };
+    fx.channel.addEventListener('change', () => { fx.amount.value = String(round2(left(fx.channel.value))); });
+    const save = () => {
+      const amount = parseAmount(fx.amount.value);
+      if (!Number.isFinite(amount) || !amount) { toast('Type the amount it explains.', 'error'); return; }
+      if (!fx.note.value.trim()) { toast('Say why, for anyone checking.', 'error'); return; }
+      const v = { id: Math.random().toString(36).slice(2, 9), channel: fx.channel.value, sponsor: fx.sponsor.value.trim(), type: fx.type.value, amount, note: fx.note.value.trim(), by: user, at: nowIso() };
+      saveSfAdj(m, (rec) => { rec.adjustments.push(v); }, `Explanation added: ${v.channel} ${money(amount, { dash: false })}`, close);
+    };
+    return h('div', { class: 'adj-section' },
+      h('h4', {}, 'Explain a difference yourself'),
+      h('div', { class: 'row inline-form' }, fx.channel, fx.sponsor, h('datalist', { id: `sf-sponsors-${m}` }, sponsors.map((n) => h('option', { value: n }))), fx.type, fx.amount, fx.note,
+        h('button', { class: 'primary', onclick: save }, 'Add')),
+      h('p', { class: 'muted small' }, 'The amount is how much of the Salesforce − GL difference it accounts for: positive when Salesforce is higher, negative when the GL is. It starts at what’s left unexplained for the giving type. It counts as explained, shows who entered it, and stays with the month when Salesforce is uploaded again.'));
+  }
+  // Running totals from the first month: what Salesforce has built up against what the GL has booked,
+  // per giving type and per wire sponsor, so a lump payout reads against everything before it.
+  function sfToDate(r) {
+    const t = r.toDate;
+    if (!t) return null;
+    const ms = `${short(t.from)}–${short(r.month)}`;
+    const chRows = Object.entries(t.channels).map(([ch, x]) => ({ name: ch, month: r.rows.find((y) => y.channel === ch) || { sf: 0, gl: 0 }, ...x })).filter((x) => x.sf || x.gl);
+    const spRows = Object.entries(t.sponsors || {}).map(([n, x]) => ({ name: n, month: { sf: t.thisMonth?.sf?.[n] || 0, gl: t.thisMonth?.gl?.[n] || 0 }, ...x }))
+      .filter((x) => Math.abs(x.sf - x.gl) >= 1000 || x.month.gl >= 1000 || x.month.sf >= 1000).sort((a, b) => Math.abs(b.sf - b.gl) - Math.abs(a.sf - a.gl));
+    const cols_ = [
+      { label: '', cell: (x) => x.name },
+      { label: `Salesforce ${short(r.month)}`, num: true, cell: (x) => money(x.month.sf) },
+      { label: `GL ${short(r.month)}`, num: true, cell: (x) => money(x.month.gl) },
+      { label: `Salesforce ${ms}`, num: true, cell: (x) => money(x.sf) },
+      { label: `GL ${ms}`, num: true, cell: (x) => money(x.gl) },
+      { label: 'Difference to date', num: true, cell: (x) => h('strong', { class: Math.abs(x.sf - x.gl) >= 1000 ? 'warn-text' : '' }, money(round2(x.sf - x.gl))) },
+    ];
+    return h('div', { class: 'adj-section' },
+      h('h3', {}, `Running totals, ${ms}`),
+      h('p', { class: 'muted small' }, 'Everything Salesforce has recorded since the first month against everything the GL has booked. A payout that covers several months (Patreon, Great Commission Foundation, Stewardship) reads against what built up before it.'),
+      table(cols_.map((c, i) => (i ? c : { ...c, label: 'Giving type' })), chRows),
+      spRows.length ? h('details', { class: 'adj-section' }, h('summary', {}, `Wire gifts by sponsor (${spRows.length} with a difference or a payout)`), table(cols_.map((c, i) => (i ? c : { ...c, label: 'Sponsor' })), spRows))
+        : h('p', { class: 'muted small' }, 'Wire gifts by sponsor need the gift-level Salesforce report and the GL register uploaded since payers were kept.'));
+  }
   async function openSfMonth(m) {
     const r = sfYear[m];
     const sfm = sfBy[m];
-    await panel(`Salesforce vs GL — ${monthName(m)}`, (body) => {
+    await panel(`Salesforce vs GL — ${monthName(m)}`, (body, close) => {
       if (!r || !sfm) { mount(body, h('p', { class: 'muted' }, 'No Salesforce figures for this month yet — upload the report.')); return; }
       const g = glBy[m]?.giving;
       const leftCh = r.rows.filter((x) => Math.abs(x.unexplained) >= 1000).map((x) => x.channel);
@@ -1531,7 +1611,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           { label: 'Reason', cell: (x) => h('div', {}, h('strong', {}, x.what), h('div', { class: 'small muted wrap' }, x.why)) },
           { label: 'Source', cell: (x) => h('span', { class: 'small wrap' }, x.source || '') },
           { label: 'Amount', num: true, cell: (x) => (x.flag ? statusPill('Check', 'warn') : money(x.amount)) },
+          { label: '', cell: (x) => (x.id ? h('button', { class: 'small-btn danger', onclick: () => removeSfAdj(m, x, close) }, 'Remove') : '') },
         ], r.reasons) : h('p', { class: 'muted small' }, 'Nothing the app can put a number on yet.'),
+        sfAdjForm(m, r, close),
+        sfToDate(r),
         r.restricted.length ? h('div', {}, h('h3', {}, 'Restricted gifts (4017) in the GL'),
           h('p', { class: 'muted small' }, 'Counted in the channel they came in by, as Salesforce does. Salesforce may record a restricted gift when it’s given and the GL when it’s released, so they’re listed here to check.'),
           table([
@@ -1973,6 +2056,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     else if (r.kind === 'gl') openGl(r.m);
     else if (r.kind === 'todo') openTodo(r.m);
     else if (r.kind === 'aliases') openAliases();
+    else if (r.kind === 'sf') openSfMonth(r.m);
   }
   const saved = scrollMemory[fy];
   if (saved) {
