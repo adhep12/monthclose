@@ -21,6 +21,7 @@
 
 import { round2, sum } from '../money.js';
 import { addMonths, lastDayOfMonth } from '../fiscal.js';
+import { PAYPAL_GL } from '../gl.js';
 import { DEFAULT_POC_CONFIG, isSweep, defaultExclusions, manualExclusions, exclusionInfo } from './calc.js';
 
 const STRIPE = /^STRIPE/i;
@@ -144,10 +145,18 @@ function matchMonth(month, lines, receiptsBy, used) {
     return d <= Math.min(days, 3);
   };
   const order = (date) => (a, b) => RANK[a.when] - RANK[b.when] || distance(date, a.w) - distance(date, b.w);
+  // Batches that can only be an Operating deposit: a PayPal grant, or a deposit the GL names by
+  // its bank date ("1.9.2026 January Deposit"). Incoming wires and Stripe transfers never take them.
+  const operatingOnly = (x) => /paypal/i.test(x.r.desc) || (x.w.named && /\bdeposits?\b/i.test(x.r.desc));
+
   const fits = (x, l) => {
     if (STRIPE.test(l.desc) !== x.stripe) return false;
+    if (operatingOnly(x) && l.kind !== 'operating') return false;
     if (/paypal/i.test(x.r.desc) && l.kind === 'operating') return /PAYPAL/i.test(l.desc);
-    if (/\bdeposits?\b/i.test(x.r.desc) && l.kind === 'operating' && /PAYPAL/i.test(l.desc)) return false;
+    // A PayPal deposit is a PayPal grant, or money from our own PayPal account (1012): never some
+    // other batch that happens to be the same amount (January: a 100 PayPal grant took AP012998,
+    // a 100 vendor check booked to accounts payable, three days later).
+    if (/PAYPAL/i.test(l.desc) && l.kind === 'operating') return /paypal/i.test(x.r.desc) || PAYPAL_GL in (x.r.accounts || {});
     return true;
   };
 
@@ -159,7 +168,7 @@ function matchMonth(month, lines, receiptsBy, used) {
   // A Stripe transfer that isn't one of our payouts can be a gift paid through someone else's Stripe
   // account (Every.org, October: 9.43), which the GL books as revenue.
   for (const l of lines.filter((y) => STRIPE.test(y.desc) && !byLine.has(y))) {
-    const x = all.filter((y) => open(y) && y.kind === 'revenue' && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
+    const x = all.filter((y) => open(y) && y.kind === 'revenue' && !operatingOnly(y) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
     if (x) take(x, [l]);
   }
 
@@ -168,7 +177,7 @@ function matchMonth(month, lines, receiptsBy, used) {
   for (const l of lines.filter((y) => y.kind === 'incoming')) (days[l.date] ||= []).push(l);
   for (const [date, ls] of Object.entries(days).sort()) {
     const total = cents(sum(ls, (l) => l.amount));
-    const cands = all.filter((x) => open(x) && !x.stripe && near(x, date, 3) && cents(x.r.amount) <= total).sort(order(date));
+    const cands = all.filter((x) => open(x) && !x.stripe && !operatingOnly(x) && near(x, date, 3) && cents(x.r.amount) <= total).sort(order(date));
     const one = cands.find((x) => cents(x.r.amount) === total);
     if (one) { take(one, ls); continue; }
     const batches = subsetSum(cands.slice(0, 16).map((x) => ({ line: x, c: cents(x.r.amount) })), total);

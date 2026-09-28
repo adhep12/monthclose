@@ -301,3 +301,19 @@ test('PayPal grants booked together match the deposits they came in as, closest 
   assert.deepEqual(['1', '2', '3', '4', '5'].map(batch), ['P515', 'P515', 'P500', 'P125', 'P125']);
   assert.deepEqual(d.noGl, []);
 });
+
+test('a PayPal deposit only matches a PayPal batch, never a same-amount AP entry', () => {
+  // January: GL017465 (1/7) is two 100 grants booked as one 200; GL017495 (1/9) is one 100 grant;
+  // AP012998 (1/12) is a 100 vendor check booked to accounts payable.
+  const pp = (id, date, amount) => cr(id, date, amount, `PAYPAL INC./PAYMENT 0000${id}`);
+  const rec = { month: '2026-01', statements: { operating: { transactions: [pp('1', '2026-01-07', 100), pp('2', '2026-01-08', 100), pp('3', '2026-01-09', 100)] } } };
+  const g = { '2026-01': { receipts: [
+    gl('GL017465', '2026-01-07', 200, { 4018: 200 }, 'DAF Gifts - PayPal Grants (2)'),
+    gl('GL017495', '2026-01-09', 100, { 4018: 100 }, 'DAF Gifts - PayPal Grant'),
+    { ...gl('AP012998', '2026-01-12', 100, { 2010: 100 }, 'VO Podcast Sample One-Off'), ap: true },
+  ] } };
+  const d = depositChecks({ recs: { '2026-01': rec }, glBy: g })['2026-01'];
+  const batch = (id) => d.lines.find((x) => x.line.id === id).match?.batch;
+  assert.deepEqual(['1', '2', '3'].map(batch), ['GL017465', 'GL017465', 'GL017495']);
+  assert.deepEqual(d.exclusions, {});
+});
