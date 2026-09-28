@@ -3,7 +3,7 @@
 // account's cell for a month to attach its statement or type its figures; click Total
 // Adjustments to open up what's being taken out; click GL to load Acumatica's numbers.
 
-import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget } from '../ui.js';
+import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget, carryScroll, topPanelScroll, nextDialog } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
@@ -799,7 +799,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           const bad = res.messages.filter((x) => x.bad);
           if (bad.length) await notify('Please check', bad.map((x) => x.text));
           else if (res.messages.length) toast(res.messages.map((x) => x.text).join(' · '));
-          if (res.changed) { await saveRec(r); reopenAfter = again; await rerender(); close(true); }
+          if (res.changed) { await saveRec(r); reopenAfter = again; carryScroll(topPanelScroll()); const opened = nextDialog(); await rerender(); await opened; close(true); }
         } catch (err) { toast(explain(err, 'Couldn’t attach that.'), 'error'); }
       };
       const input = h('input', { type: 'file', accept: '.pdf,.csv,.xlsx', multiple: true, class: 'visually-hidden', onchange: (e) => { const f = [...e.target.files]; e.target.value = ''; onFiles(f); } });
@@ -870,8 +870,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       logChange(rec, user, what);
       await saveRec(rec);
       reopenAfter = again;
-      // The page redraws underneath; the new pop-up opens over this one, then this one goes.
+      // The page redraws underneath; the new pop-up opens over this one where it was scrolled to,
+      // then this one goes.
+      carryScroll(topPanelScroll());
+      const opened = again ? nextDialog() : null;
       await rerender();
+      if (opened) await opened;
       close?.(true);
     } catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
   }
@@ -1339,7 +1343,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       const list = aliasList(cfg.aliases);
       const f = { bank: h('input', { type: 'text', size: 30, placeholder: 'On the statement, e.g. BBGF, AMER ONLINE GIV' }), gl: h('input', { type: 'text', size: 30, placeholder: 'In the GL, e.g. Your Cause' }) };
       const save = (aliases, what) => (async () => {
-        try { cfg.aliases = aliases; await savePocConfig(cfg); toast(what); reopenAfter = { kind: 'aliases' }; await rerender(); close(true); }
+        try { cfg.aliases = aliases; await savePocConfig(cfg); toast(what); reopenAfter = { kind: 'aliases' }; carryScroll(topPanelScroll()); const opened = nextDialog(); await rerender(); await opened; close(true); }
         catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
       })();
       mount(body,

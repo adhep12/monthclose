@@ -226,6 +226,7 @@ td.indent { padding-left: 1.5rem; }
 .dialog input { width: 100%; margin: .25rem 0 .5rem; }
 .dialog-actions { justify-content: flex-end; margin-top: .75rem; }
 .overlay:has(.panel) { justify-content: flex-end; align-items: stretch; padding: 0; }
+.overlay.stacked { background: transparent; }
 .dialog.panel { width: min(40rem, 100%); border-radius: 0; height: 100%; overflow: auto; padding: 0; }
 .dialog.panel.wide { width: min(60rem, 100%); }
 .panel-head { position: sticky; top: 0; background: var(--panel); display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 1.25rem; border-bottom: 1px solid var(--line); z-index: 2; }

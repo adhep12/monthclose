@@ -94,11 +94,31 @@ export function statusPill(text, kind) {
 // The app runs in an iframe, where the browser's confirm()/prompt()/alert() can be suppressed
 // silently. These render inside the page instead and resolve a promise.
 
+// A pop-up reopened with new numbers (after a decision) replaces the old one in place: it opens at
+// the old one's scroll position, over it, and the old one goes once the new one is showing. Only
+// the lowest of two stacked overlays dims the page, so nothing flickers.
+let carriedScroll = null;
+const openWaiters = [];
+// { y, open }: where the pop-up was scrolled to, and which of its sections (<details>) were open,
+// named by their summary without its numbers ("Every deposit this month (155)" → "Every deposit this month").
+const detailName = (d) => (d.querySelector('summary')?.textContent || '').replace(/[\d,.()]+/g, '').replace(/\s+/g, ' ').trim();
+export function carryScroll(state) { carriedScroll = state; }
+export function topPanelScroll() {
+  const all = document.querySelectorAll('.dialog.panel');
+  const box = all[all.length - 1];
+  return box ? { y: box.scrollTop, open: [...box.querySelectorAll('details')].filter((d) => d.open).map(detailName) } : null;
+}
+export function nextDialog(ms = 3000) {
+  return new Promise((resolve) => { const t = setTimeout(() => resolve(false), ms); openWaiters.push(() => { clearTimeout(t); resolve(true); }); });
+}
+
 function openDialog(build) {
   return new Promise((resolve) => {
     const prev = document.activeElement;
     const close = (value) => {
       overlay.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', onNav);
+      const rest = document.querySelectorAll('.overlay');
+      if (rest.length) rest[rest.length - 1].classList.remove('stacked');
       prev?.focus?.(); resolve(value);
     };
     const onKey = (e) => { if (e.key === 'Escape') close(null); };
@@ -107,10 +127,17 @@ function openDialog(build) {
     const box = h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true' });
     const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(null); } }, box);
     build(box, close);
+    if (document.querySelector('.overlay')) overlay.classList.add('stacked');
     document.body.append(overlay);
     document.addEventListener('keydown', onKey);
     window.addEventListener('hashchange', onNav);
-    (box.querySelector('[autofocus]') || box.querySelector('button.primary') || box.querySelector('button'))?.focus();
+    const kept = carriedScroll; carriedScroll = null;
+    if (kept && box.classList.contains('panel')) {
+      for (const d of box.querySelectorAll('details')) if (kept.open.includes(detailName(d))) d.open = true;
+      box.scrollTop = kept.y;
+    }
+    else (box.querySelector('[autofocus]') || box.querySelector('button.primary') || box.querySelector('button'))?.focus({ preventScroll: true });
+    openWaiters.splice(0).forEach((f) => f());
   });
 }
 
