@@ -45,6 +45,8 @@ export function adjDetail(a) {
   if (a.id === 'auto-glwise-fees') return 'Wise fees on incoming gifts';
   if (a.id?.startsWith('auto-glkey-')) return a.type === 'transfer' ? 'KeyBank deposits from our accounts' : a.amount > 0 ? 'KeyBank cash gifts spent before deposit' : 'KeyBank deposits that aren’t giving';
   if (a.id?.startsWith('auto-glnocash-')) return 'Revenue booked with no cash this month';
+  if (a.id?.startsWith('auto-glfee-')) return 'Fees kept by giving platforms (Overflow)';
+  if (a.id?.startsWith('auto-glrelease-')) return 'Revenue released from a liability';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
 }
 
@@ -56,7 +58,8 @@ export function adjGroup(a) {
   if (id === 'auto-incoming' || id === 'auto-outgoing') return ADJ_GROUPS[1];
   if (id.startsWith('auto-ex-')) return a.type === 'prior-period' ? ADJ_GROUPS[4] : ADJ_GROUPS[2];
   if (id.startsWith('auto-glrev-')) return ADJ_GROUPS[2];
-  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
+  if (id.startsWith('auto-glfee-')) return ADJ_GROUPS[3];
+  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-glrelease-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
   if (id.startsWith('auto-glkey-')) return a.type === 'transfer' ? ADJ_GROUPS[0] : a.amount > 0 ? ADJ_GROUPS[3] : ADJ_GROUPS[2];
   if (id === 'auto-stripe-disputes' || id.startsWith('auto-glstripe-') || id.startsWith('auto-glpaypal-') || id === 'auto-glwise-fees') return ADJ_GROUPS[3];
   // Entered by hand, or from the workbook: by the type chosen.

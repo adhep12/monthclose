@@ -208,14 +208,18 @@ function matchMonth(month, lines, receiptsBy, used) {
   // arrived (November: 15 + 300 were one batch on 11/7, and another 300 was 150 + 150 on 11/14).
   const left = () => lines.filter((l) => !byLine.has(l));
   const grants = (x) => /paypal grant/i.test(x.r.desc) && x.when === 'this';
-  for (const wide of [false, true]) {
+  // This month's own batches go first, one to one and in groups, before a deposit borrows a batch
+  // from across the month end (April: a 2,000 and a 500 on 4/29 are April's 2,500 batch — the
+  // 2,000 mustn't take May's own 2,000 grant booked 5/1).
+  for (const [wide, own] of [[false, true], [false, false], [true, false]]) {
+    const pool = own ? all.filter((y) => y.when === 'this') : all;
     const pairs = [];
     left().forEach((l, i) => {
-      for (const y of all) if (open(y) && fits(y, l) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, wide ? 7 : 2)) pairs.push({ l, y, i, d: distance(l.date, y.w) });
+      for (const y of pool) if (open(y) && fits(y, l) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, wide ? 7 : 2)) pairs.push({ l, y, i, d: distance(l.date, y.w) });
     });
     pairs.sort((a, b) => RANK[a.y.when] - RANK[b.y.when] || a.d - b.d || a.i - b.i);
     for (const p of pairs) if (!byLine.has(p.l) && open(p.y)) take(p.y, [p.l]);
-    for (const x of [...all].sort((a, b) => RANK[a.when] - RANK[b.when] || b.r.amount - a.r.amount)) {
+    for (const x of [...pool].sort((a, b) => RANK[a.when] - RANK[b.when] || b.r.amount - a.r.amount)) {
       if (!open(x) || x.r.ap || (wide && !grants(x))) continue;
       const cand = left().filter((l) => fits(x, l) && near(x, l.date, wide ? 7 : x.w.named ? 1 : 2));
       for (const set of [cand.filter((l) => l.kind === 'operating'), cand.filter((l) => l.kind === 'incoming'), cand.filter((l) => l.kind === 'outgoing'), cand]) {
@@ -487,6 +491,36 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const by = coveredBy(amount);
       if (by) res.covered.push({ adjustment: adj, by });
       else if (!dismissed[id]) res.adjustments.push(adj);
+    }
+    // A Cass deposit the GL booked as more revenue than the cash that came in. The rest of the
+    // entry is a debit that isn't cash: a fee the giving platform kept (Overflow — Dr 8070; the
+    // GL grosses up the gift and books the fee as an expense), or revenue released from a
+    // liability (Dr 2052: a gift held back earlier, recognized now). Either way that part of the
+    // revenue never reached the bank. (KeyBank and Wise have their own, above.)
+    for (const r of receipts || []) {
+      if (r.amount <= 0 || r.ap) continue;
+      const debits = Object.entries(r.accounts).filter(([a, v]) => v < 0 && !config.revenueAccounts.includes(a));
+      if (!debits.length || revenueIn(r.accounts) < 0.005) continue;
+      for (const [acct, v] of debits) {
+        const amount = round2(-v);
+        const fee = /^8/.test(acct);
+        const id = `auto-gl${fee ? 'fee' : 'release'}-${r.batch}-${acct}`;
+        if (dismissed[id]) continue;
+        // The earlier entry that put it in the liability, when there is one (January: a 3,018.70
+        // Overflow gift moved to 2052, recognized in June).
+        const earlier = fee ? null : Object.keys(glBy).filter((mm) => mm < m).sort().reverse()
+          .flatMap((mm) => (glBy[mm]?.noCashRevenue || []).map((x) => ({ ...x, month: mm })))
+          .find((x) => Math.abs((x.accounts[acct] || 0) - amount) < 0.005);
+        const adj = { id, account: 'cassOp', type: fee ? 'other' : 'timing', auto: true, gl: r.batch, amount, evidence: 'glWhat',
+          label: fee ? `Fees kept by the giving platform: ${r.desc}` : `Revenue released from ${accountName(acct, names)}: ${r.desc}`,
+          note: `GL ${r.batch} (${r.date}): deposit ${money2(r.amount)}, revenue ${money2(revenueIn(r.accounts))}, ${accountName(acct, names)} Dr ${money2(amount)}${earlier ? ` — held back by GL ${earlier.batch} (${earlier.date}, ${monthLabel(earlier.month)})` : ''}`,
+          why: fee ? 'The platform (Overflow and the like) sends the gift less its fee. The GL books the whole gift as revenue and the fee as an expense (8070), so revenue is more than the deposit by the fee.'
+            : 'Part of this entry’s revenue comes from a liability, not from the deposit — a gift held back earlier and recognized now. That part never reached the bank this month.',
+          detail: [{ date: r.date, amount, desc: r.desc }] };
+        const by = coveredBy(amount);
+        if (by) res.covered.push({ adjustment: adj, by });
+        else res.adjustments.push(adj);
+      }
     }
     res.dit = ditFor(m, rec);
     return res;

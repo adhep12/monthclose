@@ -342,3 +342,34 @@ test('Stripe money that isn’t a payout, moved to giving the next month, is tim
   assert.equal(feb.type, 'timing');
   assert.match(feb.note, /Received 2026-01-06/);
 });
+
+test('this month’s grant batch takes its own deposits before next month’s same-amount grant', () => {
+  // April: 2,000 + 500 on 4/29 are GL018119 (2,500, two grants); May's own 2,000 grant (GL018123,
+  // 5/1) is the 5/1 deposit.
+  const pp = (id, date, amount) => cr(id, date, amount, `PAYPAL INC./PAYMENT 0000${id}`);
+  const recs = {
+    '2026-04': { month: '2026-04', statements: { operating: { transactions: [pp('a1', '2026-04-29', 2000), pp('a2', '2026-04-29', 500)] } } },
+    '2026-05': { month: '2026-05', statements: { operating: { transactions: [pp('m1', '2026-05-01', 2000)] } } },
+  };
+  const g = {
+    '2026-04': { receipts: [gl('GL018119', '2026-04-29', 2500, { 4018: 2500 }, 'DAF Gifts - PayPal Grants (2)')] },
+    '2026-05': { receipts: [gl('GL018123', '2026-05-01', 2000, { 4018: 2000 }, 'DAF Gifts - PayPal Grant')] },
+  };
+  const d = depositChecks({ recs, glBy: g });
+  const batch = (m, id) => d[m].lines.find((x) => x.line.id === id).match?.batch;
+  assert.deepEqual([batch('2026-04', 'a1'), batch('2026-04', 'a2'), batch('2026-05', 'm1')], ['GL018119', 'GL018119', 'GL018123']);
+});
+
+test('revenue above the cash deposited: platform fees and revenue released from a liability', () => {
+  const rec = { month: '2026-06', statements: { operating: { transactions: [cr('1', '2026-06-10', 43314.70, 'ORIG:OVERFLOW')] } } };
+  const g = {
+    '2026-01': { receipts: [], noCashRevenue: [{ batch: 'GL017932', date: '2026-01-01', desc: 'Reverse Overflow gift', accounts: { 2052: 3018.70, 4018: -3018.70 } }] },
+    '2026-06': { receipts: [gl('GL018378', '2026-06-10', 43314.70, { 4018: 46760, 2052: -3018.70, 8070: -426.60 }, 'DAF Gifts - Overflow')] },
+  };
+  const d = depositChecks({ recs: { '2026-06': rec }, glBy: g })['2026-06'];
+  const by = Object.fromEntries(d.adjustments.map((a) => [a.id, a]));
+  assert.equal(by['auto-glfee-GL018378-8070'].amount, 426.6);
+  assert.equal(by['auto-glrelease-GL018378-2052'].amount, 3018.7);
+  assert.equal(by['auto-glrelease-GL018378-2052'].type, 'timing');
+  assert.match(by['auto-glrelease-GL018378-2052'].note, /held back by GL GL017932/);
+});
