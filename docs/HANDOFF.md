@@ -21,8 +21,14 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - Drop a statement on an account's cell to attach it; the number updates in place.
   - Click a cell for detail, typed figures, confirmation, and detach.
   - On ICS, CDARS, Delap and Tschetter cells, "−" undoes an attachment or typed entry.
-  - Buttons: **Export Excel** (4 tabs: the sheet, adjustment detail, sources, checks) and
-    **Print / PDF**.
+  - Buttons: **Export Excel** and **Print / PDF**. The export is built for an auditor
+    (`app/js/poc/audit-trail.js`): the sheet; *How to audit this* (tabs, refs, evidence levels,
+    steps); *Adjustments summary* (each sheet row by kind of line, with its ref range and a tie to
+    the sheet); *Adjustments detail* (one row per item that moves, deposits in transit included:
+    ref `A-YYYY-MM-NNN`, who, the statement document / section / date / description, the GL batch,
+    line, payer and entry, why, how to verify, confirmation status); *GL lines* (every line of
+    the batches named); sources; checks. The first tab stays the sheet —
+    `scripts/compare-to-workbook.mjs` reads it.
 - **Month pop-up** (click the month name) — replaced the month page:
   - deposits to review (revenue / transfer / not revenue)
   - automatic and manual adjustments
