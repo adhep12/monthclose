@@ -37,6 +37,7 @@ export function parseGlRegister(XLSX, wb) {
     // Each line keeps Acumatica's identifier ("GL GL017661 2": module, batch, line), unique across
     // the ledger, and who it names — the payer on a gift line ("Fidelity", customer FIDEC001).
     batch.lines.push({ id: ident, a: acct, cv: text(at(r, 0)), d: text(at(r, 5)), ref: text(at(r, 4)), amt: round2(net) });
+    if (GIVING.includes(acct)) (p.givingLines ||= []).push({ batch, id: ident, a: acct, cv: text(at(r, 0)), d: text(at(r, 5)), amt: round2(-net) });
     // PayPal gifts given back ("Payment Refund", a debit to 4012) inside the month's PayPal batch.
     // (A whole batch reversed out of the wrong period also debits 4012, but it isn't money given back.)
     if (acct === '4012' && net > 0 && /refund/i.test(text(at(r, 5)))) batch.refunds += net;
@@ -54,6 +55,8 @@ export function parseGlRegister(XLSX, wb) {
     p.stripeReclass = stripeReclasses(p.batches);
     p.investmentFees = investmentFees(p.batches);
     p.investmentGl = investmentGl(p.batches);
+    p.giving = givingByChannel(p.givingLines || []);
+    delete p.givingLines;
     // Every batch in the month, by Acumatica's batch number, so the next upload can say what was
     // added, changed or removed since.
     p.index = Object.fromEntries(p.batches.map((b) => [b.batch, { fp: fingerprint(b.lines), total: round2(b.lines.reduce((t, l) => t + Math.max(l.amt, 0), 0)), desc: b.desc.slice(0, 80), date: b.date, status: b.status }]));
@@ -96,6 +99,37 @@ function cashReceipts(batches, cashGl = CASS_GL) {
       module: b.module, status: b.status, by: b.by, mod: b.mod, lines: b.lines, fp: fingerprint(b.lines) });
   }
   return out;
+}
+
+// Giving (gifts, not merchandise, royalties or card rewards) by the channel Salesforce records it
+// under, for reconciling the GL to Salesforce: Stripe (4015), PayPal (4012, and PayPal Giving Fund
+// grants — "PayPal Grant" lines in 4018), Patreon, Cash (KeyBank), Check (4010 deposits) and Wire
+// (4018: DAF gifts, wires). Restricted gifts (4017) are counted in the channel they came in by and
+// listed. Each channel keeps its large lines so a difference can be traced to gifts.
+export const GIVING = ['4010', '4012', '4015', '4017', '4018'];
+export function givingChannel(l) {
+  const b = l.batch;
+  if (b.accounts[KEYBANK_GL] || b.lines.some((x) => x.a === KEYBANK_GL)) return 'Cash';
+  if (l.a === '4015') return 'Stripe';
+  if (l.a === '4012' || /paypal/i.test(l.d) || /^PAYP/i.test(l.cv)) return 'PayPal';
+  // (Check deposits are to customer PATROC001 — patrons, not Patreon.)
+  if (/patreon/i.test(l.d)) return 'Patreon';
+  if (l.a === '4010' || (l.a === '4017' && (bankDated(b.desc) || /\bdeposits?\b/i.test(b.desc)))) return 'Check';
+  return 'Wire';
+}
+const bankDated = (d) => /\d{1,2}\.\d{1,2}\.\d{4}/.test(String(d || ''));
+function givingByChannel(lines) {
+  const channels = {}, big = {}, restricted = [], stripe = {};
+  for (const l of lines) {
+    const ch = givingChannel(l);
+    channels[ch] = round2((channels[ch] || 0) + l.amt);
+    const line = { batch: l.batch.batch, date: l.batch.date, desc: l.batch.desc.slice(0, 50), line: l.id, payer: String(l.d).slice(0, 40), acct: l.a, amount: l.amt };
+    if (l.a === '4017') restricted.push({ ...line, channel: ch });
+    if (ch === 'Stripe') { const k = String(l.d).replace(/^\d+\s+/, '') || l.batch.desc; stripe[k] = round2((stripe[k] || 0) + l.amt); }
+    else if (Math.abs(l.amt) >= 1000) (big[ch] ||= []).push(line);
+  }
+  for (const ch of Object.keys(big)) big[ch] = big[ch].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 40);
+  return { channels, total: round2(Object.values(channels).reduce((a, b) => a + b, 0)), restricted, stripe, big };
 }
 
 // What a batch is, line for line: changes if any line's account or amount changes, or a line is
