@@ -17,7 +17,7 @@ import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
-import { parseSalesforceSummary, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
+import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
@@ -1394,9 +1394,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     return h('div', { class: 'sheet-block', style: { marginTop: '1.5rem' } },
       h('div', { class: 'row' }, h('h2', {}, 'Salesforce vs GL — giving'), h('span', { class: 'spacer' }),
         any ? h('button', { class: 'btn', onclick: exportSalesforce, title: 'Download Salesforce vs GL — the months, each channel, every reason with its source, restricted gifts and the largest GL lines — as an Excel workbook' }, 'Export Excel') : null,
-        fileButton('Upload Salesforce report…', '.xlsx,.xls', async (file) => { if (await uploadSalesforce(file)) rerender(); })),
+        fileButton('Upload Salesforce reports…', '.xlsx,.xls', async (files) => { if (await uploadSalesforce(files)) rerender(); }, { multiple: true })),
       h('p', { class: 'muted small' }, 'Salesforce’s gifts by close date and payment method against the GL’s giving in the same channels. Some difference is expected — refunds, month-end timing, grants the GL recognizes when pledged, gifts held back — and each reason the app can put a number on is counted as explained. Click a month for the detail.'),
-      !any ? h('p', { class: 'muted' }, 'Upload the Salesforce opportunity summary (by close date and payment method) to start.')
+      !any ? h('p', { class: 'muted' }, 'Upload Salesforce opportunity reports to start: the gift-level report (Amount, Close Date, Payment Method) or the summary by close date and payment method. Several at once is fine — each replaces only the months its date filter covers.')
         : h('div', { class: 'table-wrap sheet' }, h('table', {},
           h('thead', {}, h('tr', {}, h('th', { class: 'label-col' }, ''), h('th', { class: 'num ytd' }, 'YTD', h('div', { class: 'muted small' }, `${both.length} mo.`)),
             ms.map((m) => h('th', { class: 'num month' }, h('a', { href: '#/poc', onclick: (e) => { e.preventDefault(); openSfMonth(m); } }, short(m)))))),
@@ -1453,18 +1453,52 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       ]);
     } catch (err) { toast(explain(err, 'Couldn’t build the Excel file.'), 'error'); }
   }
-  async function uploadSalesforce(file) {
+  // Salesforce reports, one or several at once (a year of gifts is more than one export). Each
+  // replaces exactly the months its date filter covers — a month in the range with no gifts is
+  // saved as none — and leaves every other month as it was. Where two of the files cover the same
+  // month, the one run most recently wins.
+  async function uploadSalesforce(files) {
+    const read = [];
+    for (const [i, file] of files.entries()) {
+      toast(`Reading ${file.name}${files.length > 1 ? ` (${i + 1} of ${files.length})` : ''}… a large report can take a minute.`);
+      await new Promise((r) => setTimeout(r, 50)); // let the message show before the page is busy
+      try {
+        const { XLSX, wb } = await readWorkbook(file);
+        read.push({ file, res: parseSalesforceReport(XLSX, wb) });
+      } catch (err) { await notify(`Couldn’t read ${file.name}`, [explain(err, '')]); }
+    }
+    if (!read.length) return false;
+    const winner = {};
+    for (const x of read) for (const mo of x.res.months) {
+      const w = winner[mo.month];
+      if (!w || String(x.res.asOf || '') >= String(w.res.asOf || '')) winner[mo.month] = x;
+    }
+    const lines = read.map(({ file, res }) => {
+      const mine = res.months.filter((mo) => winner[mo.month] === read.find((y) => y.file === file));
+      const lost = res.months.filter((mo) => !mine.includes(mo));
+      const cover = res.covered ? `covers ${res.covered.from} to ${res.covered.to}` : 'has no date range in its filter, so only the months with gifts in it are replaced';
+      return [
+        `${file.name}${res.asOf ? ` (run ${res.asOf})` : ''}, ${res.kind === 'gifts' ? 'gift by gift' : 'summary'}: ${cover}.`,
+        `  ${mine.map((mo) => `${short(mo.month)} ${money(mo.total, { dash: false })}${sfBy[mo.month] ? ' (replaces the earlier upload)' : ''}`).join(' · ') || 'no months'}`,
+        ...(lost.length ? [`  Not used for ${lost.map((mo) => short(mo.month)).join(', ')}: another of these files was run more recently.`] : []),
+        ...(res.covered?.partial?.length ? [`  Only part of ${res.covered.partial.map(short).join(', ')} is in the date range, so that month will be short.`] : []),
+        ...(res.excludes.refunds || res.excludes.disputes ? [`  Leaves out ${[res.excludes.refunds && 'refunded', res.excludes.disputes && 'disputed'].filter(Boolean).join(' and ')} Stripe gifts, so the GL’s Stripe ${[res.excludes.refunds && 'refunds', res.excludes.disputes && 'disputes'].filter(Boolean).join(' and ')} won’t be counted as explaining a difference.`] : []),
+      ];
+    });
+    const n = Object.keys(winner).length;
+    const line_ = (l) => h('span', { style: { display: 'block', marginLeft: l.startsWith('  ') ? '1rem' : 0, marginTop: l.startsWith('  ') ? 0 : '.5rem' } }, l.trim());
+    const text_ = [...lines.flat().map(line_), line_('Every other month stays as it is.')];
+    if (!(await ask('Load Salesforce reports', text_, { ok: `Load ${n} month${n === 1 ? '' : 's'}` }))) return false;
     try {
-      const { XLSX, wb } = await readWorkbook(file);
-      const res = parseSalesforceSummary(XLSX, wb);
-      if (!(await ask('Load Salesforce report', `${res.title || file.name}${res.asOf ? ` (as of ${res.asOf})` : ''}: ${res.months.map((x) => `${short(x.month)} ${money(x.total, { dash: false })}`).join(', ')}. ${res.filters.join(' · ')}. Each month replaces any earlier Salesforce upload for it.`, { ok: `Load ${res.months.length} months` }))) return false;
-      for (const x of res.months) {
-        const rec = { ...x, fileName: file.name, asOf: res.asOf, filters: res.filters, uploadedBy: user, uploadedAt: nowIso() };
-        await saveSfGiving(rec); sfBy[x.month] = rec; recentSf[x.month] = rec;
+      for (const [m, { file, res }] of Object.entries(winner).sort()) {
+        const mo = res.months.find((x) => x.month === m);
+        const rec = { ...mo, kind: res.kind, excludes: res.excludes, fileName: file.name, asOf: res.asOf, filters: res.filters, uploadedBy: user, uploadedAt: nowIso(),
+          ...(res.covered?.partial?.includes(m) ? { partial: true } : {}) };
+        await saveSfGiving(rec); sfBy[m] = rec; recentSf[m] = rec;
       }
-      toast(`Salesforce loaded for ${res.months.length} months.`);
-      return true;
-    } catch (err) { notify('Couldn’t load the Salesforce report', [explain(err, '')]); return false; }
+      toast(`Salesforce loaded for ${n} month${n === 1 ? '' : 's'}: ${Object.keys(winner).sort().map(short).join(', ')}.`);
+    } catch (err) { notify('Couldn’t save the Salesforce figures', [explain(err, 'Some months may not have saved — upload again.')]); }
+    return true;
   }
   async function openSfMonth(m) {
     const r = sfYear[m];
@@ -1477,6 +1511,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         h('div', { class: 'review-bar' },
           statusPill(Math.abs(r.unexplained) < 1000 ? 'Explained' : `${money(r.unexplained, { dash: false })} not explained`, Math.abs(r.unexplained) < 1000 ? 'good' : 'warn'),
           h('span', { class: 'muted small' }, `Salesforce ${money(r.sfTotal, { dash: false })} · GL ${money(r.glTotal, { dash: false })} · difference ${money(r.diff, { dash: false })} (${pct(r.pct)}) · ${pct(r.explainedShare)} of it explained`)),
+        h('p', { class: 'muted small' }, `Salesforce from ${sfm.fileName || 'an upload'}${sfm.asOf ? ` (run ${sfm.asOf})` : ''}, ${sfm.kind === 'gifts' ? 'gift by gift' : 'the summary report'}, uploaded by ${sfm.uploadedBy || 'someone'}${sfm.uploadedAt ? ` · ${when(sfm.uploadedAt)}` : ''}.${sfm.excludes?.refunds || sfm.excludes?.disputes ? ' The report leaves out refunded and disputed Stripe gifts, so the GL’s Stripe refunds and disputes aren’t counted as explaining the difference.' : ''}${sfm.partial ? ' The report’s date range covers only part of this month.' : ''}`),
         h('h3', {}, 'By channel'),
         table([
           { label: 'Channel', cell: (x) => x.channel },
@@ -1502,7 +1537,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             { label: 'Amount', num: true, cell: (x) => money(x.amount) },
           ], r.restricted)) : null,
         leftCh.length ? h('div', {}, h('h3', {}, 'Where to look'),
-          h('p', { class: 'muted small' }, 'The largest GL gifts in each channel with a difference left. With a gift-level Salesforce report these would be matched one by one; until then, check these against Salesforce first.'),
+          h('p', { class: 'muted small' }, 'The largest GL gifts in each channel with a difference left. Check these against Salesforce first.'),
           leftCh.map((ch) => h('details', { class: 'adj-section' }, h('summary', {}, `${ch}: ${money(r.rows.find((x) => x.channel === ch).unexplained, { dash: false })} not explained`),
             table([
               { label: 'Date', cell: (x) => x.date },
