@@ -5,7 +5,7 @@
 // liability). So the two are expected to differ; the point is to say by how much each reason
 // accounts for, channel by channel, and what's left unexplained.
 
-import { cellAt, text } from '../xlsx-io.js';
+import { cellAt, text, isoDate } from '../xlsx-io.js';
 import { round2, sum } from '../money.js';
 
 export const CHANNELS = ['Stripe', 'PayPal', 'Check', 'Wire', 'Patreon', 'Cash'];
@@ -56,6 +56,100 @@ export function parseSalesforceSummary(XLSX, wb) {
   return { title: top[0] || '', asOf, filters, months: Object.values(months).sort((x, y) => x.month.localeCompare(y.month)) };
 }
 
+// ---- Which months a report covers ------------------------------------------------------------
+// From its date filter ("Date Field: Close Date equals Custom (10/1/2025 to 12/31/2025)"): every
+// month the range touches, up to the month the report was run (a "Current FY" report doesn't cover
+// the months still to come). A month the range only partly covers is listed in `partial`. Null when
+// the filter has no dates ("Last Quarter"): then only the months with gifts in them are known.
+const mdY = (s) => { const [m, d, y] = s.split('/').map(Number); return { y: y < 100 ? 2000 + y : y, m, d }; };
+const ym = (x) => `${x.y}-${String(x.m).padStart(2, '0')}`;
+const lastDay = (x) => new Date(Date.UTC(x.y, x.m, 0)).getUTCDate();
+export function coveredMonths(filters = [], asOf = null) {
+  const f = filters.find((t) => /Close Date/i.test(t) && /\d{1,2}\/\d{1,2}\/\d{2,4}\s+to\s+\d{1,2}\/\d{1,2}\/\d{2,4}/.test(t));
+  if (!f) return null;
+  const [, a, b] = f.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+to\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+  const from = mdY(a), to = mdY(b);
+  const stop = asOf && asOf.slice(0, 7) < ym(to) ? asOf.slice(0, 7) : ym(to);
+  const months = [], partial = [];
+  for (let y = from.y, m = from.m; `${y}-${String(m).padStart(2, '0')}` <= stop; m === 12 ? (y++, m = 1) : m++) months.push(`${y}-${String(m).padStart(2, '0')}`);
+  if (from.d > 1) partial.push(ym(from));
+  if (to.d < lastDay(to) && ym(to) <= stop && !partial.includes(ym(to))) partial.push(ym(to));
+  return { months, partial, from: a, to: b };
+}
+
+// What a report leaves out that the GL still has in it: "Stripe Transaction Status not equal to
+// Disputed,Refunded,…" means refunded and disputed Stripe gifts aren't in Salesforce's figures, so
+// the GL's Stripe refunds and disputes don't explain a difference.
+export function reportExcludes(filters = []) {
+  const f = filters.find((t) => /Stripe Transaction Status not equal to/i.test(t)) || '';
+  return { refunds: /\brefunded\b/i.test(f), disputes: /\bdisputed\b/i.test(f) };
+}
+
+// A report's title, "As of" date and filter lines: the text above its header row.
+function reportHead(XLSX, ws, head, col) {
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const top = [];
+  for (let r = range.s.r; r < head; r++) for (let c = range.s.c; c <= Math.min(range.e.c, col + 3); c++) { const t = text(cellAt(XLSX, ws, r, c)); if (t) { top.push(t); break; } }
+  const asOf = (top.join(' ').match(/As of (\d{4}-\d{2}-\d{2})/) || [])[1] || null;
+  const filters = top.slice(1).filter((t) => !/^As of |^Filtered By$/i.test(t));
+  return { title: top[0] || '', asOf, filters };
+}
+
+// The gift-level opportunity report (one row per gift: Amount, Close Date, Payment Method, and
+// Donor-Advised, primary contact, card transaction id when it has them), totalled the way the
+// summary report is: by month and payment method. Check and wire gifts are kept, compact
+// ([date, amount, donor-advised fund, contact id]), for matching gifts to the GL later.
+export function parseSalesforceGifts(XLSX, wb) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  let head = -1; const col = {};
+  for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 60) && head < 0; r++) {
+    const names = {};
+    for (let c = range.s.c; c <= range.e.c; c++) { const t = text(cellAt(XLSX, ws, r, c)).replace(/\s*[↑↓]\s*$/, ''); if (t) names[t.toLowerCase()] = c; }
+    if ('amount' in names && 'close date' in names && 'payment method' in names) {
+      head = r;
+      col.amount = names.amount; col.date = names['close date']; col.method = names['payment method'];
+      col.daf = names['donor-advised']; col.contact = names['18 char id primary contact'];
+    }
+  }
+  if (head < 0) throw new Error('This doesn’t look like a Salesforce opportunity report (no “Amount”, “Close Date” and “Payment Method” columns).');
+  const months = {};
+  for (let r = head + 1; r <= range.e.r; r++) {
+    const date = isoDate(cellAt(XLSX, ws, r, col.date));
+    const cell = cellAt(XLSX, ws, r, col.amount);
+    const v = typeof cell?.v === 'number' ? cell.v : amt(cell?.v);
+    if (!date || v == null) continue; // the report's total and footer lines
+    const method = text(cellAt(XLSX, ws, r, col.method)) || '(none)';
+    const m = (months[date.slice(0, 7)] ||= { month: date.slice(0, 7), methods: {}, total: 0, count: 0, gifts: [] });
+    const x = (m.methods[method] ||= { amount: 0, count: 0 });
+    x.amount += v; x.count++; m.total += v; m.count++;
+    if (/^(check|wire)$/i.test(method)) m.gifts.push([date, round2(v), col.daf != null ? text(cellAt(XLSX, ws, r, col.daf)) : '', col.contact != null ? text(cellAt(XLSX, ws, r, col.contact)) : '', method[0].toUpperCase()]);
+  }
+  for (const m of Object.values(months)) {
+    m.total = round2(m.total);
+    for (const x of Object.values(m.methods)) x.amount = round2(x.amount);
+  }
+  if (!Object.keys(months).length) throw new Error('No gifts found in that report.');
+  return { kind: 'gifts', ...reportHead(XLSX, ws, head, col.amount), months: Object.values(months).sort((x, y) => x.month.localeCompare(y.month)) };
+}
+
+// Either Salesforce report — the summary by month and payment method, or the gift-level one — with
+// the months it covers (so an upload replaces exactly those) and what it leaves out.
+export function parseSalesforceReport(XLSX, wb) {
+  let res;
+  try { res = { kind: 'summary', ...parseSalesforceSummary(XLSX, wb) }; } catch (err) {
+    if (!/no “Close Date \/ Payment Method” header/.test(err.message)) throw err;
+    res = parseSalesforceGifts(XLSX, wb);
+  }
+  const cover = coveredMonths(res.filters, res.asOf);
+  const found = res.months.map((x) => x.month);
+  const months = cover ? [...new Set([...cover.months, ...found])].sort() : found;
+  const byMonth = Object.fromEntries(res.months.map((x) => [x.month, x]));
+  // A month the report covers with no gifts in it had none: it's saved as zero, replacing any earlier upload.
+  res.months = months.map((m) => byMonth[m] || { month: m, methods: {}, total: 0, count: 0, ...(res.kind === 'gifts' ? { gifts: [] } : {}) });
+  return { ...res, covered: cover, excludes: reportExcludes(res.filters) };
+}
+
 // Salesforce's payment methods, in the GL's channels (anything else is counted as its own).
 export const channelOf = (method) => ({ stripe: 'Stripe', paypal: 'PayPal', check: 'Check', wire: 'Wire', patreon: 'Patreon', cash: 'Cash' }[String(method).toLowerCase()] || 'Other');
 
@@ -82,8 +176,9 @@ export function reconcileMonth({ sf, giving, found = {} }) {
   const st = giving?.stripe || {};
   const refunds = -sum(Object.entries(st).filter(([k]) => /refund/i.test(k)), ([, v]) => v);
   const disputes = -sum(Object.entries(st).filter(([k]) => /dispute/i.test(k)), ([, v]) => v);
-  add('Stripe', refunds, 'Stripe refunds', 'Salesforce keeps a refunded gift at its full amount; the GL takes the refund off Stripe revenue.', 'GL “Monthly Stripe Giving”: Refunds CC / Wire Refunds Gross Amount');
-  add('Stripe', disputes, 'Stripe disputes', 'Salesforce keeps a disputed gift; the GL takes the dispute off revenue.', 'GL “Monthly Stripe Giving”: Dispute Gross Amount');
+  // (Unless the report already leaves refunded and disputed gifts out: then Salesforce agrees with the GL there.)
+  if (!sf?.excludes?.refunds) add('Stripe', refunds, 'Stripe refunds', 'Salesforce keeps a refunded gift at its full amount; the GL takes the refund off Stripe revenue.', 'GL “Monthly Stripe Giving”: Refunds CC / Wire Refunds Gross Amount');
+  if (!sf?.excludes?.disputes) add('Stripe', disputes, 'Stripe disputes', 'Salesforce keeps a disputed gift; the GL takes the dispute off revenue.', 'GL “Monthly Stripe Giving”: Dispute Gross Amount');
   // Money received now for revenue the GL recognized earlier (a pledge or grant receivable).
   for (const x of found.priorPeriod || []) add(x.channel, x.amount, `Received now, recognized by the GL earlier: ${x.desc}`, 'The GL recognized this when it was pledged or granted (a grant / pledge receivable, 1220); Salesforce records it when it’s paid.', x.source);
   // GL revenue with no cash this month.
