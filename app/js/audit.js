@@ -19,10 +19,26 @@ export function confirmValues(obj, user, values) {
   return obj;
 }
 
+// Compared by value, not by how the record came back: storage can hand back the confirmed figures
+// with their fields in another order ({ int, rev, ending }), without the empty ones, or with a
+// number carried a hair differently — none of which is a change to the figures.
+function canonical(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
+  if (Array.isArray(v)) return v.map(canonical);
+  if (typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v).sort()) { const x = canonical(v[k]); if (x != null && x !== '') out[k] = x; }
+    return out;
+  }
+  return v;
+}
+export const sameValues = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+
 export function confirmationState(obj, values) {
   const c = obj?.confirmation;
   if (!c) return 'none';
-  return JSON.stringify(c.values ?? null) === JSON.stringify(values ?? null) ? 'confirmed' : 'stale';
+  return sameValues(c.values, values) ? 'confirmed' : 'stale';
 }
 
 export function logChange(rec, user, what) {
