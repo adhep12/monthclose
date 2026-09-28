@@ -17,7 +17,7 @@ import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
-import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS, SF_ADJ_TYPES } from '../sf/salesforce.js';
+import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS, SF_ADJ_TYPES, DEFAULT_SF_TOLERANCE, withinTolerance, ytdTolerance } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
@@ -1365,6 +1365,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     return Object.fromEntries(res.map((r, i) => [ms[i], r]));
   })();
   const pct = (v) => (v == null ? '' : `${(v * 100).toFixed(1)}%`);
+  const pct2 = (v) => (v == null ? '' : `${(v * 100).toFixed(2)}%`);
+  // The limits for what's left unexplained (settings: Tolerance…).
+  const sfTol = { ...DEFAULT_SF_TOLERANCE, ...(cfg.sfTolerance || {}) };
+  const tolText = `limits: ${pct2(sfTol.monthPct)} of GL giving a month, ${pct2(sfTol.ytdPct)} year to date; any giving type over ${money(sfTol.item, { dash: false })} unexplained is listed to look at`;
+  const tolPill = (t, ytd = false) => (t.share == null ? '' : statusPill(t.ok ? 'Within tolerance' : 'Investigate', t.ok ? 'good' : 'warn'));
   // The section's rows, shared with the Excel export.
   const sfRowsDef = () => [
     { label: 'Salesforce (by close date)', f: (r) => r.sfTotal, strong: true },
@@ -1374,6 +1379,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     { label: 'Explained', f: (r) => r.explained, cls: 'good-text' },
     { label: 'Not explained', f: (r) => r.unexplained, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
     { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true },
+    { label: 'Not explained, % of GL', f: (r) => withinTolerance(r, sfTol).share, fmt: pct2, noYtd: true, share: true, ytdOf: (t) => t.share },
+    { label: 'Tolerance', strong: true, status: (r) => withinTolerance(r, sfTol), f: () => null, noYtd: true },
     { section: 'Not explained, by channel' },
     ...SF_CHANNELS.map((ch) => ({ label: ch, indent: true, f: (r) => r.rows.find((x) => x.channel === ch)?.unexplained ?? null, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') })),
     // DAF grants paid by check are "Check" in Salesforce and 4018 ("Wire") in the GL, so the two
@@ -1396,19 +1403,23 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'The GL isn’t complete for this month yet (no Cass deposits in the proof of cash) — not in YTD', onclick: () => openSfMonth(m) }, v);
     const ytd = (f) => { const v = both.map((m) => f(sfYear[m])).filter((x) => x != null); return v.length ? round2(sum(v, (x) => x)) : null; };
     const rowsDef = sfRowsDef();
+    const ytdT = ytdTolerance(both.map((m) => sfYear[m]), sfTol);
     return h('div', { class: 'sheet-block', style: { marginTop: '1.5rem' } },
       h('div', { class: 'row' }, h('h2', {}, 'Salesforce vs GL — giving'), h('span', { class: 'spacer' }),
         any ? h('button', { class: 'btn', onclick: exportSalesforce, title: 'Download Salesforce vs GL — the months, each channel, every reason with its source, restricted gifts and the largest GL lines — as an Excel workbook' }, 'Export Excel') : null,
+        h('button', { class: 'btn', onclick: openSfTolerance, title: 'How much unexplained difference is acceptable' }, 'Tolerance…'),
         fileButton('Upload Salesforce reports…', '.xlsx,.xls', async (files) => { if (await uploadSalesforce(files)) rerender(); }, { multiple: true })),
       h('p', { class: 'muted small' }, 'Salesforce’s gifts by close date and payment method against the GL’s giving in the same channels. Some difference is expected — refunds, month-end timing, grants the GL recognizes when pledged, gifts held back — and each reason the app can put a number on is counted as explained. Click a month for the detail.'),
+      any ? h('p', { class: 'muted small' }, `Tolerance ${tolText}.`) : null,
       !any ? h('p', { class: 'muted' }, 'Upload Salesforce opportunity reports to start: the gift-level report (Amount, Close Date, Payment Method) or the summary by close date and payment method. Several at once is fine — each replaces only the months its date filter covers.')
         : h('div', { class: 'table-wrap sheet' }, h('table', {},
           h('thead', {}, h('tr', {}, h('th', { class: 'label-col' }, ''), h('th', { class: 'num ytd' }, 'YTD', h('div', { class: 'muted small' }, `${both.length} mo.`)),
             ms.map((m) => h('th', { class: 'num month' }, h('a', { href: '#/poc', onclick: (e) => { e.preventDefault(); openSfMonth(m); } }, short(m)))))),
           h('tbody', {}, rowsDef.map((d) => (d.section ? h('tr', { class: 'section' }, h('td', { class: 'label-col', colspan: ms.length + 2 }, d.section))
             : h('tr', { class: d.strong ? 'strong' : '' }, h('td', { class: `label-col${d.indent ? ' indent' : ''}` }, d.label),
-              h('td', { class: 'num ytd' }, d.noYtd ? '' : money(ytd(d.f))),
+              h('td', { class: 'num ytd' }, d.status ? tolPill(ytdT) : d.ytdOf ? pct2(d.ytdOf(ytdT)) : d.noYtd ? '' : money(ytd(d.f))),
               ms.map((m) => { const r = sfYear[m]; if (!r || !sfBy[m]) return h('td', { class: 'num muted' }, sfBy[m] ? '' : '');
+                if (d.status) { const t = d.status(r); return cell(m, h('span', { title: t.big.length ? `Over ${money(sfTol.item, { dash: false })} unexplained: ${t.big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(', ')}` : '' }, tolPill(t), t.big.length ? h('div', { class: 'small muted' }, `${t.big.length} to look at`) : null)); }
                 const v = d.f(r); const cls = typeof d.cls === 'function' ? (v == null ? '' : d.cls(v)) : d.cls || '';
                 return cell(m, v == null ? '' : (d.fmt ? d.fmt(v) : money(v)), cls); }))))))),
       needGl ? h('p', { class: 'small warn-text' }, 'Some months’ GL register was uploaded before giving was kept by channel and payer — upload the GL register again to compare them, sponsor by sponsor.') : null);
@@ -1422,8 +1433,16 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const summary = [[`FY${fy} Salesforce vs GL — giving`], [stamp],
       [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months with the GL complete)` : 'no complete months yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
       ['', 'YTD', ...ms.map((m) => monthName(m))]];
+    const ytdT = ytdTolerance(ytdMs.map((m) => sfYear[m]), sfTol);
+    summary.splice(3, 0, [`Tolerance ${tolText}.`]);
     for (const d of sfRowsDef()) {
       if (d.section) { summary.push([d.section.toUpperCase()]); continue; }
+      if (d.status) {
+        const word = (t) => (t.share == null ? '' : t.ok ? 'Within tolerance' : `INVESTIGATE${t.big?.length ? '' : ''}`);
+        summary.push([d.label, word(ytdT), ...ms.map((m) => (sfYear[m] ? `${word(d.status(sfYear[m]))}${d.status(sfYear[m]).big.length ? ` (${d.status(sfYear[m]).big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(', ')} to look at)` : ''}` : ''))]);
+        continue;
+      }
+      if (d.ytdOf) { const z = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: '0.00%' }); summary.push([d.label, z(d.ytdOf(ytdT)), ...ms.map((m) => (sfYear[m] ? z(d.f(sfYear[m])) : null))]); continue; }
       const vals = ms.map((m) => { const v = sfYear[m] ? d.f(sfYear[m]) : null; return d.share ? share(v) : v; });
       const ytd = d.noYtd ? null : round2(sum(ytdMs.map((m) => d.f(sfYear[m]) ?? 0), (x) => x));
       const ytdShare = d.share && ytdMs.length ? (() => { const df = sum(ytdMs, (m) => sfYear[m].diff), gl = sum(ytdMs, (m) => sfYear[m].glTotal), un = sum(ytdMs, (m) => sfYear[m].unexplained);
@@ -1584,6 +1603,29 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       spRows.length ? h('details', { class: 'adj-section' }, h('summary', {}, `Wire gifts by sponsor (${spRows.length} with a difference or a payout)`), table(cols_.map((c, i) => (i ? c : { ...c, label: 'Sponsor' })), spRows))
         : h('p', { class: 'muted small' }, 'Wire gifts by sponsor need the gift-level Salesforce report and the GL register uploaded since payers were kept.'));
   }
+  async function openSfTolerance() {
+    await panel('Salesforce vs GL — tolerance', (body, close) => {
+      const fx = {
+        monthPct: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 6, value: String(round2(sfTol.monthPct * 100)) }),
+        ytdPct: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 6, value: String(round2(sfTol.ytdPct * 100)) }),
+        item: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 10, value: String(sfTol.item) }),
+      };
+      const save = async () => {
+        const v = { monthPct: parseAmount(fx.monthPct.value) / 100, ytdPct: parseAmount(fx.ytdPct.value) / 100, item: parseAmount(fx.item.value) };
+        if (![v.monthPct, v.ytdPct, v.item].every((x) => Number.isFinite(x) && x >= 0)) { toast('Type a number in each.', 'error'); return; }
+        try { cfg.sfTolerance = { ...v, by: user, at: nowIso() }; await savePocConfig(cfg); toast('Tolerance saved'); close(true); rerender(); }
+        catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
+      };
+      mount(body,
+        h('p', { class: 'muted' }, 'Salesforce and the GL won’t tie to zero: they’re kept on different dates and at different detail. What’s held to a limit is the part of the difference nothing explains.'),
+        h('div', { class: 'recon' },
+          rowKV('Each month, unexplained as % of GL giving', h('span', {}, fx.monthPct, ' %')),
+          rowKV('Year to date, unexplained as % of GL giving', h('span', {}, fx.ytdPct, ' %')),
+          rowKV('List any giving type with more unexplained than', h('span', {}, '$ ', fx.item))),
+        h('p', { class: 'muted small' }, `A month over its limit shows “Investigate”. Giving types over the amount are listed in the month to look at, whatever the percentage. Defaults: ${pct2(DEFAULT_SF_TOLERANCE.monthPct)}, ${pct2(DEFAULT_SF_TOLERANCE.ytdPct)}, ${money(DEFAULT_SF_TOLERANCE.item, { dash: false })}.${cfg.sfTolerance?.by ? ` Last set by ${cfg.sfTolerance.by}${cfg.sfTolerance.at ? ` · ${when(cfg.sfTolerance.at)}` : ''}.` : ''}`),
+        h('div', { class: 'row dialog-actions' }, h('button', { class: 'primary', onclick: save }, 'Save')));
+    });
+  }
   async function openSfMonth(m) {
     const r = sfYear[m];
     const sfm = sfBy[m];
@@ -1593,9 +1635,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       const leftCh = r.rows.filter((x) => Math.abs(x.unexplained) >= 1000).map((x) => x.channel);
       mount(body,
         h('div', { class: 'review-bar' },
-          statusPill(Math.abs(r.unexplained) < 1000 ? 'Explained' : `${money(r.unexplained, { dash: false })} not explained`, Math.abs(r.unexplained) < 1000 ? 'good' : 'warn'),
+          (() => { const t = withinTolerance(r, sfTol); return statusPill(`${t.ok ? 'Within tolerance' : 'Investigate'}: ${money(r.unexplained, { dash: false })} not explained, ${pct2(t.share)} of GL (limit ${pct2(sfTol.monthPct)})`, t.ok ? 'good' : 'warn'); })(),
           h('span', { class: 'muted small' }, `Salesforce ${money(r.sfTotal, { dash: false })} · GL ${money(r.glTotal, { dash: false })} · difference ${money(r.diff, { dash: false })} (${pct(r.pct)}) · ${pct(r.explainedShare)} of it explained`)),
         h('p', { class: 'muted small' }, `Salesforce from ${sfm.fileName || 'an upload'}${sfm.asOf ? ` (run ${sfm.asOf})` : ''}, ${sfm.kind === 'gifts' ? 'gift by gift' : 'the summary report'}, uploaded by ${sfm.uploadedBy || 'someone'}${sfm.uploadedAt ? ` · ${when(sfm.uploadedAt)}` : ''}.${sfm.excludes?.refunds || sfm.excludes?.disputes ? ' The report leaves out refunded and disputed Stripe gifts, so the GL’s Stripe refunds and disputes aren’t counted as explaining the difference.' : ''}${sfm.partial ? ' The report’s date range covers only part of this month.' : ''}`),
+        (() => { const big = withinTolerance(r, sfTol).big; return big.length ? h('p', { class: 'small warn-text' }, `To look at (over ${money(sfTol.item, { dash: false })} unexplained): ${big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(' · ')}. Use “Explain a difference yourself” below for anything you’ve found.`) : null; })(),
         h('h3', {}, 'By channel'),
         table([
           { label: 'Channel', cell: (x) => x.channel },

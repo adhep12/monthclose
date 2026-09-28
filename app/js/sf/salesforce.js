@@ -167,6 +167,22 @@ export const SF_ADJ_TYPES = {
   other: 'Other',
 };
 
+// ---- How much unexplained is acceptable ------------------------------------------------------
+// Salesforce and the GL are kept by different people, on different dates, at different detail, so
+// they don't tie to zero. What's held to a limit is the difference nothing explains: each month as a
+// share of GL giving, and year to date (where month-to-month noise mostly cancels). Any giving type
+// with more than `item` unexplained is listed to look at, whatever the share.
+export const DEFAULT_SF_TOLERANCE = { monthPct: 0.01, ytdPct: 0.0025, item: 10000 };
+export function withinTolerance(r, tol = DEFAULT_SF_TOLERANCE) {
+  const share = r?.glTotal ? Math.abs(r.unexplained) / Math.abs(r.glTotal) : null;
+  return { share, ok: share != null && share <= tol.monthPct, big: (r?.rows || []).filter((x) => Math.abs(x.unexplained) >= tol.item) };
+}
+export function ytdTolerance(months, tol = DEFAULT_SF_TOLERANCE) {
+  const un = round2(sum(months, (r) => r.unexplained)), gl = round2(sum(months, (r) => r.glTotal));
+  const share = gl ? Math.abs(un) / Math.abs(gl) : null;
+  return { unexplained: un, glTotal: gl, share, ok: share != null && share <= tol.ytdPct };
+}
+
 // ---- Who a gift came from -------------------------------------------------------------------
 // Salesforce names a wire's donor-advised fund ("National Christian Foundation"); the GL line names
 // who paid ("NCF"). The same sponsor, one name, on both sides. Names not listed stay as they are.

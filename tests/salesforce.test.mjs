@@ -207,3 +207,16 @@ test('running totals: each giving type and sponsor, Salesforce against the GL, f
   assert.deepEqual(feb.sponsors.NCF, { sf: 2500, gl: 2500 });
   assert.deepEqual(res[0].toDate.channels.Patreon, { sf: 2300, gl: 0 });
 });
+
+test('tolerance: unexplained as a share of GL giving, each month and year to date', async () => {
+  const { withinTolerance, ytdTolerance, DEFAULT_SF_TOLERANCE } = await import('../app/js/sf/salesforce.js');
+  const oct = { glTotal: 2381986.89, unexplained: 16309.96, rows: [{ channel: 'Check', unexplained: 20339 }, { channel: 'Wire', unexplained: -6227.38 }] };
+  const nov = { glTotal: 2349034.92, unexplained: 107738.13, rows: [{ channel: 'Wire', unexplained: 114229.16 }] };
+  const t = withinTolerance(oct, DEFAULT_SF_TOLERANCE);
+  assert.equal(t.ok, true);
+  assert.deepEqual(t.big.map((x) => x.channel), ['Check']); // listed to look at, the month still passes
+  assert.equal(withinTolerance(nov).ok, false);
+  const y = ytdTolerance([oct, nov]);
+  assert.equal(y.ok, false); // 2.6% for these two months
+  assert.equal(ytdTolerance([oct, { ...nov, unexplained: -10000 }]).ok, true);
+});

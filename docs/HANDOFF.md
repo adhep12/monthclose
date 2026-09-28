@@ -151,6 +151,7 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **Open (FY2026):** NCF 100,000 on 11/12/2025 in Salesforce (contact 003PC00000LaDSyYAN) has no GL entry in any account and no bank deposit; the same contact's 12/11 100,000 is GL017377 (12/15, 110,000). User getting outside verification. Stripe −45k for the year (Salesforce's report drops gifts by Stripe status; a report grouped by status would show which). No PayPal refund rule: the 15,337 returned-PayPal donor isn't in Salesforce as a gift. | With these rules, FY2026 Oct–Aug unexplained goes from 231,331 to about 24,800 (Nov's 114k is the NCF gift). |
 | **A person can explain a difference themselves** (Salesforce vs GL month pop-up, "Explain a difference yourself"): giving type, optional sponsor, what it is (`SF_ADJ_TYPES`: timing, restricted, agency, not received, not in Salesforce, another period, different giving type, other), the amount of the Salesforce − GL difference it accounts for (starts at what's left for that giving type) and why. Kept on the sf-giving month (`adjustments`, stamped who/when, `updatedAt`), carried over when Salesforce is uploaded again, removable. Counts as explained (evidence Typed). | User request 2026-09-28. |
 | **Running totals** (`toDate` on each reconciled month): each giving type and each wire sponsor, Salesforce against the GL from the first month to this one, in the month pop-up and the export's "Running totals" tab, so a lump payout reads against what built up before it. | Patreon Feb 2026: Salesforce Oct–Feb 11,629.54, GL 100,478.47: 88,848.93 not in Salesforce for these months (about 38 months at 2,338 a month). |
+| **Tolerance, not zero.** Salesforce and the GL can't tie to zero as things are kept (different dates, detail and rules, no shared key), so what's held to a limit is the unexplained difference (`withinTolerance`, `ytdTolerance`): each month at most 1% of GL giving, year to date at most 0.25%. A month over shows "Investigate". Any giving type with more than $10,000 unexplained is listed to look at (not a fail: a giving type's leftover is many small things). Limits in settings (Salesforce vs GL → Tolerance…, `cfg.sfTolerance`). | User decision 2026-09-28. FY2026 with the rules: Oct 0.68%, Nov 4.59% (NCF 100k), Dec 0.72%, Jan 1.75%, Feb 0.23%, Mar 2.13%, Apr 0.01%, May 0.63%, Jun 1.01%, Jul 1.46%, Aug 0.59%; YTD 0.08%. |
 | **Next:** match the kept check gifts by deposit date. | |
 
 ## 3. FY2026 tie-out: where it stands
@@ -269,8 +270,8 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 3. **Re-run the comparison** on the new export:
    `node scripts/compare-to-workbook.mjs "<export>.xlsx" "<Proof of Cash - 2026>.xlsx"`.
    Explain whatever remains beyond the workbook's own differences, month by month.
-4. **Revenue tolerance** (open decision: 0.25% of GL revenue proposed; still undecided whether to add a dollar floor). Once the
-   user decides, show tied / explain / investigate status per month on the FY sheet.
+4. **Revenue tolerance** for the proof of cash (open decision: 0.25% of GL revenue proposed; still undecided whether to add a dollar floor). Once the
+   user decides, show tied / explain / investigate status per month on the FY sheet. (Salesforce vs GL has its own, decided: see its rules.)
 5. **Confirm the November Fidelity transfer** with November's Cass statements: did the 11/03
    79,025.96 sweep from Outgoing into Operating? If not, the new rule already handles it.
 6. Small outgoing items (ADP Tax, PEOPLE CENTER cents). Under the sweep rule these only matter if they swept
