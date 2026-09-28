@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from '../app/vendor/xlsx.mjs';
-import { parseSalesforceSummary, parseSalesforceReport, coveredMonths, reportExcludes, reconcileMonth, reconcileYear } from '../app/js/sf/salesforce.js';
+import { parseSalesforceSummary, parseSalesforceReport, coveredMonths, reportExcludes, reconcileMonth, reconcileYear, sponsorOf } from '../app/js/sf/salesforce.js';
+import { round2 } from '../app/js/money.js';
 
 // Shaped like the "Opportunity Proof of Cash" report: starts at B2, a month label on its first row.
 function report() {
@@ -114,4 +115,71 @@ test('when the report already leaves out refunded and disputed gifts, the GL’s
   const left = reconcileMonth({ sf: { month: '2026-02', methods: { Stripe: { amount: 1641299.31 } }, excludes: { refunds: true, disputes: true } }, giving });
   assert.equal(kept.explained, 17536);
   assert.equal(left.explained, 0);
+});
+
+// Wires by sponsor: Salesforce's donor-advised fund on each kept gift ([date, amount, fund, contact, 'W']),
+// the GL's line payers.
+const sfMonth = (month, gifts, extra = {}) => ({ month, methods: { Wire: { amount: gifts.reduce((t, g) => t + g[1], 0) } }, gifts: gifts.map((g) => [`${month}-10`, g[1], g[0], 'c', 'W']), ...extra });
+const glMonth = (payers, extra = {}) => ({ channels: { Wire: Object.values(payers).reduce((t, v) => t + v, 0), ...(extra.channels || {}) }, payers: { Wire: payers } });
+
+test('sponsor names are the same on both sides', () => {
+  assert.equal(sponsorOf('National Christian Foundation'), 'NCF');
+  assert.equal(sponsorOf('NCF (Stock Transfer)'), 'NCF');
+  assert.equal(sponsorOf('The Signatry'), 'Signatry');
+  assert.equal(sponsorOf('Great Commission Foundation'), 'Great Commission Foundation');
+  assert.equal(sponsorOf('Fidelity Giving Marketplace'), 'Fidelity Giving Marketplace');
+});
+
+test('a platform that pays in lumps: gifts waiting to be paid out are timing, the payout pays for them', () => {
+  // Great Commission Foundation: 20k of gifts a month in Salesforce, paid out once, in the third month,
+  // with 5k of gifts from before the first month.
+  const res = reconcileYear([
+    { sf: sfMonth('2025-10', [['Great Commission Foundation', 20000]]), giving: glMonth({}) },
+    { sf: sfMonth('2025-11', [['Great Commission Foundation', 20000]]), giving: glMonth({}) },
+    { sf: sfMonth('2025-12', [['Great Commission Foundation', 20000]]), giving: glMonth({ 'Great Commission Foundation': 65000 }) },
+  ]);
+  assert.deepEqual(res.map((r) => r.unexplained), [0, 0, 0]);
+  assert.ok(res[0].reasons.some((x) => /not paid out to us yet/.test(x.what) && x.amount === 20000));
+  const dec = res[2].reasons;
+  assert.equal(dec.find((x) => /payout for gifts in earlier months/.test(x.what)).amount, -40000);
+  assert.equal(dec.find((x) => /from before these months/.test(x.what)).amount, -5000);
+});
+
+test('Patreon: a first withdrawal pays for months before these; a platform quiet for six months is flagged', () => {
+  const months = ['2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04'];
+  const res = reconcileYear(months.map((m, i) => ({
+    sf: { month: m, methods: { Patreon: { amount: 2300 }, Wire: { amount: 1000 } }, gifts: [[`${m}-05`, 1000, 'Stewardship', 'c', 'W']] },
+    giving: { channels: { Patreon: i === 4 ? 100000 : i > 4 ? 2300 : 0 }, payers: { Wire: {} } },
+  })));
+  assert.deepEqual(res.map((r) => r.unexplained), [0, 0, 0, 0, 0, 0, 0]);
+  const feb = res[4].reasons;
+  assert.equal(feb.find((x) => x.channel === 'Patreon' && /from before these months/.test(x.what)).amount, -88500);
+  // Stewardship: 7,000 of gifts, no payout in seven months.
+  assert.ok(res[6].reasons.some((x) => x.flag && /Stewardship: no payout for 7 months/.test(x.what)));
+});
+
+test('a sponsor’s gifts on one side of a month end in Salesforce and the other in the GL', () => {
+  const res = reconcileYear([
+    { sf: sfMonth('2025-12', [['Benevity', 58162.48], ['NCF', 5000]]), giving: glMonth({ NCF: 5000 }) },
+    { sf: sfMonth('2026-01', [['NCF', 3000]]), giving: glMonth({ Benevity: 60000, NCF: 3000 }) },
+  ]);
+  assert.ok(res[0].reasons.some((x) => /Benevity: timing with 2026-01/.test(x.what) && x.amount === 58162.48));
+  // Within 10% counts as timing in full, both months (as for a channel's month-end timing).
+  assert.equal(res[1].unexplained, 0);
+  assert.equal(round2(res[1].reasons.find((x) => /Benevity/.test(x.what)).amount), -60000);
+});
+
+test('a gift the GL moved to agency as a pass-through explains Salesforce being higher', () => {
+  const r = reconcileMonth({
+    sf: { month: '2025-12', methods: { Check: { amount: 100000 } } }, giving: { channels: { Check: 0 } },
+    found: { reversals: [{ channel: 'Check', amount: 100000, desc: '12.18.2025 December Deposit + Indian Localization Support', source: 'GL GL017613' }] },
+  });
+  assert.equal(r.unexplained, 0);
+});
+
+test('a check booked to PayPal revenue counts as a check', async () => {
+  const { givingChannel } = await import('../app/js/gl.js');
+  const batch = { accounts: { 1100: -15337 }, lines: [], desc: 'Check - A Donor 15,337.00 - BP receiving check' };
+  assert.equal(givingChannel({ batch, a: '4012', d: 'BP receiving check' }), 'Check');
+  assert.equal(givingChannel({ batch, a: '4012', d: 'Paypal Giving "Payments received Total"' }), 'PayPal');
 });

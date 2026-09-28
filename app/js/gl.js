@@ -111,6 +111,8 @@ export function givingChannel(l) {
   const b = l.batch;
   if (b.accounts[KEYBANK_GL] || b.lines.some((x) => x.a === KEYBANK_GL)) return 'Cash';
   if (l.a === '4015') return 'Stripe';
+  // A check booked to PayPal revenue ("Check - … BP receiving check", March 2026) is a check.
+  if (l.a === '4012' && /^check\b|receiving check/i.test(l.d)) return 'Check';
   if (l.a === '4012' || /paypal/i.test(l.d) || /^PAYP/i.test(l.cv)) return 'PayPal';
   // (Check deposits are to customer PATROC001 — patrons, not Patreon.)
   if (/patreon/i.test(l.d)) return 'Patreon';
@@ -119,17 +121,20 @@ export function givingChannel(l) {
 }
 const bankDated = (d) => /\d{1,2}\.\d{1,2}\.\d{4}/.test(String(d || ''));
 function givingByChannel(lines) {
-  const channels = {}, big = {}, restricted = [], stripe = {};
+  const channels = {}, big = {}, restricted = [], stripe = {}, payers = {};
   for (const l of lines) {
     const ch = givingChannel(l);
     channels[ch] = round2((channels[ch] || 0) + l.amt);
+    // Who paid, as the GL line names them (NCF, Fidelity, Great Commission Foundation), for matching
+    // Salesforce's donor-advised funds sponsor by sponsor. Check deposits name no one.
+    if (ch === 'Wire' || ch === 'Patreon') { const who = String(l.d || l.cv).replace(/^Wise Donation - /i, '').slice(0, 60); (payers[ch] ||= {})[who] = round2((payers[ch][who] || 0) + l.amt); }
     const line = { batch: l.batch.batch, date: l.batch.date, desc: l.batch.desc.slice(0, 50), line: l.id, payer: String(l.d).slice(0, 40), acct: l.a, amount: l.amt };
     if (l.a === '4017') restricted.push({ ...line, channel: ch });
     if (ch === 'Stripe') { const k = String(l.d).replace(/^\d+\s+/, '') || l.batch.desc; stripe[k] = round2((stripe[k] || 0) + l.amt); }
     else if (Math.abs(l.amt) >= 1000) (big[ch] ||= []).push(line);
   }
   for (const ch of Object.keys(big)) big[ch] = big[ch].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 40);
-  return { channels, total: round2(Object.values(channels).reduce((a, b) => a + b, 0)), restricted, stripe, big };
+  return { channels, total: round2(Object.values(channels).reduce((a, b) => a + b, 0)), restricted, stripe, big, payers };
 }
 
 // What a batch is, line for line: changes if any line's account or amount changes, or a line is

@@ -10,6 +10,8 @@ import { round2, sum } from '../money.js';
 
 export const CHANNELS = ['Stripe', 'PayPal', 'Check', 'Wire', 'Patreon', 'Cash'];
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const monthsBetween = (a, b) => (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + Number(b.slice(5, 7)) - Number(a.slice(5, 7));
 const amt = (s) => { const n = Number(String(s ?? '').replace(/[$,\s]/g, '').replace(/^\((.*)\)$/, '-$1')); return Number.isFinite(n) ? n : null; };
 
 // The Salesforce opportunity summary report, by close date and payment method ("Opportunity Proof
@@ -153,6 +155,38 @@ export function parseSalesforceReport(XLSX, wb) {
 // Salesforce's payment methods, in the GL's channels (anything else is counted as its own).
 export const channelOf = (method) => ({ stripe: 'Stripe', paypal: 'PayPal', check: 'Check', wire: 'Wire', patreon: 'Patreon', cash: 'Cash' }[String(method).toLowerCase()] || 'Other');
 
+// ---- Who a gift came from -------------------------------------------------------------------
+// Salesforce names a wire's donor-advised fund ("National Christian Foundation"); the GL line names
+// who paid ("NCF"). The same sponsor, one name, on both sides. Names not listed stay as they are.
+const SPONSORS = [
+  [/national christian|^ncf\b/i, 'NCF'], [/^fidelity(?! giving marketplace)/i, 'Fidelity'], [/great commission/i, 'Great Commission Foundation'],
+  [/stewardship/i, 'Stewardship'], [/benevity|benvity|online giving/i, 'Benevity'], [/overflow/i, 'Overflow'], [/signatry/i, 'Signatry'],
+  [/renaissance|\(ren\)/i, 'Renaissance'], [/morgan stanley/i, 'Morgan Stanley'], [/u\.?s\.? charitable/i, 'US Charitable'],
+  [/american endowment|^aef\b/i, 'AEF'], [/giveclear/i, 'GiveClear'], [/murdock/i, 'MJ Murdock'], [/thrivent/i, 'Thrivent'],
+  [/patreon/i, 'Patreon'],
+];
+export const sponsorOf = (name) => { const n = String(name || '').trim(); return (SPONSORS.find(([re]) => re.test(n)) || [, n || '(none)'])[1]; };
+// Platforms that collect gifts from many donors and pay them to us in lumps, months apart:
+// Salesforce records each donor's gift when it's made, the GL the payout when it arrives.
+// (Patreon is its own channel; the others are wires.)
+export const LUMP_PLATFORMS = ['Great Commission Foundation', 'Stewardship', 'Patreon'];
+const LUMP_GAP = 6; // months without a payout before it's worth asking why
+
+// A month's wire gifts by sponsor: Salesforce from the gift-level report's kept gifts, the GL from
+// its payers (gl.js). Null on a side that doesn't have them (a summary report, an older GL upload).
+function sponsorsSf(sf) {
+  if (!Array.isArray(sf?.gifts)) return null;
+  const o = {};
+  for (const g of sf.gifts) if (g[4] === 'W') { const k = sponsorOf(g[2]); o[k] = round2((o[k] || 0) + g[1]); }
+  return o;
+}
+function sponsorsGl(giving) {
+  if (!giving?.payers) return null;
+  const o = {};
+  for (const [who, v] of Object.entries(giving.payers.Wire || {})) { const k = sponsorOf(who); o[k] = round2((o[k] || 0) + v); }
+  return o;
+}
+
 // One month. sf: parseSalesforceSummary's month. giving: the GL register's p.giving (gl.js).
 // found: what else the proof of cash knows about the month —
 //   priorPeriod: deposits the GL booked to a receivable (revenue recognized in an earlier month)
@@ -184,6 +218,9 @@ export function reconcileMonth({ sf, giving, found = {} }) {
   // GL revenue with no cash this month.
   for (const x of found.noCash || []) add(x.channel || 'Wire', -x.amount, `${x.amount > 0 ? 'Recognized by the GL with no cash this month' : 'Taken out of revenue by the GL with no cash'}: ${x.desc}`,
     x.amount > 0 ? 'The GL booked revenue now (a pledge, a grant receivable, a gift released from a liability) that Salesforce records when it’s paid, or recorded already.' : 'The GL moved a gift out of revenue (to a liability, or reversed it); Salesforce still has it.', x.source);
+  // Revenue the GL took back out after booking it (moved to agency as a pass-through gift, reversed,
+  // a chargeback): Salesforce still has the gift.
+  for (const x of found.reversals || []) add(x.channel || 'Check', x.amount, `Taken back out of revenue by the GL: ${x.desc}`, 'The GL booked this as a gift, then took it back out (to agency as a pass-through gift, a reversal or a returned item); Salesforce still has it as a gift.', x.source);
   for (const x of found.releases || []) add(x.channel || 'Wire', -x.amount, `Released from a liability by the GL: ${x.desc}`, 'Part of this deposit’s revenue was a gift the GL had held back earlier; Salesforce recorded it when it was given.', x.source);
   // A GL channel far above what Salesforce has for it: likely a line booked to the wrong payer.
   for (const r of rows) {
@@ -209,6 +246,53 @@ export function reconcileMonth({ sf, giving, found = {} }) {
 // Pacific: year-end giving on the evening of 12/31 is December in Salesforce, January in Stripe).
 export function reconcileYear(inputs) {
   const out = inputs.map(reconcileMonth);
+  const give = (m, channel, amount, what, why, source, evidence = 'pattern') => {
+    if (Math.abs(amount) < 0.005 && evidence !== 'flag') return;
+    const r = m.rows.find((x) => x.channel === channel);
+    m.reasons.push({ channel, amount: round2(amount), what, why, source, evidence, flag: evidence === 'flag' });
+    if (r && evidence !== 'flag') { r.explained = round2(r.explained + amount); r.unexplained = round2(r.unexplained - amount); }
+  };
+  const sfSp = inputs.map((x) => sponsorsSf(x.sf)), glSp = inputs.map((x) => sponsorsGl(x.giving));
+  const both = (i) => sfSp[i] && glSp[i];
+  // Platforms that pay in lumps: a running balance of what Salesforce has recorded and the GL hasn't
+  // received yet. While it's owed to us the difference is timing; a payout brings it down. A payout
+  // bigger than what's owed pays for gifts from before these months (Patreon's first withdrawal,
+  // February 2026, cleared a balance built up before this year).
+  for (const p of LUMP_PLATFORMS) {
+    const channel = p === 'Patreon' ? 'Patreon' : 'Wire';
+    let bal = 0, lastPaid = null;
+    out.forEach((m, i) => {
+      const sfv = channel === 'Patreon' ? m.rows.find((x) => x.channel === 'Patreon')?.sf ?? 0 : both(i) ? sfSp[i][p] || 0 : null;
+      const glv = channel === 'Patreon' ? m.rows.find((x) => x.channel === 'Patreon')?.gl ?? 0 : both(i) ? glSp[i][p] || 0 : null;
+      if (sfv == null || !m.month || (!sfv && !glv && !bal)) return;
+      if (glv) lastPaid = m.month;
+      const d = round2(sfv - glv);
+      let owed = d, before = 0;
+      if (bal + d < 0) { before = round2(bal + d); owed = round2(-bal); }
+      bal = round2(Math.max(0, bal + d));
+      if (owed > 0) give(m, channel, owed, `${p}: gifts not paid out to us yet`, `${p} collects gifts from many donors and pays them to us in lumps. Salesforce records each gift when it’s made; the GL records the payout. ${money2(bal)} recorded in Salesforce is waiting to be paid out at the end of the month.`, `Salesforce ${money2(sfv)}, GL ${money2(glv)}`);
+      else if (owed < 0) give(m, channel, owed, `${p}: payout for gifts in earlier months`, `The GL booked a ${p} payout of ${money2(glv)}, paying for gifts Salesforce recorded in earlier months. ${money2(bal)} still to be paid out.`, `Salesforce ${money2(sfv)}, GL ${money2(glv)}`);
+      if (before <= -100) give(m, channel, before, `${p}: payout for gifts from before these months`, `The payout is more than Salesforce has recorded since the months here began, so ${money2(-before)} of it is for gifts given before then (recognized in the GL only when paid out).`, `Salesforce ${money2(sfv)}, GL ${money2(glv)}`);
+      const since = lastPaid ? monthsBetween(lastPaid, m.month) : i + 1;
+      if (i === out.length - 1 && bal >= 5000 && since >= LUMP_GAP) give(m, channel, 0, `${p}: no payout for ${since} months`, `${money2(bal)} recorded in Salesforce hasn’t been paid out to us${lastPaid ? ` since the payout in ${lastPaid}` : ''}. Check with ${p} when the next payout is due.`, 'Salesforce and GL', 'flag');
+    });
+  }
+  // The other wire sponsors: what one sponsor leaves one month and cancels (within 10%) in the next
+  // month or the one after is timing on that sponsor (Benevity's year-end gifts, say).
+  const spNames = [...new Set(sfSp.concat(glSp).filter(Boolean).flatMap((o) => Object.keys(o)))].filter((n) => !LUMP_PLATFORMS.includes(n) && n !== '(none)');
+  for (const n of spNames) {
+    const left = out.map((m, i) => (both(i) ? round2((sfSp[i][n] || 0) - (glSp[i][n] || 0)) : null));
+    for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j <= Math.min(i + 2, out.length - 1); j++) {
+        const x = left[i], y = left[j];
+        if (x == null || y == null || Math.sign(x) === Math.sign(y) || Math.min(Math.abs(x), Math.abs(y)) < 1000 || Math.abs(x + y) > 0.1 * Math.max(Math.abs(x), Math.abs(y))) continue;
+        const why = `${n} gifts, Salesforce minus GL: ${money2(x)} in ${out[i].month} and ${money2(y)} in ${out[j].month}, which cancel out — the same gifts dated one side of the month end in Salesforce and the other in the GL.`;
+        give(out[i], 'Wire', x, `${n}: timing with ${out[j].month}`, why, `Salesforce and GL, ${n}`);
+        give(out[j], 'Wire', y, `${n}: timing with ${out[i].month}`, why, `Salesforce and GL, ${n}`);
+        left[i] = 0; left[j] = 0; break;
+      }
+    }
+  }
   for (let i = 0; i + 1 < out.length; i++) {
     const a = out[i], b = out[i + 1];
     if (!a.month || !b.month) continue;

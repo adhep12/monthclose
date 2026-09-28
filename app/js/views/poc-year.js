@@ -1348,7 +1348,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const noCash = (glBy[m]?.noCashRevenue || []).map((x) => ({ amount: round2(GIVING_ACCTS.reduce((t, a) => t + (x.accounts[a] || 0), 0)), desc: x.desc, source: `GL ${x.batch} (${x.date})` }))
       .filter((x) => Math.abs(x.amount) >= 0.005);
     const releases = (c?.adjustments || []).filter((a) => /^auto-glrelease-/.test(a.id || '')).map((a) => ({ amount: a.amount, desc: a.label, source: a.note || '' }));
-    return { priorPeriod, noCash, releases };
+    // Gifts the GL took back out of revenue (moved to agency, reversed, a returned item): Salesforce
+    // still has them. Only gift accounts (4010-4018), not royalties or merchandise.
+    const reversals = (c?.adjustments || []).filter((a) => /^auto-glrev-/.test(a.id || '') && /\b40(1[0-8])\b/.test(a.note || ''))
+      .map((a) => { const d = a.detail?.[0]?.desc || a.label; return { channel: /paypal/i.test(d) ? 'PayPal' : /deposit/i.test(d) ? 'Check' : 'Wire', amount: -a.amount, desc: d.slice(0, 60), source: a.note || '' }; });
+    return { priorPeriod, noCash, releases, reversals };
   }
   const sfYear = (() => {
     const ms = cols.map((x) => x.m).filter((m) => sfBy[m] || glBy[m]?.giving);
@@ -1387,7 +1391,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const any = ms.some((m) => sfBy[m]);
     const doneSet = sfDoneSet;
     const both = sfYtdMonths();
-    const needGl = ms.some((m) => sfBy[m] && glBy[m] && !glBy[m].giving);
+    const needGl = ms.some((m) => sfBy[m] && glBy[m] && (!glBy[m].giving || (Array.isArray(sfBy[m].gifts) && !glBy[m].giving.payers)));
     const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'The GL isn’t complete for this month yet (no Cass deposits in the proof of cash) — not in YTD', onclick: () => openSfMonth(m) }, v);
     const ytd = (f) => { const v = both.map((m) => f(sfYear[m])).filter((x) => x != null); return v.length ? round2(sum(v, (x) => x)) : null; };
     const rowsDef = sfRowsDef();
@@ -1406,7 +1410,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               ms.map((m) => { const r = sfYear[m]; if (!r || !sfBy[m]) return h('td', { class: 'num muted' }, sfBy[m] ? '' : '');
                 const v = d.f(r); const cls = typeof d.cls === 'function' ? (v == null ? '' : d.cls(v)) : d.cls || '';
                 return cell(m, v == null ? '' : (d.fmt ? d.fmt(v) : money(v)), cls); }))))))),
-      needGl ? h('p', { class: 'small warn-text' }, 'Some months’ GL register was uploaded before giving was kept by channel — upload the GL register again to compare them.') : null);
+      needGl ? h('p', { class: 'small warn-text' }, 'Some months’ GL register was uploaded before giving was kept by channel and payer — upload the GL register again to compare them, sponsor by sponsor.') : null);
   }
   // Excel: the section as it stands, then everything behind it.
   async function exportSalesforce() {
