@@ -74,23 +74,51 @@ const GENERIC = new Set(['orig', 'ach', 'payment', 'payments', 'pmt', 'inc', 'll
 // The same payer under the bank's name and the GL's: giving platforms pay through funds with
 // other names (Your Cause through the Blackbaud Giving Fund, "BBGF-…"; Benevity through the
 // American / UK Online Giving Foundation).
-const ALIASES = [
-  [/\bBBGF\b|BLACKBAUD|YOUR ?CAUSE/i, 'yourcause'], [/AMER(ICAN)? ONLINE GIV|UK ONLINE GIVING|BENEVITY/i, 'benevity'],
-  [/AMRCNENDWMNT|AMERICAN ENDOWMENT|\bAEF\b/i, 'aef'], [/\bU\.? ?S\.? CHARITABLE/i, 'uscharitable'], [/\bNCF\b|NATIONAL CHRISTIAN/i, 'ncf'],
-  [/FIDELITY|\bFID\b/i, 'fidelity'], [/SCHWAB/i, 'schwab'], [/PAYPAL/i, 'paypal'], [/STRIPE/i, 'stripe'], [/\bWISE\b/i, 'wise'], [/OVERFLOW/i, 'overflow'],
-  [/\bIPAY\b/i, 'ipay'], [/RENAISSANCE/i, 'renaissance'], [/SIGNATRY/i, 'signatry'], [/GIVE ?CLEAR/i, 'giveclear'], [/CHARIOT/i, 'chariot'],
-  [/FRONT ?STREAM/i, 'frontstream'], [/MORGAN STANLEY/i, 'morganstanley'], [/THRIVENT/i, 'thrivent'], [/CYBER ?GRANTS/i, 'cybergrants'], [/DIVVY/i, 'divvy'],
+// Each: the words that say it (on the statement or in the GL), the payer they mean. Shown in
+// the app's "Payer names" list, where more can be added (config.aliases: { bank, gl }).
+export const BUILT_IN_ALIASES = [
+  { re: /\bBBGF\b|BLACKBAUD|YOUR ?CAUSE/i, name: 'Your Cause', bank: 'BBGF-… (Blackbaud Giving Fund)', gl: 'Your Cause' },
+  { re: /AMER(ICAN)? ONLINE GIV|UK ONLINE GIVING|BENEVITY/i, name: 'Benevity', bank: 'AMER ONLINE GIV1, THE UK ONLINE GIVING FOUNDATION', gl: 'Benevity' },
+  { re: /AMRCNENDWMNT|AMERICAN ENDOWMENT|\bAEF\b/i, name: 'American Endowment Fund', bank: 'AMRCNENDWMNTFUND/AEF', gl: 'AEF, American Endowment Fund' },
+  { re: /\bU\.? ?S\.? CHARITABLE/i, name: 'U.S. Charitable', bank: 'U.S. Charitable/U.S. Chari', gl: 'U.S. Charitable, US Charitable' },
+  { re: /\bNCF\b|NATIONAL CHRISTIAN/i, name: 'NCF', bank: 'NCF/ACH', gl: 'NCF' },
+  { re: /FIDELITY|\bFID\b/i, name: 'Fidelity', bank: 'FIDELITY INVESTM/GrantPaymt, FID BKG SVC', gl: 'Fidelity' },
+  { re: /SCHWAB/i, name: 'Schwab', bank: 'SCHWAB', gl: 'Schwab' },
+  { re: /PAYPAL/i, name: 'PayPal', bank: 'PAYPAL INC./PAYMENT', gl: 'PayPal Grant' },
+  { re: /STRIPE/i, name: 'Stripe', bank: 'STRIPE/TRANSFER', gl: 'Transfer Stripe Checking to Cass' },
+  { re: /\bWISE\b/i, name: 'Wise', bank: 'WISE US INC', gl: 'Wise Transfer, Wise Donation' },
+  { re: /OVERFLOW/i, name: 'Overflow', bank: 'OVERFLOW', gl: 'Overflow' },
+  { re: /\bIPAY\b/i, name: 'iPay Solutions', bank: 'IPAY', gl: 'iPay Solutions' },
+  { re: /RENAISSANCE/i, name: 'Renaissance Charitable', bank: 'RENAISSANCE', gl: 'Renaissance Charitable' },
+  { re: /SIGNATRY/i, name: 'Signatry', bank: 'SIGNATRY', gl: 'Signatry' },
+  { re: /GIVE ?CLEAR/i, name: 'GiveClear', bank: 'GIVECLEAR', gl: 'GiveClear Foundation' },
+  { re: /CHARIOT/i, name: 'Chariot', bank: 'CHARIOT', gl: 'Chariot' },
+  { re: /FRONT ?STREAM/i, name: 'FrontStream', bank: 'FRONTSTREAM', gl: 'FrontStream' },
+  { re: /MORGAN STANLEY/i, name: 'Morgan Stanley', bank: 'MORGAN STANLEY', gl: 'Morgan Stanley' },
+  { re: /THRIVENT/i, name: 'Thrivent', bank: 'THRIVENT', gl: 'Thrivent Grant' },
+  { re: /CYBER ?GRANTS/i, name: 'Cybergrants', bank: 'CYBERGRANTS', gl: 'Cybergrants' },
+  { re: /DIVVY/i, name: 'Divvy', bank: 'DIVVY', gl: 'Divvy' },
 ];
-export const nameWords = (s) => {
+const esc = (w) => w.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Built-in names plus any added in the app: each added one is the bank's words and the GL's words,
+// comma-separated, for the same payer.
+export function aliasList(extra = []) {
+  const added = (extra || []).filter((a) => a?.bank || a?.gl).map((a) => {
+    const words = [...String(a.bank || '').split(','), ...String(a.gl || '').split(',')].map((w) => w.trim()).filter(Boolean);
+    return { re: new RegExp(words.map(esc).join('|'), 'i'), name: a.name || words[words.length - 1], bank: a.bank, gl: a.gl, added: true };
+  });
+  return [...BUILT_IN_ALIASES, ...added];
+}
+export const nameWords = (s, aliases = BUILT_IN_ALIASES) => {
   const t = String(s || '');
-  return [...new Set([...ALIASES.filter(([re]) => re.test(t)).map(([, w]) => w),
+  return [...new Set([...aliases.filter((x) => x.re.test(t)).map((x) => `=${x.name.toLowerCase()}`),
     ...t.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3 && !GENERIC.has(w))])];
 };
-const sameWord = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && (a.startsWith(b.slice(0, 5)) || b.startsWith(a.slice(0, 5))));
+const sameWord = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && !a.startsWith('=') && !b.startsWith('=') && (a.startsWith(b.slice(0, 5)) || b.startsWith(a.slice(0, 5))));
 // The GL words a deposit agrees with ([] when none), and whether both sides name someone at all.
-export function namesAgree(bankText, glTexts) {
-  const bank = nameWords(bankText), gl = nameWords(glTexts.join(' '));
-  return { agree: bank.filter((w) => gl.some((u) => sameWord(w, u))), bankNamed: bank.length > 0, glNamed: gl.length > 0 };
+export function namesAgree(bankText, glTexts, aliases = BUILT_IN_ALIASES) {
+  const bank = nameWords(bankText, aliases), gl = nameWords(glTexts.join(' '), aliases);
+  return { agree: bank.filter((w) => gl.some((u) => sameWord(w, u))).map((w) => w.replace(/^=/, '')), bankNamed: bank.length > 0, glNamed: gl.length > 0 };
 }
 const CHECK = /DEPOSIT CONNECTION|MOBILE DEPOSIT|REMOTE DEPOSIT|BRANCH DEPOSIT/i;
 
@@ -331,6 +359,8 @@ const WHY = {
 // recs: { 'YYYY-MM': month record }, glBy: { 'YYYY-MM': gl-activity record (with receipts) }.
 // Months are matched in order, so a batch used by one month can't be claimed by the next.
 export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names = {} }) {
+  // Payer names: the built-in aliases and any added in the app.
+  const aliases = aliasList(config.aliases);
   const receiptsBy = {};
   const cancelledBy = {};
   for (const [m, g] of Object.entries(glBy || {})) {
@@ -404,14 +434,14 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     // The GL line that is this deposit: same amount, the payer named alike if both are named.
     const bankText = `${l.desc} ${l.detail || ''}`;
     const same = credits.filter((g) => Math.abs(Math.abs(g.amt) - l.amount) < 0.005);
-    const tieLine = same.find((g) => namesAgree(bankText, [g.d, g.cv]).agree.length) || (same.length === 1 ? same[0] : null);
+    const tieLine = same.find((g) => namesAgree(bankText, [g.d, g.cv], aliases).agree.length) || (same.length === 1 ? same[0] : null);
     const tie = x.group > 1 || (x.batches || []).length > 1 ? tieLine : glLines.find((g) => g.a === '1100' && Math.abs(g.amt - l.amount) < 0.005) || tieLine;
-    const names = namesAgree(bankText, [r.desc, ...glLines.map((g) => `${g.d} ${g.cv}`)]);
+    const names = namesAgree(bankText, [r.desc, ...glLines.map((g) => `${g.d} ${g.cv}`)], aliases);
     // A GL line of its own with this amount, inside an entry that adds up to the day or the group.
     // (For a deposit matched one to one, its GL line having the same amount is just the match itself.)
     const lineTie = !!tie && same.length > 0 && (x.group > 1 || (x.batches || []).length > 1);
     if (names.agree.length) plus.push(`Names agree: ${names.agree.join(', ')}`);
-    else if (names.bankNamed && names.glNamed && !CHECK.test(l.desc) && !lineTie) minus.push(`The statement names ${nameWords(bankText).slice(0, 3).join(', ')}; the GL entry doesn’t`);
+    else if (names.bankNamed && names.glNamed && !CHECK.test(l.desc) && !lineTie) minus.push(`The statement names ${nameWords(bankText, aliases).slice(0, 3).map((w) => w.replace(/^=/, '')).join(', ')}; the GL entry doesn’t`);
     if (tie) plus.push(`GL line ${tie.id}${tie.d ? ` (${tie.d})` : ''}${lineTie && x.group > 1 ? ' — its own line, in an entry that adds up to the group' : ''}`);
     if (CHECK.test(l.desc) && (bankWindow(r).named || /\bdeposits?\b/i.test(r.desc))) plus.push('A check deposit, and the GL entry is the day’s deposit');
     if (STRIPE.test(l.desc) && glKind(r).kind === 'stripe') plus.push('Stripe to Stripe clearing');
@@ -636,7 +666,7 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         const earlier = fee ? null : Object.keys(glBy).filter((mm) => mm < m).sort().reverse()
           .flatMap((mm) => (glBy[mm]?.noCashRevenue || []).map((x) => ({ ...x, month: mm })))
           .find((x) => Math.abs((x.accounts[acct] || 0) - amount) < 0.005);
-        const adj = { id, account: 'cassOp', type: fee ? 'other' : 'timing', auto: true, gl: r.batch, amount, evidence: 'glWhat',
+        const adj = { id, account: 'cassOp', type: fee ? 'other' : 'timing', auto: true, gl: r.batch, amount, evidence: 'gl', // the statement shows the net deposit only
           label: fee ? `Fees kept by the giving platform: ${r.desc}` : `Revenue released from ${accountName(acct, names)}: ${r.desc}`,
           note: `GL ${r.batch} (${r.date}): deposit ${money2(r.amount)}, revenue ${money2(revenueIn(r.accounts))}, ${accountName(acct, names)} Dr ${money2(amount)}${earlier ? ` — held back by GL ${earlier.batch} (${earlier.date}, ${monthLabel(earlier.month)})` : ''}`,
           why: fee ? 'The platform (Overflow and the like) sends the gift less its fee. The GL books the whole gift as revenue and the fee as an expense (8070), so revenue is more than the deposit by the fee.'

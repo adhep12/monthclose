@@ -51,7 +51,8 @@ These adjustments exist only because the GL says so:
 If the GL is wrong in one of these ways, the proof of cash still comes to 0.00.
 - *Existing mitigation:* every item carries an evidence tag, and the Checks tab totals what rests
   on the GL alone.
-- *Gap:* the new platform-fee and liability-release items are tagged "Statement amount · GL says
+- *Fixed 2026-09-28:* tagged GL; GL-only lines of $500 or more are called out on each month's to-do list (confirm against a document).
+- *Gap (was):* the new platform-fee and liability-release items were tagged "Statement amount · GL says
   what" but should be tagged "GL". The statement shows only the net deposit, never the fee.
 - *Recommend:* tag them GL; require a Confirm (with a note) on GL-only items above a threshold; keep
   supporting documents (Overflow remittance reports showing gross, fee and net; Tschetter and Delap

@@ -8,7 +8,7 @@ import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivi
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
-import { depositChecks, depositHint } from '../poc/gl-deposits.js';
+import { depositChecks, depositHint, aliasList } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities, glChanges } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
@@ -121,7 +121,7 @@ function statusCell({ state, text, by, at, counts, note }) {
 }
 function actionsCell({ confirm = null, confirmLabel = 'Confirm', change = null, more = [] }) {
   const parts = [confirm ? h('button', { class: 'small-btn confirm-btn', onclick: confirm }, confirmLabel) : null, change, ...more].filter(Boolean);
-  return parts.length ? h('div', { class: 'actions' }, parts) : '';
+  return parts.length ? h('div', { class: 'row-actions' }, parts) : '';
 }
 // A menu of other ways something can count. Picking one does it; the menu itself never shows a
 // current value (that's what Status is for).
@@ -332,7 +332,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           h('tr', {}, h('th', { class: 'label-col' }, ''),
             h('th', { class: 'num ytd', colspan: span }, 'YTD', h('div', { class: 'muted small' }, done.length ? `${range} · ${done.length} mo.` : range)),
             cols.map(({ m, rec }) => h('th', { class: 'num month', colspan: span },
-              h('a', { href: '#/poc', title: `Open ${monthName(m)}: statements, notes, sign-off, activity`, onclick: (e) => { e.preventDefault(); openMonth(m); } }, short(m)), ' ', statusOf(rec)))),
+              h('a', { href: '#/poc', title: `Open ${monthName(m)}: statements, notes, sign-off, activity`, onclick: (e) => { e.preventDefault(); openMonth(m); } }, short(m)), ' ', statusOf(rec),
+              todoBadge(m)))),
           span > 1 ? h('tr', {}, h('th', { class: 'label-col' }, ''),
             h('th', { class: 'num ytd sub' }, 'Revenue'), h('th', { class: 'num ytd sub' }, 'Interest'),
             months.map(() => [h('th', { class: 'num sub' }, 'Revenue'), h('th', { class: 'num sub int' }, 'Interest')])) : null),
@@ -1265,6 +1266,99 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   }
 
   // ---- GL panel: statement of activities or GL register, or typed --------------------------
+  // ---- A month's to-do list: every decision still open, with a way to it -------------------------
+  // GL-only items this large need someone to confirm them against a document (the platform's
+  // remittance, the investment statement), not just the GL.
+  const GL_ONLY_LIMIT = () => cfg.glOnlyThreshold ?? 500;
+  function monthTodo(m) {
+    const c = cols.find((x) => x.m === m)?.c;
+    const saved = byMonth[m];
+    if (!c || !saved) return [];
+    const dep = c.deposits;
+    const out = [];
+    const add = (what, n, detail, go, kind = 'warn') => { if (n) out.push({ what, n, detail, go, kind }); };
+    const missing = (c.warnings || []).filter((w) => ['operating', 'incoming', 'outgoing'].includes(w.kind));
+    add('Statements missing', missing.length, missing.map((w) => w.text).join(' '), () => openMonth(m));
+    const other = (c.warnings || []).filter((w) => !['operating', 'incoming', 'outgoing'].includes(w.kind));
+    add('Deposits in transit to look at', other.length, other.map((w) => w.text).join(' '), () => openAdjustments(TIMING, m));
+    const low = matchesToCheck(c);
+    add('Matches to the GL to check', low.length, low.slice(0, 4).map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m));
+    add('A rule and the GL disagree', dep?.conflicts?.length || 0, (dep?.conflicts || []).map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m));
+    const noGl = (dep?.noGl || []).filter((x) => !x.covered && !x.decided);
+    add('Deposits the GL doesn’t have', noGl.length, noGl.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m));
+    const dit = (dep?.dit?.rows || []).filter((r) => r.flagged);
+    add('Deposits in transit to confirm', dit.length, dit.map((r) => `${r.desc} ${money(r.amount, { dash: false })}`).join('; '), () => openAdjustments(TIMING, m));
+    for (const g of ADJ_GROUPS) {
+      const lines_ = linesOf(c.adjustments.filter((a) => adjKey(a) === g));
+      const todo = lines_.filter((x) => confirmOf(saved, x).st !== 'confirmed');
+      const big = todo.filter((x) => x.a.evidence === 'gl' && Math.abs(x.shown) >= GL_ONLY_LIMIT());
+      add(`${g}: lines to confirm`, todo.length, big.length ? `${big.length} rest on the GL alone and are ${money(GL_ONLY_LIMIT(), { dash: false })} or more — confirm against a document: ${big.slice(0, 3).map((x) => `${x.desc || x.a.label} ${money(x.shown, { dash: false })}`).join('; ')}` : `${todo.length} of ${lines_.length} lines`,
+        () => openAdjustments(g, m), big.length ? 'warn' : 'info');
+    }
+    if (c.stripeCheck?.state === 'mismatch') add('Stripe payouts don’t match Cass', 1, `Difference ${money(c.stripeCheck.diff, { dash: false })} — explain it or find the payout`, () => openAccount('stripe', m));
+    if (wiseOutgoingCheck(saved).some((x) => x.state === 'missing')) add('Money out of Wise with no deposit found', 1, 'Sent to one of our accounts, not found on the other side', () => openAccount('wise', m));
+    for (const s_ of BANK_SOURCES) {
+      const l = line(c, s_.id);
+      if (!l || (l.rev == null && l.int == null) || (!l.rev && !l.int)) continue;
+      const st = confirmationState(saved.bank?.[s_.id], l.values);
+      if (st !== 'confirmed') add(`${s_.label}: figures to confirm`, 1, st === 'stale' ? 'Changed since it was confirmed' : [l.rev ? `Revenue ${money(l.rev, { dash: false })}` : '', l.int ? `interest ${money(l.int, { dash: false })}` : ''].filter(Boolean).join(', '), () => openAccount(s_.id, m), 'info');
+    }
+    const so = saved.signoff;
+    if (!so?.prepared) add('Not marked prepared', 1, '', () => openMonth(m), 'info');
+    else if (!so?.reviewed) add('Prepared, not reviewed', 1, `Prepared by ${so.prepared.by}`, () => openMonth(m), 'info');
+    return out;
+  }
+  function todoBadge(m) {
+    const c = cols.find((x) => x.m === m)?.c;
+    if (!c || !byMonth[m]) return null;
+    const items = monthTodo(m);
+    const warn = items.filter((x) => x.kind === 'warn').length;
+    return h('button', { class: `todo-badge${items.length ? '' : ' done'}`, title: items.map((x) => `${x.what} (${x.n})`).join('\n') || 'Nothing left to decide',
+      onclick: (e) => { e.stopPropagation(); openTodo(m); } }, items.length ? `${items.length} to do${warn ? ' ⚠' : ''}` : '✓ done');
+  }
+  async function openTodo(m) {
+    const c = cols.find((x) => x.m === m)?.c;
+    await panel(`To do — ${monthName(m)}`, (body, close) => {
+      const items = monthTodo(m);
+      mount(body,
+        c ? h('div', { class: 'review-bar' },
+          items.length ? statusPill(`${items.length} to do`, items.some((x) => x.kind === 'warn') ? 'warn' : 'info') : statusPill('✓ Nothing left to decide', 'good'),
+          h('span', { class: 'muted small' }, `Revenue difference ${money(c.diffRev, { dash: false })} · interest difference ${money(c.diffInt, { dash: false })}`)) : null,
+        h('p', { class: 'muted small' }, `Everything still open for ${monthName(m)}, most important first. Each opens the pop-up where it’s decided. GL-only items of ${money(GL_ONLY_LIMIT(), { dash: false })} or more are called out: confirm them against a document, not just the GL.`),
+        items.length ? table([
+          { label: 'What', cell: (x) => h('div', {}, h('strong', {}, x.what), x.detail ? h('div', { class: 'small muted wrap' }, x.detail) : null) },
+          { label: 'Open', num: true, cell: (x) => statusPill(String(x.n), x.kind) },
+          { label: '', cell: (x) => actionsCell({ more: [h('button', { class: 'small-btn', onclick: () => { close(true); x.go(); } }, 'Go →')] }) },
+        ], items) : null);
+    }, { wide: true });
+  }
+
+  // ---- Payer names: which names on a statement and in the GL are the same payer --------------
+  async function openAliases() {
+    await panel('Payer names', (body, close) => {
+      const list = aliasList(cfg.aliases);
+      const f = { bank: h('input', { type: 'text', size: 30, placeholder: 'On the statement, e.g. BBGF, AMER ONLINE GIV' }), gl: h('input', { type: 'text', size: 30, placeholder: 'In the GL, e.g. Your Cause' }) };
+      const save = (aliases, what) => (async () => {
+        try { cfg.aliases = aliases; await savePocConfig(cfg); toast(what); reopenAfter = { kind: 'aliases' }; await rerender(); close(true); }
+        catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+      })();
+      mount(body,
+        h('p', { class: 'muted small' }, 'When a deposit is matched to a GL entry, the payer on the statement is compared with the payer on the GL line. Giving platforms often pay under another name — these count as the same payer. Words are matched anywhere in the description, ignoring case; separate several with commas.'),
+        table([
+          { label: 'Payer', cell: (a) => h('strong', {}, a.name) },
+          { label: 'On the statement', cell: (a) => h('span', { class: 'small wrap' }, a.bank || '') },
+          { label: 'In the GL', cell: (a) => h('span', { class: 'small wrap' }, a.gl || '') },
+          { label: '', cell: (a) => (a.added ? actionsCell({ more: [h('button', { class: 'small-btn danger', onclick: () => save((cfg.aliases || []).filter((x) => !(x.bank === a.bank && x.gl === a.gl)), `Removed ${a.name}`) }, 'Remove')] }) : h('span', { class: 'small muted' }, 'Built in')) },
+        ], list),
+        h('h4', {}, 'Add a payer name'),
+        h('div', { class: 'row inline-form' }, f.bank, f.gl, h('button', { class: 'primary', onclick: () => {
+          const bank = f.bank.value.trim(), gl = f.gl.value.trim();
+          if (!bank || !gl) { toast('Fill in both: how the statement says it, and how the GL says it.', 'error'); return; }
+          save([...(cfg.aliases || []), { bank, gl, name: gl.split(',')[0].trim(), by: user, at: nowIso() }], `Added: ${bank} = ${gl}`);
+        } }, 'Add')));
+    }, { wide: true });
+  }
+
   // Each GL register upload for the month against the one before, batch by batch.
   function glHistory(m) {
     const hist = glBy[m]?.history || [];
@@ -1465,7 +1559,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         h('button', { class: 'btn', onclick: exportExcel, title: 'Download the sheet, adjustment detail, sources and checks as an Excel workbook' }, 'Export Excel'),
         h('button', { class: 'btn', onclick: printPdf, title: 'Print, or choose “Save as PDF” in the print dialog' }, 'Print / PDF'),
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),
-        h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'))),
+        h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'),
+        h('button', { class: 'btn', onclick: openAliases, title: 'The names the app treats as the same payer on a statement and in the GL' }, 'Payer names'))),
     h('div', { class: 'row tabs' },
       years.map((y) => h('button', { class: y === fy ? 'tab active' : 'tab', onclick: () => pickFy(y), title: `October ${y - 1} – September ${y}` }, `FY${y}`, h('span', { class: 'tab-sub' }, ` Oct ${String(y - 1).slice(2)}–Sep ${String(y).slice(2)}`))),
       h('button', { class: 'tab add', onclick: addYear }, '+ Add fiscal year'),
@@ -1493,6 +1588,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     else if (r.kind === 'account') openAccount(r.id, r.m);
     else if (r.kind === 'month') openMonth(r.m);
     else if (r.kind === 'gl') openGl(r.m);
+    else if (r.kind === 'todo') openTodo(r.m);
+    else if (r.kind === 'aliases') openAliases();
   }
   const saved = scrollMemory[fy];
   if (saved) {
