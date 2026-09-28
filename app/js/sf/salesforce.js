@@ -85,7 +85,7 @@ export function reconcileMonth({ sf, giving, found = {} }) {
   add('Stripe', refunds, 'Stripe refunds', 'Salesforce keeps a refunded gift at its full amount; the GL takes the refund off Stripe revenue.', 'GL “Monthly Stripe Giving”: Refunds CC / Wire Refunds Gross Amount');
   add('Stripe', disputes, 'Stripe disputes', 'Salesforce keeps a disputed gift; the GL takes the dispute off revenue.', 'GL “Monthly Stripe Giving”: Dispute Gross Amount');
   // Money received now for revenue the GL recognized earlier (a pledge or grant receivable).
-  for (const x of found.priorPeriod || []) add(x.channel, x.amount, `Received now, recognized by the GL earlier: ${x.desc}`, 'The GL recognized this when it was pledged or granted (a receivable); Salesforce records it when it’s paid.', x.source);
+  for (const x of found.priorPeriod || []) add(x.channel, x.amount, `Received now, recognized by the GL earlier: ${x.desc}`, 'The GL recognized this when it was pledged or granted (a grant / pledge receivable, 1220); Salesforce records it when it’s paid.', x.source);
   // GL revenue with no cash this month.
   for (const x of found.noCash || []) add(x.channel || 'Wire', -x.amount, `${x.amount > 0 ? 'Recognized by the GL with no cash this month' : 'Taken out of revenue by the GL with no cash'}: ${x.desc}`,
     x.amount > 0 ? 'The GL booked revenue now (a pledge, a grant receivable, a gift released from a liability) that Salesforce records when it’s paid, or recorded already.' : 'The GL moved a gift out of revenue (to a liability, or reversed it); Salesforce still has it.', x.source);

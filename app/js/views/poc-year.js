@@ -1340,7 +1340,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const GIVING_ACCTS = ['4010', '4012', '4015', '4017', '4018'];
   function sfFound(m) {
     const c = cols.find((x) => x.m === m)?.c;
-    const priorPeriod = (c?.adjustments || []).filter((a) => a.type === 'prior-period' && /^auto-ex-/.test(a.id || ''))
+    // Only gifts: a deposit collected on a grant or pledge receivable (1220). Merchandise sold on
+    // account (1210, the air orders) and card rewards aren't in Salesforce's giving at all.
+    const priorPeriod = (c?.adjustments || []).filter((a) => a.type === 'prior-period' && /^auto-ex-/.test(a.id || '') && /\b1220\b/.test(a.note || ''))
       .map((a) => ({ channel: CHECKISH.test(a.detail?.[0]?.desc || a.label) ? 'Check' : 'Wire', amount: -a.amount, desc: (a.detail?.[0]?.desc || a.label).slice(0, 60), source: a.note || '' }));
     const noCash = (glBy[m]?.noCashRevenue || []).map((x) => ({ amount: round2(GIVING_ACCTS.reduce((t, a) => t + (x.accounts[a] || 0), 0)), desc: x.desc, source: `GL ${x.batch} (${x.date})` }))
       .filter((x) => Math.abs(x.amount) >= 0.005);
@@ -1350,6 +1352,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const sfYear = (() => {
     const ms = cols.map((x) => x.m).filter((m) => sfBy[m] || glBy[m]?.giving);
     const res = reconcileYear(ms.map((m) => ({ sf: sfBy[m] ? { ...sfBy[m], month: m } : { month: m, methods: {} }, giving: glBy[m]?.giving, found: sfFound(m) })));
+    // What's not explained, added up month by month through the complete months.
+    let run = 0;
+    const doneMs = new Set(done.map((x) => x.m));
+    res.forEach((r, i) => { if (sfBy[ms[i]] && doneMs.has(ms[i])) { run = round2(run + r.unexplained); r.running = run; } });
     return Object.fromEntries(res.map((r, i) => [ms[i], r]));
   })();
   const pct = (v) => (v == null ? '' : `${(v * 100).toFixed(1)}%`);
@@ -1364,6 +1370,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true },
     { section: 'Not explained, by channel' },
     ...SF_CHANNELS.map((ch) => ({ label: ch, indent: true, f: (r) => r.rows.find((x) => x.channel === ch)?.unexplained ?? null, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') })),
+    // DAF grants paid by check are "Check" in Salesforce and 4018 ("Wire") in the GL, so the two
+    // are best read together.
+    { label: 'Check + Wire together', indent: true, f: (r) => round2(sum(r.rows.filter((x) => x.channel === 'Check' || x.channel === 'Wire'), (x) => x.unexplained)), cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
+    // Timing spread over several months (year-end giving recorded in Salesforce in Nov–Dec, reaching
+    // the GL in Jan–Feb) shows as a running total that rises, then comes back.
+    { label: 'Not explained, running total', f: (r) => r.running ?? null, noYtd: true, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
   ];
   // YTD over the months the proof of cash counts (Cass deposits in): a month whose GL isn't
   // finished (September, mid-close) would swamp it.
