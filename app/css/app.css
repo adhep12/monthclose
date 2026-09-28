@@ -307,3 +307,11 @@ main.content { margin: 0 auto; }
 .page-head .actions .btn, .page-head .actions label.btn { padding: .3rem .7rem; font-size: .85rem; }
 .todo-badge { display: block; margin: .15rem auto 0; padding: 0 .45rem; font-size: .7rem; font-weight: 600; border-radius: 999px; border: 1px solid var(--warn); color: var(--warn); background: var(--warn-soft); cursor: pointer; }
 .todo-badge.done { border-color: var(--good); color: var(--good); background: var(--good-soft); }
+
+/* The month's to-do list: each item opens to decide it in place. */
+.todo-item { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: .5rem; background: var(--panel); }
+.todo-item > summary { cursor: pointer; padding: .55rem .75rem; list-style-position: inside; }
+.todo-item > summary .todo-title { font-weight: 600; }
+.todo-item > summary .todo-detail { margin: .2rem 0 0 1.1rem; font-weight: 400; }
+.todo-item[open] > summary { border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--muted) 6%, transparent); }
+.todo-body { padding: .6rem .75rem; }

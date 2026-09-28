@@ -101,7 +101,7 @@ let carriedScroll = null;
 const openWaiters = [];
 // { y, open }: where the pop-up was scrolled to, and which of its sections (<details>) were open,
 // named by their summary without its numbers ("Every deposit this month (155)" → "Every deposit this month").
-const detailName = (d) => (d.querySelector('summary')?.textContent || '').replace(/[\d,.()]+/g, '').replace(/\s+/g, ' ').trim();
+const detailName = (d) => d.dataset.key || (d.querySelector('summary')?.textContent || '').replace(/[\d,.()]+/g, '').replace(/\s+/g, ' ').trim();
 export function carryScroll(state) { carriedScroll = state; }
 export function topPanelScroll() {
   const all = document.querySelectorAll('.dialog.panel');

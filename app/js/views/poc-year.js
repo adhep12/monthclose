@@ -597,14 +597,16 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       ], outs));
   }
 
-  function cassSummary(c, m, close) {
+  // opts.only: just one of the sections still to decide ('matches', 'conflicts', 'noGl'), with
+  // decisions reopening opts.again — for a month's to-do list.
+  function cassSummary(c, m, close, opts = {}) {
     const cassAdj = c.adjustments.filter((a) => a.account === 'cassOp' || a.auto);
     const dep = c.deposits;
-    const again = { kind: 'account', id: 'cassOp', m };
+    const again = opts.again || { kind: 'account', id: 'cassOp', m };
     const saved = byMonth[m] || {};
     const conflicts = dep?.conflicts || [];
     // Deposits the GL doesn't have: those still to check first, then those someone has decided.
-    const noGl = (dep?.noGl || []).filter((x) => !x.covered).sort((x, y) => !!x.decided - !!y.decided);
+    const noGl = (dep?.noGl || []).filter((x) => !x.covered && !(opts.only && x.decided)).sort((x, y) => !!x.decided - !!y.decided);
     const typeName = (t) => (REVIEW_TYPES.find((x) => x[0] === t) || [, t])[1];
     // Deposits a statement rule already takes out (a Divvy reimbursement): confirming keeps that.
     const ruleOut = new Map(Object.entries(byMonth[m] ? defaultExclusions(byMonth[m]) : {}));
@@ -651,10 +653,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           : { more: [h('button', { class: 'small-btn', onclick: () => unconfirmMatch(m, c, x, again, close) }, 'Clear the confirmation')] }) },
       ], toCheck)) : null;
     const rejectedAny = Object.keys(saved_.glNot || {}).length;
-    return h('div', {},
-      matchSection,
-      rejectedAny ? h('p', { class: 'small muted' }, `${rejectedAny} deposit${rejectedAny === 1 ? '' : 's'} with a GL entry ruled out (“Not this entry”) — see the deposit list below to undo.`) : null,
-      conflicts.length ? h('div', { class: 'adj-section' },
+    const conflictSection = conflicts.length ? h('div', { class: 'adj-section' },
         reviewHead('A rule and the GL disagree', { count: conflicts.length, todo: conflicts.length }),
         h('p', { class: 'muted small' }, 'A statement rule says the deposit isn’t revenue, but the GL booked it as revenue. It counts as revenue, the GL’s way, until you decide: Confirm keeps it as revenue; Change… takes it out the rule’s way.'),
         table([
@@ -665,8 +664,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           { label: '', cell: (x) => actionsCell({ confirm: () => treatAs(m, x.line, 'revenue', '', again, close),
             change: changeSelect([[x.rule.type, `The rule: ${typeName(x.rule.type).toLowerCase()}`], ...REVIEW_TYPES.filter(([v]) => v !== x.rule.type && v !== 'revenue')], 'revenue',
               (v) => treatAs(m, x.line, v, v === x.rule.type ? `Confirmed: ${x.rule.note}` : '', again, close)) }) },
-        ], conflicts)) : null,
-      noGl.length ? h('div', { class: 'adj-section' },
+        ], conflicts)) : null;
+    const noGlSection = noGl.length ? h('div', { class: 'adj-section' },
         reviewHead('Deposits the GL doesn’t have', { count: noGl.length, todo: todoNoGl.length,
           onConfirmAll: () => decide(m, confirmNoGl(todoNoGl), `Confirmed ${todoNoGl.length} deposits the GL doesn’t match: ${todoNoGl.map((x) => `${x.line.date} ${money(x.line.amount)} as ${typeName(nowType(x)).toLowerCase()}`).join(', ')}`, again, close) }),
         h('p', { class: 'muted small' }, 'On the statement, but no GL batch this month or either side matches it — often revenue booked in another month, or several deposits booked as one entry that doesn’t add up the same way. Confirm keeps how it counts now; Change… counts it differently.'),
@@ -681,7 +680,15 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             confirm: x.decided ? null : () => decide(m, confirmNoGl([x]), `${x.line.date} ${x.line.desc} ${money(x.line.amount)}: confirmed as ${typeName(nowType(x)).toLowerCase()} (no GL batch matched it)`, again, close),
             change: changeSelect(REVIEW_TYPES, nowType(x), (v) => treatAs(m, x.line, v, '', again, close), 'Change how it counts…'),
             more: x.decided ? [h('button', { class: 'small-btn', onclick: () => undoNoGl(x) }, 'Undo')] : [] }) },
-        ], noGl)) : null,
+        ], noGl)) : null;
+    if (opts.only === 'matches') return matchSection;
+    if (opts.only === 'conflicts') return conflictSection;
+    if (opts.only === 'noGl') return noGlSection;
+    return h('div', {},
+      matchSection,
+      rejectedAny ? h('p', { class: 'small muted' }, `${rejectedAny} deposit${rejectedAny === 1 ? '' : 's'} with a GL entry ruled out (“Not this entry”) — see the deposit list below to undo.`) : null,
+      conflictSection,
+      noGlSection,
       decisionsMade(m, c, close),
       h('div', { class: 'adj-section' },
         reviewHead('Taken out of Cass deposits', { total: round2(sum(cassAdj, (a) => a.amount)), count: kinds.reduce((n, k) => n + k.its.length, 0), todo: takenTodo.length,
@@ -952,7 +959,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     if (!rows.length) return;
     rec.ditGl = { ...(rec.ditGl || {}), ...Object.fromEntries(rows.map((r) => [r.batch, { in: r.suggested, by: user, at: nowIso() }])) };
   };
-  function ditBlock(m, c, close, again) {
+  // opts.onlyTodo: just the rows still to confirm, for a month's to-do list.
+  function ditBlock(m, c, close, again, opts = {}) {
     const dit = c.deposits?.dit;
     const M = short(m), N = short(addMonths(m, 1));
     // Going against what a statement shows needs a reason, and stays marked (*).
@@ -967,7 +975,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     };
     const clearChoice = (r) => decide(m, (rec) => { if (rec.ditGl) delete rec.ditGl[r.batch]; },
       `${r.desc} ${money(r.amount)}: back to ${r.settled ? 'what the statement shows' : 'the GL’s suggestion'}`, again, close);
-    const rows = dit ? dit.rows.filter(ditShown) : [];
+    const rows = dit ? dit.rows.filter(opts.onlyTodo ? (r) => r.flagged : ditShown) : [];
     const typed = (byMonth[m]?.dit || []).filter((d) => !dit || !String(d.id || '').startsWith('imp-'));
     const dup = new Set((dit?.manual || []).filter((x) => x.duplicate).map((x) => x.d.id));
     // Where each choice puts the deposit, in words.
@@ -1000,8 +1008,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { label: 'Amount', num: true, cell: (r) => (r.counts ? money(r.sign * r.amount) : h('s', { class: 'muted', title: 'Not in transit — not counted' }, money(r.sign * r.amount))) },
         { label: 'Status', cell: rowStatus },
         { label: '', cell: rowActions },
-      ], rows, { empty: 'Nothing near month end.', foot: (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Description' ? 'In transit, from the GL' : '') })
+      ], rows, { empty: 'Nothing near month end.', foot: opts.onlyTodo ? null : (col_) => (col_.label === 'Amount' ? money(dit.glTotal) : col_.label === 'Description' ? 'In transit, from the GL' : '') })
         : h('p', { class: 'muted small' }, 'No GL register for this month — deposits in transit are the typed ones below.'),
+      opts.onlyTodo ? null : h('div', {},
       h('h4', {}, 'Typed deposits in transit'),
       typed.length ? table([
         { label: 'Date', cell: (d) => d.date || '' },
@@ -1010,72 +1019,93 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { label: 'Status', cell: (d) => statusCell({ state: null, by: d.enteredBy ? `Typed by ${d.enteredBy}` : String(d.id || '').startsWith('imp-') ? 'From the workbook' : 'Typed', at: d.enteredAt, counts: dup.has(d.id) ? 'Also on the GL’s list — not counted twice' : '' }) },
         { label: '', cell: (d) => actionsCell({ more: [h('button', { class: 'small-btn danger', onclick: () => removeTyped(d) }, 'Remove')] }) },
       ], typed) : null,
-      h('div', { class: 'row inline-form', style: { marginTop: '.4rem' } }, f.date, f.note, f.amount, h('button', { onclick: addTyped }, 'Add deposit in transit')));
+      h('div', { class: 'row inline-form', style: { marginTop: '.4rem' } }, f.date, f.note, f.amount, h('button', { onclick: addTyped }, 'Add deposit in transit'))));
   }
 
   // ---- Adjustment detail panel -------------------------------------------------------------
+  // An adjustment group's lines, each with its Status and actions: shared by the group's pop-up and
+  // a month's to-do list (which shows only the lines still to confirm). Decisions reopen `again_`.
+  // edit(a) opens a typed adjustment for editing (only the group's own pop-up has the form).
+  function adjKit(key, m, c, close, again_, edit = null) {
+    const list = c.adjustments.filter((a) => adjKey(a) === key);
+    const fillForm = (a) => (edit ? edit(a) : (close(true), openAdjustments(key, m)));
+    const items = linesOf(list);
+    const what = whatLanded(c, items);
+    const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `Typed by ${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
+    const withNotes = items.some((x) => extra(x));
+    // What can be decided here: how a deposit counts, or leaving out something the GL found.
+    const lineOf = (a) => (/^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null);
+    const saved = byMonth[m] || {};
+    const isTodo = (x) => confirmOf(saved, x).st !== 'confirmed';
+    const confirmOne = (x) => decide(m, confirmLines([x], user), `Confirmed ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close);
+    const confirmMany = (xs, name) => () => decide(m, confirmLines(xs, user), `Confirmed all ${xs.length} lines of “${name}”`, again_, close);
+    // A Stripe transfer says how it counts, and who decided if a person did.
+    const stripeOf = (x) => (x.a.id === 'auto-stripe' && x.id ? saved.stripeAs?.[x.id] || null : undefined);
+    const status = (x) => {
+      const { o, st } = confirmOf(saved, x);
+      const sb = stripeOf(x);
+      const counts = sb !== undefined ? 'Counts as a Stripe payout (a transfer, not revenue)' : '';
+      const note = sb ? `Made a payout by ${sb.by} · ${when(sb.at)}` : '';
+      if (st === 'confirmed') return statusCell({ state: 'confirmed', by: o.confirmation.by, at: o.confirmation.at, counts, note });
+      return statusCell({ state: st === 'stale' ? 'stale' : 'todo', counts, note });
+    };
+    const setStripe = (t, as) => decide(m, (rec) => { rec.stripeAs = { ...(rec.stripeAs || {}), [t.id]: { as, by: user, at: nowIso() } }; },
+      `${t.date} ${t.desc} ${money(Math.abs(t.amount ?? t.shown))}: counted as ${as === 'gift' ? 'revenue — a gift, not a Stripe payout' : 'a Stripe payout (transfer)'}`, again_, close);
+    const undoStripe = (t) => decide(m, (rec) => { if (rec.stripeAs) delete rec.stripeAs[t.id]; },
+      `${t.date} ${t.desc} ${money(Math.abs(t.amount ?? t.shown))}: back to how the GL has it`, again_, close);
+    const typeName = (t) => (REVIEW_TYPES.find((y) => y[0] === t) || [, ADJUSTMENT_TYPES[t] || t])[1];
+    const action = (x) => {
+      const id = lineOf(x.a);
+      const todo = isTodo(x);
+      const more = [];
+      let change = null;
+      if (stripeOf(x) !== undefined) {
+        change = changeSelect([['gift', 'A gift — count as revenue']], null, () => setStripe(x, 'gift'), 'Change how it counts…');
+        if (stripeOf(x)) more.push(h('button', { class: 'small-btn', onclick: () => undoStripe(x) }, 'Undo'));
+      } else if (id) change = changeSelect(REVIEW_TYPES, x.a.type || 'not-revenue', (v) => treatAs(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, v, '', again_, close), 'Change how it counts…');
+      else if (/^auto-gl/.test(x.a.id || '')) more.push(h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, again_, close) }, 'Leave out'));
+      else if (!x.a.auto) more.push(h('button', { class: 'small-btn', onclick: () => fillForm(x.a) }, 'Edit'),
+        h('button', { class: 'small-btn danger', onclick: async () => {
+          if (!(await ask('Remove adjustment', `Remove “${x.a.label}” (${money(x.a.amount)})?`, { ok: 'Remove', danger: true }))) return;
+          decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
+        } }, 'Remove'));
+      if (!todo) more.push(h('button', { class: 'small-btn', title: 'Take the confirmation back — the line goes back to “To check”', onclick: () => unconfirmOne(x) }, 'Undo confirm'));
+      return actionsCell({ confirm: todo ? () => confirmOne(x) : null, confirmLabel: confirmOf(saved, x).st === 'stale' ? 'Confirm again' : 'Confirm', change, more });
+    };
+    // Taking a confirmation back. One made for a whole adjustment (before lines could be
+    // confirmed one at a time) stays on its other lines.
+    const unconfirmOne = (x) => decide(m, (rec) => {
+      if (!x.a.auto) { const t = (rec.adjustments || []).find((y) => y.id === x.a.id); if (t) delete t.confirmation; return; }
+      const ac = rec.autoConfirm || {};
+      const whole = ac[x.a.id];
+      if (whole?.confirmation) {
+        for (const y of items.filter((y) => y.a === x.a && y !== x)) ac[lineKey(y)] ||= { confirmation: { ...whole.confirmation, values: { amount: round2(y.shown) } } };
+        delete ac[x.a.id];
+      }
+      delete ac[lineKey(x)];
+    }, `Took back the confirmation of ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close);
+    const cols_ = [
+      { label: 'Date', cell: (x) => x.date || '' },
+      { label: 'Description', cell: (x) => h('div', {}, h('span', { class: 'wrap' }, what(x)),
+        h('div', { class: 'small muted' }, [label(x.a.account || 'cassOp'), x.a.statement].filter(Boolean).join(' · '))) },
+      { label: 'Amount', num: true, cell: (x) => money(x.shown) },
+      { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
+      ...(withNotes ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small wrap' }, extra(x)) }] : []),
+      { label: 'Status', cell: (x) => status(x) },
+      { label: '', cell: (x) => action(x) },
+    ];
+    return { list, items, what, isTodo, confirmMany, lineOf, typeName, setStripe, undoStripe, cols_ };
+  }
+
   async function openAdjustments(key, m) {
     const col = cols.find((x) => x.m === m);
     if (!col?.c) return;
     const list = col.c.adjustments.filter((a) => adjKey(a) === key);
     const c = col.c;
     await panel(`${key} — ${monthName(m)}`, (body, close) => {
-      const items = linesOf(list);
-      const what = whatLanded(c, items);
-      const extra = (x) => [what(x) === (x.note || x.a.note) ? '' : x.note || x.a.note, x.a.enteredBy ? `Typed by ${x.a.enteredBy} · ${when(x.a.enteredAt)}` : ''].filter(Boolean).join(' · ');
-      const withNotes = items.some((x) => extra(x));
-      // What can be decided here: how a deposit counts, or leaving out something the GL found.
-      const lineOf = (a) => (/^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null);
       const again_ = { kind: 'adjustments', key, m };
       const saved = byMonth[m] || {};
-      const isTodo = (x) => confirmOf(saved, x).st !== 'confirmed';
-      const confirmOne = (x) => decide(m, confirmLines([x], user), `Confirmed ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close);
-      const confirmMany = (xs, name) => () => decide(m, confirmLines(xs, user), `Confirmed all ${xs.length} lines of “${name}”`, again_, close);
-      // A Stripe transfer says how it counts, and who decided if a person did.
-      const stripeOf = (x) => (x.a.id === 'auto-stripe' && x.id ? saved.stripeAs?.[x.id] || null : undefined);
-      const status = (x) => {
-        const { o, st } = confirmOf(saved, x);
-        const sb = stripeOf(x);
-        const counts = sb !== undefined ? 'Counts as a Stripe payout (a transfer, not revenue)' : '';
-        const note = sb ? `Made a payout by ${sb.by} · ${when(sb.at)}` : '';
-        if (st === 'confirmed') return statusCell({ state: 'confirmed', by: o.confirmation.by, at: o.confirmation.at, counts, note });
-        return statusCell({ state: st === 'stale' ? 'stale' : 'todo', counts, note });
-      };
-      const setStripe = (t, as) => decide(m, (rec) => { rec.stripeAs = { ...(rec.stripeAs || {}), [t.id]: { as, by: user, at: nowIso() } }; },
-        `${t.date} ${t.desc} ${money(Math.abs(t.amount ?? t.shown))}: counted as ${as === 'gift' ? 'revenue — a gift, not a Stripe payout' : 'a Stripe payout (transfer)'}`, again_, close);
-      const undoStripe = (t) => decide(m, (rec) => { if (rec.stripeAs) delete rec.stripeAs[t.id]; },
-        `${t.date} ${t.desc} ${money(Math.abs(t.amount ?? t.shown))}: back to how the GL has it`, again_, close);
-      const typeName = (t) => (REVIEW_TYPES.find((y) => y[0] === t) || [, ADJUSTMENT_TYPES[t] || t])[1];
-      const action = (x) => {
-        const id = lineOf(x.a);
-        const todo = isTodo(x);
-        const more = [];
-        let change = null;
-        if (stripeOf(x) !== undefined) {
-          change = changeSelect([['gift', 'A gift — count as revenue']], null, () => setStripe(x, 'gift'), 'Change how it counts…');
-          if (stripeOf(x)) more.push(h('button', { class: 'small-btn', onclick: () => undoStripe(x) }, 'Undo'));
-        } else if (id) change = changeSelect(REVIEW_TYPES, x.a.type || 'not-revenue', (v) => treatAs(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, v, '', again_, close), 'Change how it counts…');
-        else if (/^auto-gl/.test(x.a.id || '')) more.push(h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, again_, close) }, 'Leave out'));
-        else if (!x.a.auto) more.push(h('button', { class: 'small-btn', onclick: () => fillForm(x.a) }, 'Edit'),
-          h('button', { class: 'small-btn danger', onclick: async () => {
-            if (!(await ask('Remove adjustment', `Remove “${x.a.label}” (${money(x.a.amount)})?`, { ok: 'Remove', danger: true }))) return;
-            decide(m, (rec) => { rec.adjustments = (rec.adjustments || []).filter((y) => y.id !== x.a.id); }, `Removed adjustment “${x.a.label}” ${money(x.a.amount)}`, again_, close);
-          } }, 'Remove'));
-        if (!todo) more.push(h('button', { class: 'small-btn', title: 'Take the confirmation back — the line goes back to “To check”', onclick: () => unconfirmOne(x) }, 'Undo confirm'));
-        return actionsCell({ confirm: todo ? () => confirmOne(x) : null, confirmLabel: confirmOf(saved, x).st === 'stale' ? 'Confirm again' : 'Confirm', change, more });
-      };
-      // Taking a confirmation back. One made for a whole adjustment (before lines could be
-      // confirmed one at a time) stays on its other lines.
-      const unconfirmOne = (x) => decide(m, (rec) => {
-        if (!x.a.auto) { const t = (rec.adjustments || []).find((y) => y.id === x.a.id); if (t) delete t.confirmation; return; }
-        const ac = rec.autoConfirm || {};
-        const whole = ac[x.a.id];
-        if (whole?.confirmation) {
-          for (const y of items.filter((y) => y.a === x.a && y !== x)) ac[lineKey(y)] ||= { confirmation: { ...whole.confirmation, values: { amount: round2(y.shown) } } };
-          delete ac[x.a.id];
-        }
-        delete ac[lineKey(x)];
-      }, `Took back the confirmation of ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close);
+      const { items, what, isTodo, confirmMany, lineOf, typeName, setStripe, undoStripe, cols_ } = adjKit(key, m, c, close, again_, (a) => fillForm(a));
       // Adding (or editing) an adjustment typed by hand, in this row.
       const DEFAULT_TYPE = { [ADJ_GROUPS[0]]: 'transfer', [ADJ_GROUPS[1]]: 'transfer', [ADJ_GROUPS[2]]: 'not-revenue', [ADJ_GROUPS[3]]: 'other', [ADJ_GROUPS[4]]: 'timing' };
       const formHost = h('div');
@@ -1107,16 +1137,6 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           h('p', { class: 'muted small' }, 'Enter the amount as it affects bank revenue: money that isn’t revenue is negative.'));
       };
       fillForm(null);
-      const cols_ = [
-        { label: 'Date', cell: (x) => x.date || '' },
-        { label: 'Description', cell: (x) => h('div', {}, h('span', { class: 'wrap' }, what(x)),
-          h('div', { class: 'small muted' }, [label(x.a.account || 'cassOp'), x.a.statement].filter(Boolean).join(' · '))) },
-        { label: 'Amount', num: true, cell: (x) => money(x.shown) },
-        { label: 'Evidence', cell: (x) => evidencePill(x.a.evidence) },
-        ...(withNotes ? [{ label: 'Note / who', cell: (x) => h('span', { class: 'small wrap' }, extra(x)) }] : []),
-        { label: 'Status', cell: (x) => status(x) },
-        { label: '', cell: (x) => action(x) },
-      ];
       // One section per kind of item, each with its reason, what's left to check and its subtotal.
       const kinds = [...new Set(list.map(adjDetail))];
       const section = (kind) => {
@@ -1274,42 +1294,72 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // GL-only items this large need someone to confirm them against a document (the platform's
   // remittance, the investment statement), not just the GL.
   const GL_ONLY_LIMIT = () => cfg.glOnlyThreshold ?? 500;
+  // Each item: what, how many, a line of detail, go() to the pop-up it belongs to, and inline(close)
+  // — the rows themselves, with the same Status, Confirm and Change… as in that pop-up, so it can be
+  // decided right here. Decisions made here reopen the to-do list where it was.
   function monthTodo(m) {
     const c = cols.find((x) => x.m === m)?.c;
     const saved = byMonth[m];
     if (!c || !saved) return [];
     const dep = c.deposits;
+    const again = { kind: 'todo', m };
     const out = [];
-    const add = (what, n, detail, go, kind = 'warn') => { if (n) out.push({ what, n, detail, go, kind }); };
+    const add = (what, n, detail, go, kind = 'warn', inline = null) => { if (n) out.push({ what, n, detail, go, kind, inline }); };
     const missing = (c.warnings || []).filter((w) => ['operating', 'incoming', 'outgoing'].includes(w.kind));
-    add('Statements missing', missing.length, missing.map((w) => w.text).join(' '), () => openMonth(m));
+    add('Statements missing', missing.length, missing.map((w) => w.text).join(' '), () => openMonth(m), 'warn',
+      () => h('p', { class: 'small' }, 'Attach them in the month’s pop-up (or drop them on the Cass Operating cell).'));
     const other = (c.warnings || []).filter((w) => !['operating', 'incoming', 'outgoing'].includes(w.kind));
     add('Deposits in transit to look at', other.length, other.map((w) => w.text).join(' '), () => openAdjustments(TIMING, m));
     const low = matchesToCheck(c);
-    add('Matches to the GL to check', low.length, low.slice(0, 4).map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m));
-    add('A rule and the GL disagree', dep?.conflicts?.length || 0, (dep?.conflicts || []).map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m));
+    add('Matches to the GL to check', low.length, low.slice(0, 4).map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m), 'warn',
+      (close) => cassSummary(c, m, close, { only: 'matches', again }));
+    add('A rule and the GL disagree', dep?.conflicts?.length || 0, (dep?.conflicts || []).map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m), 'warn',
+      (close) => cassSummary(c, m, close, { only: 'conflicts', again }));
     const noGl = (dep?.noGl || []).filter((x) => !x.covered && !x.decided);
-    add('Deposits the GL doesn’t have', noGl.length, noGl.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m));
-    const dit = (dep?.dit?.rows || []).filter((r) => r.flagged);
-    add('Deposits in transit to confirm', dit.length, dit.map((r) => `${r.desc} ${money(r.amount, { dash: false })}`).join('; '), () => openAdjustments(TIMING, m));
+    add('Deposits the GL doesn’t have', noGl.length, noGl.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join('; '), () => openAccount('cassOp', m), 'warn',
+      (close) => cassSummary(c, m, close, { only: 'noGl', again }));
+    const dit = ditTodoRows(c);
+    add('Deposits in transit to confirm', dit.length, dit.map((r) => `${r.desc} ${money(r.amount, { dash: false })}`).join('; '), () => openAdjustments(TIMING, m), 'warn',
+      (close) => h('div', {}, h('div', { class: 'row' }, h('button', { class: 'small-btn confirm-btn', onclick: () => decide(m, confirmDit(dit), `Confirmed ${dit.length} deposits in transit as suggested`, again, close) }, `Confirm all ${dit.length} as suggested`)),
+        ditBlock(m, c, close, again, { onlyTodo: true })));
     for (const g of ADJ_GROUPS) {
       const lines_ = linesOf(c.adjustments.filter((a) => adjKey(a) === g));
       const todo = lines_.filter((x) => confirmOf(saved, x).st !== 'confirmed');
       const big = todo.filter((x) => x.a.evidence === 'gl' && Math.abs(x.shown) >= GL_ONLY_LIMIT());
       add(`${g}: lines to confirm`, todo.length, big.length ? `${big.length} rest on the GL alone and are ${money(GL_ONLY_LIMIT(), { dash: false })} or more — confirm against a document: ${big.slice(0, 3).map((x) => `${x.desc || x.a.label} ${money(x.shown, { dash: false })}`).join('; ')}` : `${todo.length} of ${lines_.length} lines`,
-        () => openAdjustments(g, m), big.length ? 'warn' : 'info');
+        () => openAdjustments(g, m), big.length ? 'warn' : 'info',
+        (close) => {
+          const kit = adjKit(g, m, c, close, again);
+          const open_ = kit.items.filter(kit.isTodo).sort((x, y) => (y.a.evidence === 'gl' && Math.abs(y.shown) >= GL_ONLY_LIMIT()) - (x.a.evidence === 'gl' && Math.abs(x.shown) >= GL_ONLY_LIMIT()));
+          return h('div', {}, h('div', { class: 'row' }, h('button', { class: 'small-btn confirm-btn', onclick: kit.confirmMany(open_, g) }, `Confirm all ${open_.length}`)), table(kit.cols_, open_));
+        });
     }
-    if (c.stripeCheck?.state === 'mismatch') add('Stripe payouts don’t match Cass', 1, `Difference ${money(c.stripeCheck.diff, { dash: false })} — explain it or find the payout`, () => openAccount('stripe', m));
+    if (c.stripeCheck?.state === 'mismatch') {
+      add('Stripe payouts don’t match Cass', 1, `Difference ${money(c.stripeCheck.diff, { dash: false })} — explain it or find the payout`, () => openAccount('stripe', m), 'warn',
+        (close) => h('div', { class: 'row' }, h('span', { class: 'small' }, `Stripe CSV payouts ${money(c.stripeCheck.csv, { dash: false })}, Stripe transfers into Cass ${money(c.stripeCheck.cass, { dash: false })}.`), h('span', { class: 'spacer' }),
+          h('button', { class: 'small-btn confirm-btn', onclick: async () => {
+            const note = (await askValue('Explain the difference', `${stripeFlagText(c.stripeCheck)} What explains it?`, { ok: 'Mark explained' }))?.trim();
+            if (note) decide(m, (r) => { r.stripeCheck = { diff: c.stripeCheck.diff, note, by: user, at: nowIso() }; }, `Explained Stripe payout difference ${money(c.stripeCheck.diff, { dash: false })}: ${note}`, again, close);
+          } }, 'Explain…')));
+    }
     if (wiseOutgoingCheck(saved).some((x) => x.state === 'missing')) add('Money out of Wise with no deposit found', 1, 'Sent to one of our accounts, not found on the other side', () => openAccount('wise', m));
     for (const s_ of BANK_SOURCES) {
       const l = line(c, s_.id);
-      if (!l || (l.rev == null && l.int == null) || (!l.rev && !l.int)) continue;
+      if (!l || (!l.rev && !l.int)) continue;
       const st = confirmationState(saved.bank?.[s_.id], l.values);
-      if (st !== 'confirmed') add(`${s_.label}: figures to confirm`, 1, st === 'stale' ? 'Changed since it was confirmed' : [l.rev ? `Revenue ${money(l.rev, { dash: false })}` : '', l.int ? `interest ${money(l.int, { dash: false })}` : ''].filter(Boolean).join(', '), () => openAccount(s_.id, m), 'info');
+      if (st !== 'confirmed') add(`${s_.label}: figures to confirm`, 1, st === 'stale' ? 'Changed since it was confirmed' : [l.rev ? `Revenue ${money(l.rev, { dash: false })}` : '', l.int ? `interest ${money(l.int, { dash: false })}` : ''].filter(Boolean).join(', '), () => openAccount(s_.id, m), 'info',
+        (close) => h('div', { class: 'row' }, h('span', { class: 'small' }, `${sourceOf(l)}${l.enteredBy ? ` · entered by ${l.enteredBy}` : ''}`), h('span', { class: 'spacer' }),
+          h('button', { class: 'small-btn confirm-btn', title: l.enteredBy && l.enteredBy === user ? 'You entered this — ideally someone else confirms it.' : '',
+            onclick: () => decide(m, (r) => { r.bank ||= {}; confirmValues(r.bank[s_.id] ||= {}, user, l.values); }, `Confirmed ${s_.label}: revenue ${money(l.rev, { dash: false })}, interest ${money(l.int, { dash: false })}`, again, close) }, 'Confirm figures')));
     }
     const so = saved.signoff;
-    if (!so?.prepared) add('Not marked prepared', 1, '', () => openMonth(m), 'info');
-    else if (!so?.reviewed) add('Prepared, not reviewed', 1, `Prepared by ${so.prepared.by}`, () => openMonth(m), 'info');
+    const snap = { diffRev: c.diffRev, diffInt: c.diffInt };
+    const mark = (k, close) => decide(m, (r) => { r.signoff = { ...(r.signoff || {}), [k]: { by: user, at: nowIso(), ...snap } }; if (k === 'prepared') delete r.signoff.reviewed; },
+      `Marked ${k}: revenue difference ${money(snap.diffRev, { dash: false })}, interest difference ${money(snap.diffInt, { dash: false })}`, again, close);
+    if (!so?.prepared) add('Not marked prepared', 1, '', () => openMonth(m), 'info',
+      (close) => h('div', { class: 'row' }, h('span', { class: 'small' }, `Revenue difference ${money(c.diffRev, { dash: false })}, interest difference ${money(c.diffInt, { dash: false })}.`), h('span', { class: 'spacer' }), h('button', { class: 'small-btn confirm-btn', onclick: () => mark('prepared', close) }, 'Mark prepared')));
+    else if (!so?.reviewed) add('Prepared, not reviewed', 1, `Prepared by ${so.prepared.by}`, () => openMonth(m), 'info',
+      (close) => h('div', { class: 'row' }, h('span', { class: 'small' }, `Prepared by ${so.prepared.by} · ${when(so.prepared.at)}.`), h('span', { class: 'spacer' }), h('button', { class: 'small-btn confirm-btn', title: so.prepared.by === user ? 'You prepared this — ideally someone else reviews it.' : '', onclick: () => mark('reviewed', close) }, 'Mark reviewed')));
     return out;
   }
   function todoBadge(m) {
@@ -1318,7 +1368,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const items = monthTodo(m);
     const warn = items.filter((x) => x.kind === 'warn').length;
     return h('button', { class: `todo-badge${items.length ? '' : ' done'}`, title: items.map((x) => `${x.what} (${x.n})`).join('\n') || 'Nothing left to decide',
-      onclick: (e) => { e.stopPropagation(); openTodo(m); } }, items.length ? `${items.length} to do${warn ? ' ⚠' : ''}` : '✓ done');
+      onclick: (e) => { e.stopPropagation(); openTodo(m); } }, items.length ? `${items.length} to do${warn ? ' ⚠' : ''}` : '0 to do ✓');
   }
   async function openTodo(m) {
     const c = cols.find((x) => x.m === m)?.c;
@@ -1326,14 +1376,15 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       const items = monthTodo(m);
       mount(body,
         c ? h('div', { class: 'review-bar' },
-          items.length ? statusPill(`${items.length} to do`, items.some((x) => x.kind === 'warn') ? 'warn' : 'info') : statusPill('✓ Nothing left to decide', 'good'),
+          items.length ? statusPill(`${items.length} to do`, items.some((x) => x.kind === 'warn') ? 'warn' : 'info') : statusPill('0 to do — everything is decided', 'good'),
           h('span', { class: 'muted small' }, `Revenue difference ${money(c.diffRev, { dash: false })} · interest difference ${money(c.diffInt, { dash: false })}`)) : null,
-        h('p', { class: 'muted small' }, `Everything still open for ${monthName(m)}, most important first. Each opens the pop-up where it’s decided. GL-only items of ${money(GL_ONLY_LIMIT(), { dash: false })} or more are called out: confirm them against a document, not just the GL.`),
-        items.length ? table([
-          { label: 'What', cell: (x) => h('div', {}, h('strong', {}, x.what), x.detail ? h('div', { class: 'small muted wrap' }, x.detail) : null) },
-          { label: 'Open', num: true, cell: (x) => statusPill(String(x.n), x.kind) },
-          { label: '', cell: (x) => actionsCell({ more: [h('button', { class: 'small-btn', onclick: () => { close(true); x.go(); } }, 'Go →')] }) },
-        ], items) : null);
+        h('p', { class: 'muted small' }, `Everything still open for ${monthName(m)}, most important first. Open one to decide it here — the same Confirm and Change… as in its own pop-up; once decided it drops off this list and lives in its row on the sheet, where it can still be changed. GL-only lines of ${money(GL_ONLY_LIMIT(), { dash: false })} or more come first in their group: confirm them against a document, not just the GL.`),
+        items.map((x) => h('details', { class: 'todo-item', 'data-key': x.what },
+          h('summary', {}, h('span', { class: 'todo-title' }, x.what), ' ', statusPill(String(x.n), x.kind),
+            x.detail ? h('div', { class: 'small muted wrap todo-detail' }, x.detail) : null),
+          h('div', { class: 'todo-body' },
+            x.inline ? x.inline(close) : null,
+            h('div', { class: 'row', style: { justifyContent: 'flex-end', marginTop: '.4rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); x.go(); } }, 'Open the full pop-up →'))))));
     }, { wide: true });
   }
 
