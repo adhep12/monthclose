@@ -40,12 +40,15 @@ export function repairRefs(XLSX, wb) {
   return wb;
 }
 
+// Exports use a short dash only: em and en dashes (the app's own wording uses them) become "-".
+export const noLongDashes = (v) => (typeof v === 'string' ? v.replace(/\s*—\s*/g, ' - ').replace(/–/g, '-') : v);
+
 export async function downloadWorkbook(filename, sheets) {
   const XLSX = await loadXLSX();
   const wb = XLSX.utils.book_new();
   for (const { name, rows, cols, freeze } of sheets) {
     // A cell may be { v, z } to give it its own number format; other numbers get the accounting one.
-    const ws = XLSX.utils.aoa_to_sheet(rows.map((r) => r.map((v) => (v && typeof v === 'object' && 'v' in v ? v.v : v))));
+    const ws = XLSX.utils.aoa_to_sheet(rows.map((r) => r.map((v) => noLongDashes(v && typeof v === 'object' && 'v' in v ? v.v : v))));
     rows.forEach((r, ri) => r.forEach((v, ci) => {
       const cell = ws[XLSX.utils.encode_cell({ r: ri, c: ci })];
       if (!cell || cell.t !== 'n') return;
@@ -53,9 +56,9 @@ export async function downloadWorkbook(filename, sheets) {
     }));
     if (cols) ws['!cols'] = cols.map((wch) => ({ wch }));
     if (freeze) ws['!freeze'] = freeze;
-    XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+    XLSX.utils.book_append_sheet(wb, ws, noLongDashes(name).slice(0, 31));
   }
-  XLSX.writeFile(wb, filename);
+  XLSX.writeFile(wb, noLongDashes(filename));
 }
 
 // ---- Helpers shared by the parsers -------------------------------------------------------
