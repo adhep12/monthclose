@@ -179,8 +179,10 @@ export function withinTolerance(r, tol = DEFAULT_SF_TOLERANCE) {
 }
 export function ytdTolerance(months, tol = DEFAULT_SF_TOLERANCE) {
   const un = round2(sum(months, (r) => r.unexplained)), gl = round2(sum(months, (r) => r.glTotal));
+  const diff = round2(sum(months, (r) => r.diff)), explained = round2(sum(months, (r) => r.explained));
   const share = gl ? Math.abs(un) / Math.abs(gl) : null;
-  return { unexplained: un, glTotal: gl, share, ok: share != null && share <= tol.ytdPct };
+  return { unexplained: un, glTotal: gl, diff, explained, share, ok: share != null && share <= tol.ytdPct,
+    pct: gl ? diff / gl : null, explainedShare: diff ? Math.max(0, Math.min(1, 1 - Math.abs(un) / Math.abs(diff))) : null };
 }
 
 // ---- Who a gift came from -------------------------------------------------------------------

@@ -17,7 +17,11 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   workbook. FY2026 runs from October 2025 to September 2026.
   - Rows show each account's revenue and interest, then Cass adjustments (expandable), timing
     adjustments, GL, the difference, and the % difference.
-  - YTD covers the months whose Cass Operating deposits are in.
+  - YTD covers the complete months: the Cass statements attached (none missing), a figure for every
+    account in use (a statement attached or typed; in use from the first month it has a figure), and
+    the GL loaded. The YTD header's hover lists what each incomplete month is missing. Salesforce vs GL
+    uses the same months, with its % rows (of GL, explained, not explained, tolerance) worked out on the
+    complete months' totals.
   - Drop a statement on an account's cell to attach it; the number updates in place.
   - Click a cell for detail, typed figures, confirmation, and detach.
   - On ICS, CDARS, Delap and Tschetter cells, "−" undoes an attachment or typed entry.

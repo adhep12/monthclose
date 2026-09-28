@@ -245,7 +245,22 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // Where a figure came from, in words. Figures typed in the app carry who entered them; the
   // workbook import's figures don't.
   const sourceOf = (l) => (l.from === 'typed' ? (l.enteredBy ? 'Typed' : 'Workbook import') : l.from || 'Workbook import');
-  const done = cols.filter((x) => x.c && line(x.c, 'cassOp').rev != null);
+  // A month is complete when everything it needs is in: the Cass statements (none missing), a figure
+  // for every account in use (a statement attached or typed; an account counts as in use from the
+  // first month it has a figure), and the GL. YTD covers complete months only.
+  const hasFig = (l) => l && (l.rev != null || l.int != null || l.ending != null);
+  const firstFig = Object.fromEntries(BANK_SOURCES.map((src) => [src.id, cols.find((x) => x.c && hasFig(line(x.c, src.id)))?.m || null]));
+  const missingOf = (x) => {
+    if (!x.c || !x.rec) return ['statements and figures'];
+    const out = [];
+    if (line(x.c, 'cassOp').rev == null) out.push('Cass Operating statement');
+    for (const w of (x.c.warnings || []).filter((w_) => ['incoming', 'outgoing'].includes(w_.kind))) out.push(w.kind === 'incoming' ? 'Cass Incoming Wires statement' : 'Cass Outgoing Wires statement');
+    for (const src of BANK_SOURCES) if (src.id !== 'cassOp' && firstFig[src.id] && firstFig[src.id] <= x.m && !hasFig(line(x.c, src.id))) out.push(src.label);
+    if (x.c.glRev == null) out.push('GL figures');
+    return out;
+  };
+  const done = cols.filter((x) => !missingOf(x).length);
+  const notDone = cols.filter((x) => x.c && missingOf(x).length).map((x) => `${short(x.m)}: ${missingOf(x).join(', ')}`);
 
   // ---- Rows ----------------------------------------------------------------------------------
   const bankRows = SHEET_ORDER.map((id) => {
@@ -357,7 +372,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       h('div', { class: 'table-wrap sheet' }, h('table', {},
         h('thead', {},
           h('tr', {}, h('th', { class: 'label-col' }, ''),
-            h('th', { class: 'num ytd', colspan: span }, 'YTD', h('div', { class: 'muted small' }, done.length ? `${range} · ${done.length} mo.` : range)),
+            h('th', { class: 'num ytd', colspan: span, title: `YTD adds up the complete months: statements attached (or figures typed) for every account in use, and the GL loaded.${notDone.length ? `\nNot complete yet — ${notDone.join('; ')}` : ''}` }, 'YTD', h('div', { class: 'muted small' }, done.length ? `${range} · ${done.length} complete` : range)),
             cols.map(({ m, rec }) => h('th', { class: 'num month', colspan: span },
               h('a', { href: '#/poc', title: `Open ${monthName(m)}: statements, notes, sign-off, activity`, onclick: (e) => { e.preventDefault(); openMonth(m); } }, short(m)), ' ', statusOf(rec),
               todoBadge(m)))),
@@ -1375,10 +1390,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     { label: 'Salesforce (by close date)', f: (r) => r.sfTotal, strong: true },
     { label: 'GL giving (4010, 4012, 4015, 4017, 4018)', f: (r) => r.glTotal, strong: true },
     { label: 'Difference (Salesforce − GL)', f: (r) => r.diff, strong: true },
-    { label: '% of GL', f: (r) => r.pct, fmt: pct, noYtd: true, share: true },
+    { label: '% of GL', f: (r) => r.pct, fmt: pct, noYtd: true, share: true, ytdOf: (t) => t.pct, ytdFmt: pct },
     { label: 'Explained', f: (r) => r.explained, cls: 'good-text' },
     { label: 'Not explained', f: (r) => r.unexplained, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
-    { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true },
+    { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true, ytdOf: (t) => t.explainedShare, ytdFmt: pct },
     { label: 'Not explained, % of GL', f: (r) => withinTolerance(r, sfTol).share, fmt: pct2, noYtd: true, share: true, ytdOf: (t) => t.share },
     { label: 'Tolerance', strong: true, status: (r) => withinTolerance(r, sfTol), f: () => null, noYtd: true },
     { section: 'Not explained, by channel' },
@@ -1400,7 +1415,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const doneSet = sfDoneSet;
     const both = sfYtdMonths();
     const needGl = ms.some((m) => sfBy[m] && glBy[m] && (!glBy[m].giving || (Array.isArray(sfBy[m].gifts) && !glBy[m].giving.payers)));
-    const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'The GL isn’t complete for this month yet (no Cass deposits in the proof of cash) — not in YTD', onclick: () => openSfMonth(m) }, v);
+    const cell = (m, v, cls = '') => { const x = cols.find((y) => y.m === m); return h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : `Not complete yet, so not in YTD — missing: ${x ? missingOf(x).join(', ') : 'statements and figures'}`, onclick: () => openSfMonth(m) }, v); };
     const ytd = (f) => { const v = both.map((m) => f(sfYear[m])).filter((x) => x != null); return v.length ? round2(sum(v, (x) => x)) : null; };
     const rowsDef = sfRowsDef();
     const ytdT = ytdTolerance(both.map((m) => sfYear[m]), sfTol);
@@ -1413,11 +1428,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       any ? h('p', { class: 'muted small' }, `Tolerance ${tolText}.`) : null,
       !any ? h('p', { class: 'muted' }, 'Upload Salesforce opportunity reports to start: the gift-level report (Amount, Close Date, Payment Method) or the summary by close date and payment method. Several at once is fine — each replaces only the months its date filter covers.')
         : h('div', { class: 'table-wrap sheet' }, h('table', {},
-          h('thead', {}, h('tr', {}, h('th', { class: 'label-col' }, ''), h('th', { class: 'num ytd' }, 'YTD', h('div', { class: 'muted small' }, `${both.length} mo.`)),
+          h('thead', {}, h('tr', {}, h('th', { class: 'label-col' }, ''), h('th', { class: 'num ytd', title: `Totals over the complete months (statements attached or figures typed for every account in use, and the GL loaded) that have Salesforce figures.${notDone.length ? `\nNot complete yet — ${notDone.join('; ')}` : ''}` }, 'YTD', h('div', { class: 'muted small' }, both.length ? `${short(both[0])}–${short(both[both.length - 1])} · ${both.length} complete` : 'no complete months')),
             ms.map((m) => h('th', { class: 'num month' }, h('a', { href: '#/poc', onclick: (e) => { e.preventDefault(); openSfMonth(m); } }, short(m)))))),
           h('tbody', {}, rowsDef.map((d) => (d.section ? h('tr', { class: 'section' }, h('td', { class: 'label-col', colspan: ms.length + 2 }, d.section))
             : h('tr', { class: d.strong ? 'strong' : '' }, h('td', { class: `label-col${d.indent ? ' indent' : ''}` }, d.label),
-              h('td', { class: 'num ytd' }, d.status ? tolPill(ytdT) : d.ytdOf ? pct2(d.ytdOf(ytdT)) : d.noYtd ? '' : money(ytd(d.f))),
+              h('td', { class: 'num ytd' }, d.status ? tolPill(ytdT) : d.ytdOf ? (d.ytdFmt || pct2)(d.ytdOf(ytdT)) : d.noYtd ? '' : money(ytd(d.f))),
               ms.map((m) => { const r = sfYear[m]; if (!r || !sfBy[m]) return h('td', { class: 'num muted' }, sfBy[m] ? '' : '');
                 if (d.status) { const t = d.status(r); return cell(m, h('span', { title: t.big.length ? `Over ${money(sfTol.item, { dash: false })} unexplained: ${t.big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(', ')}` : '' }, tolPill(t), t.big.length ? h('div', { class: 'small muted' }, `${t.big.length} to look at`) : null)); }
                 const v = d.f(r); const cls = typeof d.cls === 'function' ? (v == null ? '' : d.cls(v)) : d.cls || '';
@@ -1431,7 +1446,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const share = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: '0.0%' });
     const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · Salesforce opportunities by close date against GL giving (4010, 4012, 4015, 4017, 4018)`;
     const summary = [[`FY${fy} Salesforce vs GL — giving`], [stamp],
-      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months with the GL complete)` : 'no complete months yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
+      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} complete months: statements attached or figures typed for every account in use, and the GL loaded)` : 'no complete months yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
       ['', 'YTD', ...ms.map((m) => monthName(m))]];
     const ytdT = ytdTolerance(ytdMs.map((m) => sfYear[m]), sfTol);
     summary.splice(3, 0, [`Tolerance ${tolText}.`]);
@@ -1442,7 +1457,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         summary.push([d.label, word(ytdT), ...ms.map((m) => (sfYear[m] ? `${word(d.status(sfYear[m]))}${d.status(sfYear[m]).big.length ? ` (${d.status(sfYear[m]).big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(', ')} to look at)` : ''}` : ''))]);
         continue;
       }
-      if (d.ytdOf) { const z = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: '0.00%' }); summary.push([d.label, z(d.ytdOf(ytdT)), ...ms.map((m) => (sfYear[m] ? z(d.f(sfYear[m])) : null))]); continue; }
+      if (d.ytdOf) { const z = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: d.ytdFmt ? '0.0%' : '0.00%' }); summary.push([d.label, z(d.ytdOf(ytdT)), ...ms.map((m) => (sfYear[m] ? z(d.f(sfYear[m])) : null))]); continue; }
       const vals = ms.map((m) => { const v = sfYear[m] ? d.f(sfYear[m]) : null; return d.share ? share(v) : v; });
       const ytd = d.noYtd ? null : round2(sum(ytdMs.map((m) => d.f(sfYear[m]) ?? 0), (x) => x));
       const ytdShare = d.share && ytdMs.length ? (() => { const df = sum(ytdMs, (m) => sfYear[m].diff), gl = sum(ytdMs, (m) => sfYear[m].glTotal), un = sum(ytdMs, (m) => sfYear[m].unexplained);
@@ -1920,7 +1935,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const pct = (d, g) => (d == null || !g ? null : { v: Math.round((d / g) * 1e6) / 1e6, z: '0.00%' });
     const at = (f, c) => (f && c ? f(c) ?? null : null);
     const sheetRows = [
-      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} months with Cass Operating deposits in)` : 'no months yet'}`], [],
+      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} complete months: statements attached or figures typed for every account in use, and the GL loaded)` : 'no complete months yet'}${notDone.length ? `. Not complete: ${notDone.join('; ')}` : ''}`], [],
       ['', 'YTD Revenue', 'YTD Interest', ...months.flatMap((m) => [`${short(m)} Revenue`, `${short(m)} Interest`])],
     ];
     for (const r of all) {
