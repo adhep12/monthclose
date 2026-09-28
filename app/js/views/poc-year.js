@@ -15,6 +15,7 @@ import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, 
 import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
+import { mergeChanges } from '../merge.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
@@ -169,6 +170,8 @@ const scrollMemory = {};
 // After a decision made in a pop-up is saved, the sheet redraws and the same pop-up opens again
 // with the new numbers.
 let reopenAfter = null;
+// The month records this page saved last, by month (see byMonth).
+const recentSaves = {};
 const REVIEW_TYPES = [['revenue', 'Revenue'], ['transfer', 'Transfer between accounts'], ['prior-period', 'Recognized in another month'], ['not-revenue', 'Not revenue (refund etc.)']];
 
 function blank(month) {
@@ -177,7 +180,10 @@ function blank(month) {
 
 export default async function (main, { user, rerender, month: openMonthParam = null }) {
   const [recs, glActs, cfg, cds, soas] = await Promise.all([loadPocMonths(), listGlActivity(), loadPocConfig(), loadCds(), listSoa()]);
-  const byMonth = Object.fromEntries(recs.map((r) => [r.month, r]));
+  // Right after a save, the platform's list can still hand back the month as it was; what this
+  // page just saved wins until the list catches up.
+  const byMonth = Object.fromEntries(recs.map((r) => [r.month, recentSaves[r.month] && String(recentSaves[r.month].updatedAt || '') > String(r.updatedAt || '') ? { key: r.key, ...recentSaves[r.month] } : r]));
+  for (const [m_, r_] of Object.entries(recentSaves)) if (!byMonth[m_]) byMonth[m_] = r_;
   const glBy = Object.fromEntries(glActs.map((g) => [g.month, g]));
   const soaBy = Object.fromEntries(soas.map((s) => [s.month, s]));
   main.classList.add('wide-page');
@@ -409,6 +415,17 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   async function saveRec(rec) {
     rec.updatedBy = user; rec.updatedAt = nowIso();
     await savePocMonth(rec);
+    recentSaves[rec.month] = structuredClone(rec);
+  }
+  // Save what a long-open pop-up changed (local, against base — the month as the pop-up read it)
+  // onto the month as it is now. If it changed again in between, read it again and apply once
+  // more. Returns the month as saved.
+  async function saveMerged(m, base, local) {
+    for (let attempt = 0; ; attempt++) {
+      const current = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+      const next = mergeChanges(current, base, local);
+      try { await saveRec(next); return next; } catch (err) { if (!err?.conflict || attempt) throw err; }
+    }
   }
 
   // Dropping a statement on a cell: attach it and update the sheet, without opening anything.
@@ -444,7 +461,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
 
   async function openAccount(id, m, droppedFiles = null) {
     let dirty = false;
-    const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+    let rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+    // What this pop-up changes is saved onto the month as it is at the time (saveMerged).
+    let base = structuredClone(rec);
+    const commit = async () => { rec = await saveMerged(m, base, rec); base = structuredClone(rec); dirty = true; };
     const prior = (await loadPocMonth(addMonths(m, -1))) || byMonth[addMonths(m, -1)] || null;
     const files = ACCOUNT_FILES[id] || {};
     const src = BANK_SOURCES.find((s) => s.id === id);
@@ -455,7 +475,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         if (!list.length) return;
         const res = await attachFiles({ files: list, rec, cds, month: m, user, expectAccount: id, ask, saveCd });
         if (res.changed) {
-          try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+          try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
         }
         const bad = res.messages.filter((x) => x.bad);
         if (bad.length) notify('Please check', bad.map((x) => x.text));
@@ -490,7 +510,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               h('button', { class: 'small-btn danger', onclick: async () => {
                 if (!(await ask('Detach statement', `Detach ${x.s.fileName || x.label}? Its figures come out of ${monthName(m)}.`, { ok: 'Detach', danger: true }))) return;
                 await x.detach(); logChange(rec, user, `Detached ${x.label} ${x.s.fileName || ''}`);
-                try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+                try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
                 draw();
               } }, 'Detach')) },
           ], attached) : null,
@@ -527,7 +547,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
                   // What was there before anything was typed (workbook figures), for undo.
                   if (!b.enteredAt && !b.before) b.before = Object.fromEntries(TYPED_FIELDS.filter((k) => before[k] != null).map((k) => [k, before[k]]));
                   stampEntered(b, user); logChange(rec, user, `${label(id)}: ${changes.join(', ')}`);
-                  try { await saveRec(rec); dirty = true; toast('Saved.'); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+                  try { await commit(); toast('Saved.'); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
                   draw();
                 } }, 'Save'))),
           auto && src.id !== 'cd' ? h('p', { class: 'muted small' }, 'Detach the statement to type figures instead.') : null,
@@ -535,13 +555,13 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           stampBadge({ enteredBy: l.enteredBy, enteredAt: l.enteredAt, obj: b, values: l.values, user,
             onConfirm: async () => {
               confirmValues(b, user, l.values); logChange(rec, user, `Confirmed ${label(id)}: revenue ${money(l.rev, { dash: false })}, interest ${money(l.int, { dash: false })}`);
-              try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+              try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
               draw();
             },
-            onUnconfirm: async () => { delete b.confirmation; logChange(rec, user, `Removed confirmation on ${label(id)}`); try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err), 'error'); } draw(); } }),
+            onUnconfirm: async () => { delete b.confirmation; logChange(rec, user, `Removed confirmation on ${label(id)}`); try { await commit(); } catch (err) { toast(explain(err), 'error'); } draw(); } }),
 
           id === 'cassOp' ? cassSummary(c, m, close) : null,
-          id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await saveRec(rec); dirty = true; } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
+          id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
@@ -872,10 +892,13 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // reopens.
   async function decide(m, change, what, again, close) {
     try {
-      const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
-      change(rec);
-      logChange(rec, user, what);
-      await saveRec(rec);
+      // Read the month fresh, apply the change, save; if someone saved it in between, once more.
+      for (let attempt = 0; ; attempt++) {
+        const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+        change(rec);
+        logChange(rec, user, what);
+        try { await saveRec(rec); break; } catch (err) { if (!err?.conflict || attempt) throw err; }
+      }
       reopenAfter = again;
       // The page redraws underneath; the new pop-up opens over this one where it was scrolled to,
       // then this one goes.
@@ -1348,9 +1371,16 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (!l || (!l.rev && !l.int)) continue;
       const st = confirmationState(saved.bank?.[s_.id], l.values);
       if (st !== 'confirmed') add(`${s_.label}: figures to confirm`, 1, st === 'stale' ? 'Changed since it was confirmed' : [l.rev ? `Revenue ${money(l.rev, { dash: false })}` : '', l.int ? `interest ${money(l.int, { dash: false })}` : ''].filter(Boolean).join(', '), () => openAccount(s_.id, m), 'info',
-        (close) => h('div', { class: 'row' }, h('span', { class: 'small' }, `${sourceOf(l)}${l.enteredBy ? ` · entered by ${l.enteredBy}` : ''}`), h('span', { class: 'spacer' }),
-          h('button', { class: 'small-btn confirm-btn', title: l.enteredBy && l.enteredBy === user ? 'You entered this — ideally someone else confirms it.' : '',
-            onclick: () => decide(m, (r) => { r.bank ||= {}; confirmValues(r.bank[s_.id] ||= {}, user, l.values); }, `Confirmed ${s_.label}: revenue ${money(l.rev, { dash: false })}, interest ${money(l.int, { dash: false })}`, again, close) }, 'Confirm figures')));
+        (close) => h('div', {},
+          h('div', { class: 'recon' },
+            l.rev != null ? rowKV('Revenue', money(l.rev, { dash: false })) : null,
+            l.int != null ? rowKV(s_.method === 'balance' ? 'Gain / interest' : 'Interest', money(l.int, { dash: false })) : null,
+            l.ending != null ? rowKV('Ending balance', money(l.ending, { dash: false })) : null,
+            rowKV('From', `${sourceOf(l)}${l.enteredBy ? ` · ${l.enteredBy}${l.enteredAt ? `, ${when(l.enteredAt)}` : ''}` : ''}`),
+            st === 'stale' && saved.bank?.[s_.id]?.confirmation ? rowKV('Confirmed before', `${saved.bank[s_.id].confirmation.by} · ${when(saved.bank[s_.id].confirmation.at)} — the figures have changed since`) : null),
+          h('div', { class: 'row', style: { justifyContent: 'flex-end', marginTop: '.4rem' } },
+            h('button', { class: 'small-btn confirm-btn', title: l.enteredBy && l.enteredBy === user ? 'You entered this — ideally someone else confirms it.' : '',
+              onclick: () => decide(m, (r) => { r.bank ||= {}; confirmValues(r.bank[s_.id] ||= {}, user, l.values); }, `Confirmed ${s_.label}: revenue ${money(l.rev, { dash: false })}, interest ${money(l.int, { dash: false })}`, again, close) }, 'Confirm figures'))));
     }
     const so = saved.signoff;
     const snap = { diffRev: c.diffRev, diffInt: c.diffInt };

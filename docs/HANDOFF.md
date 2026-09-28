@@ -269,6 +269,11 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
   that pop-up under *Changed here* (decisions record `from`, the group) with Undo; and Cass
   Operating's *Decisions made this month* lists every decision on the month, wherever it was made.
   Keep new pop-ups to this.
+- **Saving a month:** a decision reads the month fresh, changes it and saves (`decide`, one retry on
+  a conflict). A pop-up that stays open (an account) saves what it changed onto the month as it is
+  now (`saveMerged` → `merge.js`), so it never writes an old copy over someone else's save. Right
+  after a save the sheet uses what this page saved (`recentSaves`) until the platform's list catches
+  up — before this, a confirmation looked like it hadn't stuck.
 - **Gotchas:**
   - Native `confirm`/`prompt`/`alert` are blocked in the platform iframe. Use `ask`, `askValue`,
     `notify` and `panel` from `app/js/ui.js`.
