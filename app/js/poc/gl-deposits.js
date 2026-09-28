@@ -336,7 +336,9 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const info = { type: TYPE[k.kind], note: `GL ${x.r.batch}: ${x.r.desc} — ${WHY[k.kind]} (${k.label})`, auto: true, gl: x.r.batch };
       const by = coveredBy(l.amount);
       if (by) { res.covered.push({ line: l, info, by }); continue; }
+      // Someone counted it as revenue anyway: kept, so the app can say where it was taken out from.
       if (!dismissed[l.id]) res.exclusions[l.id] = info;
+      else (res.overruled ||= {})[l.id] = info;
     }
 
     if (receipts) {

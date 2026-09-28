@@ -642,7 +642,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             change: changeSelect(REVIEW_TYPES, nowType(x), (v) => treatAs(m, x.line, v, '', again, close), 'Change how it counts…'),
             more: x.decided ? [h('button', { class: 'small-btn', onclick: () => undoNoGl(x) }, 'Undo')] : [] }) },
         ], noGl)) : null,
-      decisionsMade(m, c, close, new Set(noGl.map((x) => x.line.id))),
+      decisionsMade(m, c, close),
       h('div', { class: 'adj-section' },
         reviewHead('Taken out of Cass deposits', { total: round2(sum(cassAdj, (a) => a.amount)), count: kinds.reduce((n, k) => n + k.its.length, 0), todo: takenTodo.length,
           onConfirmAll: () => decide(m, confirmLines(takenTodo, user), `Confirmed all ${takenTodo.length} lines taken out of Cass deposits`, again, close) }),
@@ -660,24 +660,49 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       allDeposits(c, m, close));
   }
 
+  // Every decision a person made on month m, with the group it took the line out of: recorded with
+  // the decision, or — for one made before that was recorded — worked out from what the line would
+  // count as if nobody had decided (the GL's or a statement rule's treatment).
+  function monthDecisions(m, c) {
+    const saved = byMonth[m] || {};
+    const depById = new Map(reviewableDeposits(saved).map((t) => [t.id, t]));
+    const ofType = (t) => (t === 'transfer' ? ADJ_GROUPS[0] : t === 'prior-period' ? ADJ_GROUPS[4] : t ? ADJ_GROUPS[2] : null);
+    const automatic = (id) => {
+      const { [id]: _d, ...dismissed } = saved.dismissed || {};
+      return c.deposits?.overruled?.[id] || c.deposits?.exclusions?.[id] || defaultExclusions({ ...saved, dismissed })[id] || null;
+    };
+    const out = [];
+    for (const [id, v] of Object.entries(saved.dismissed || {})) {
+      if (!v) continue;
+      const dep = depById.get(id);
+      if (dep) { out.push({ id, v, type: 'revenue', line: dep, from: v.from || ofType(automatic(id)?.type) }); continue; }
+      // A GL finding left out (auto-glrev-…, auto-glnocash-…).
+      const o = typeof v === 'object' ? v : {};
+      out.push({ id, v, type: 'left', line: { id, date: o.date || '', desc: o.desc || id.replace(/^auto-gl\w*?-/, 'GL finding '), amount: o.amount ?? 0 },
+        from: o.from || adjGroup({ id, type: /^auto-glkey-/.test(id) ? 'not-revenue' : '', amount: -1 }) });
+    }
+    for (const [id, raw] of Object.entries(saved.excluded || {})) {
+      const v = exclusionInfo(raw);
+      if (!v || v.auto) continue;
+      const dep = depById.get(id) || { id, date: v.date || '', desc: v.desc || id, amount: Math.abs(v.amount || 0) };
+      out.push({ id, v, type: v.type, line: dep, from: v.from || ofType(automatic(id)?.type) });
+    }
+    return out;
+  }
+
   // Every decision a person made on the month's deposits and GL findings, wherever it was made:
   // who, when, and Undo — so one that moved a line out of sight can always be found again.
-  function decisionsMade(m, c, close, shownAbove = new Set()) {
+  function decisionsMade(m, c, close) {
     const saved = byMonth[m] || {};
     const again = { kind: 'account', id: 'cassOp', m };
     const typeName = (t) => (REVIEW_TYPES.find((x) => x[0] === t) || [, t])[1];
-    const depById = new Map(reviewableDeposits(saved).map((t) => [t.id, t]));
-    const rows = [
-      ...Object.entries(saved.dismissed || {}).map(([id, v]) => ({ id, v, type: v?.left || !depById.has(id) ? 'left' : 'revenue' })),
-      ...Object.entries(saved.excluded || {}).filter(([, v]) => !exclusionInfo(v)?.auto).map(([id, v]) => ({ id, v: exclusionInfo(v), type: exclusionInfo(v)?.type })),
-    ].filter((d) => !shownAbove.has(d.id))
-      .map((d) => ({ ...d, line: depById.get(d.id) || { id: d.id, date: d.v?.date || '', desc: d.v?.desc || d.id, amount: Math.abs(d.v?.amount || 0) } }))
+    const rows = monthDecisions(m, c).map((d) => ({ ...d, v: typeof d.v === 'object' ? d.v : {} }))
       .sort((x, y) => String(x.line.date).localeCompare(String(y.line.date)));
     if (!rows.length) return null;
-    return h('details', { class: 'adj-section' }, h('summary', {}, h('strong', {}, `Decisions made this month (${rows.length})`), h('span', { class: 'muted small' }, ' — every deposit someone counted differently, and every GL finding left out, with Undo')),
+    return h('details', { class: 'adj-section', open: true }, h('summary', {}, h('strong', {}, `Decisions made this month (${rows.length})`), h('span', { class: 'muted small' }, ' — every deposit someone counted differently, and every GL finding left out, with Undo')),
       table([
         { label: 'Date', cell: (d) => d.line.date || '' },
-        { label: 'Description', cell: (d) => h('div', {}, h('span', { class: 'wrap' }, d.line.desc), d.v?.from ? h('div', { class: 'small muted' }, `Changed in ${d.v.from}`) : null) },
+        { label: 'Description', cell: (d) => h('div', {}, h('span', { class: 'wrap' }, d.line.desc), d.from ? h('div', { class: 'small muted' }, `Was under ${d.from}`) : null) },
         { label: 'Amount', num: true, cell: (d) => money(d.line.amount) },
         { label: 'Status', cell: (d) => statusCell({ state: 'changed', by: d.v?.by, at: d.v?.at, counts: d.type === 'left' ? 'Left out of this month' : `Counts as ${typeName(d.type).toLowerCase()}`, note: d.v?.note || '' }) },
         { label: '', cell: (d) => actionsCell({
@@ -1017,11 +1042,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       // group — so a mistake can be put right: who did it, and Undo.
       const inGroup = new Set([...list.map((a) => a.id), ...list.map(lineOf).filter(Boolean)]);
       const depById = new Map(reviewableDeposits(saved).map((t) => [t.id, t]));
-      const decisions = [
-        ...Object.entries(saved.dismissed || {}).map(([id, v]) => ({ id, v, type: v?.left ? 'left' : 'revenue' })),
-        ...Object.entries(saved.excluded || {}).map(([id, v]) => ({ id, v, type: v?.type })),
-      ].filter((d) => d.v && typeof d.v === 'object' && d.v.from === key && !inGroup.has(d.id))
-        .map((d) => ({ ...d, line: depById.get(d.id) || { id: d.id, date: d.v.date, desc: d.v.desc, amount: Math.abs(d.v.amount || 0) } }));
+      const decisions = monthDecisions(m, c)
+        .filter((d) => d.from === key && !inGroup.has(d.id))
+        .map((d) => ({ ...d, v: typeof d.v === 'object' ? d.v : {} }));
       const movedTo = (d) => { const a = c.adjustments.find((y) => lineOf(y) === d.id); return a ? adjGroup(a) : null; };
       const changedHere = decisions.length ? h('div', { class: 'adj-section' },
         reviewHead('Changed here', { count: 0 }),
