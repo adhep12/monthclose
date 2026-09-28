@@ -170,8 +170,20 @@ const scrollMemory = {};
 // After a decision made in a pop-up is saved, the sheet redraws and the same pop-up opens again
 // with the new numbers.
 let reopenAfter = null;
-// The month records this page saved last, by month (see byMonth).
+// The month records this page saved last, by month (see byMonth). Once this page has saved a
+// month it works from its own copy: reading it back from the platform straight after can return
+// the month as it was before, and a save based on that is refused as a conflict (409).
 const recentSaves = {};
+const recentGl = {}; // the same, for GL register uploads
+// The months as last listed, reused when the page redraws after a decision (listing again straight
+// after a save can bring back the old copies). Listed afresh when the page is opened, and at most
+// every five minutes.
+let listed = null;
+const LIST_FRESH_MS = 5 * 60 * 1000;
+async function readMonth(m, { fresh = false } = {}) {
+  if (!fresh && recentSaves[m]) return structuredClone(recentSaves[m]);
+  return loadPocMonth(m);
+}
 const REVIEW_TYPES = [['revenue', 'Revenue'], ['transfer', 'Transfer between accounts'], ['prior-period', 'Recognized in another month'], ['not-revenue', 'Not revenue (refund etc.)']];
 
 function blank(month) {
@@ -179,12 +191,15 @@ function blank(month) {
 }
 
 export default async function (main, { user, rerender, month: openMonthParam = null }) {
-  const [recs, glActs, cfg, cds, soas] = await Promise.all([loadPocMonths(), listGlActivity(), loadPocConfig(), loadCds(), listSoa()]);
+  const relist = !listed || Date.now() - listed.at > LIST_FRESH_MS || !Object.keys(recentSaves).length;
+  const [recs, glActs, cfg, cds, soas] = await Promise.all([relist ? loadPocMonths() : listed.recs, listGlActivity(), loadPocConfig(), loadCds(), listSoa()]);
+  if (relist) listed = { at: Date.now(), recs };
   // Right after a save, the platform's list can still hand back the month as it was; what this
   // page just saved wins until the list catches up.
   const byMonth = Object.fromEntries(recs.map((r) => [r.month, recentSaves[r.month] && String(recentSaves[r.month].updatedAt || '') > String(r.updatedAt || '') ? { key: r.key, ...recentSaves[r.month] } : r]));
   for (const [m_, r_] of Object.entries(recentSaves)) if (!byMonth[m_]) byMonth[m_] = r_;
-  const glBy = Object.fromEntries(glActs.map((g) => [g.month, g]));
+  const glBy = Object.fromEntries(glActs.map((g) => [g.month, recentGl[g.month] && String(recentGl[g.month].uploadedAt || '') > String(g.uploadedAt || '') ? recentGl[g.month] : g]));
+  for (const [m_, g_] of Object.entries(recentGl)) if (!glBy[m_]) glBy[m_] = g_;
   const soaBy = Object.fromEntries(soas.map((s) => [s.month, s]));
   main.classList.add('wide-page');
 
@@ -392,7 +407,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       `${id === 'cd' ? 'Detaches the CD statements for the month and takes their interest back out of the CD schedule' : 'Detaches the statement'} and clears any figures typed for ${label(id)}. Workbook figures come back, if there were any.`,
       { ok: 'Undo', danger: true }))) return;
     try {
-      const saved = await loadPocMonth(m);
+      const saved = await readMonth(m);
       const rec = Object.assign(blank(m), structuredClone(saved || {}));
       const what = [];
       if (id === 'cd') {
@@ -422,7 +437,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // more. Returns the month as saved.
   async function saveMerged(m, base, local) {
     for (let attempt = 0; ; attempt++) {
-      const current = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+      const current = Object.assign(blank(m), structuredClone((await readMonth(m, { fresh: attempt > 0 })) || {}));
       const next = mergeChanges(current, base, local);
       try { await saveRec(next); return next; } catch (err) { if (!err?.conflict || attempt) throw err; }
     }
@@ -444,7 +459,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     queue = queue.then(async () => {
       td.textContent = 'Reading…';
       try {
-        const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+        const rec = Object.assign(blank(m), structuredClone((await readMonth(m)) || {}));
         const res = await attachFiles({ files, rec, cds, month: m, user, expectAccount: id, ask, saveCd });
         if (res.changed) { await saveRec(rec); anyChanged = true; td.textContent = 'Saved'; } else restore();
         const bad = res.messages.filter((x) => x.bad);
@@ -461,11 +476,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
 
   async function openAccount(id, m, droppedFiles = null) {
     let dirty = false;
-    let rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+    let rec = Object.assign(blank(m), structuredClone((await readMonth(m)) || {}));
     // What this pop-up changes is saved onto the month as it is at the time (saveMerged).
     let base = structuredClone(rec);
     const commit = async () => { rec = await saveMerged(m, base, rec); base = structuredClone(rec); dirty = true; };
-    const prior = (await loadPocMonth(addMonths(m, -1))) || byMonth[addMonths(m, -1)] || null;
+    const prior = (await readMonth(addMonths(m, -1))) || byMonth[addMonths(m, -1)] || null;
     const files = ACCOUNT_FILES[id] || {};
     const src = BANK_SOURCES.find((s) => s.id === id);
 
@@ -821,7 +836,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       ];
       const onFiles = async (files) => {
         try {
-          const r = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+          const r = Object.assign(blank(m), structuredClone((await readMonth(m)) || {}));
           const res = await attachFiles({ files, rec: r, cds, month: m, user, ask, saveCd });
           const bad = res.messages.filter((x) => x.bad);
           if (bad.length) await notify('Please check', bad.map((x) => x.text));
@@ -894,7 +909,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     try {
       // Read the month fresh, apply the change, save; if someone saved it in between, once more.
       for (let attempt = 0; ; attempt++) {
-        const rec = Object.assign(blank(m), structuredClone((await loadPocMonth(m)) || {}));
+        const rec = Object.assign(blank(m), structuredClone((await readMonth(m, { fresh: attempt > 0 })) || {}));
         change(rec);
         logChange(rec, user, what);
         try { await saveRec(rec); break; } catch (err) { if (!err?.conflict || attempt) throw err; }
@@ -1536,7 +1551,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         const entry = { at: nowIso(), by: user, file: file.name, runAt: res.runAt, batches: Object.keys(p.index).length,
           ...(ch ? { added: ch.added.map((x) => x.batch), changed: ch.changed, removed: ch.removed } : { first: true }) };
         const g = { ...p, fileName: file.name, runAt: res.runAt, uploadedBy: user, uploadedAt: nowIso(), history: [...(before?.history || []), entry].slice(-24) };
-        await saveGlActivity(g); glBy[p.month] = g;
+        await saveGlActivity(g); glBy[p.month] = g; recentGl[p.month] = g;
         if (ch && (ch.added.length || ch.changed.length || ch.removed.length)) {
           report.push(`${monthName(p.month)}: ${[ch.added.length ? `${ch.added.length} new` : '', ch.changed.length ? `${ch.changed.length} changed (${ch.changed.slice(0, 4).map((x) => `${x.batch} ${money(x.was, { dash: false })} → ${money(x.now, { dash: false })}`).join(', ')}${ch.changed.length > 4 ? '…' : ''})` : '', ch.removed.length ? `${ch.removed.length} removed (${ch.removed.slice(0, 4).map((x) => `${x.batch} ${x.desc}`).join(', ')}${ch.removed.length > 4 ? '…' : ''})` : ''].filter(Boolean).join(' · ')}`);
         }

@@ -33,8 +33,23 @@ const local = {
   },
 };
 
+// Reads from the records API skip the browser's HTTP cache: a cached copy of a record from before
+// this page saved it would be taken for the current one, and the next save refused (409).
+function noStaleReads() {
+  if (typeof window === 'undefined' || !window.fetch || window.fetch.__noStale) return;
+  const base = window.fetch.bind(window);
+  const f = (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input?.url || '';
+    const method = (init.method || input?.method || 'GET').toUpperCase();
+    return base(input, method === 'GET' && /\/api\/data\//.test(url) && !init.cache ? { ...init, cache: 'no-store' } : init);
+  };
+  f.__noStale = true;
+  window.fetch = f;
+}
+
 export async function initStore() {
   try {
+    noStaleReads();
     const mod = await import('/_shared/data.js');
     backend = mod.records;
     filesBackend = mod.files || null;

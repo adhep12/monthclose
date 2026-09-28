@@ -269,6 +269,12 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
   that pop-up under *Changed here* (decisions record `from`, the group) with Undo; and Cass
   Operating's *Decisions made this month* lists every decision on the month, wherever it was made.
   Keep new pop-ups to this.
+- **Stale reads (the 409s):** straight after a save the platform can hand back the month as it was,
+  and a save based on that copy is refused (409). So once this page has saved a month it works from
+  its own copy (`readMonth` / `recentSaves`; a fresh read only to retry after a conflict), the sheet
+  redraws after a decision from the list it already has (`listed`, relisted on open or after five
+  minutes), GL uploads the same (`recentGl`), and reads from the records API skip the browser cache
+  (`store.js` `noStaleReads`).
 - **Saving a month:** a decision reads the month fresh, changes it and saves (`decide`, one retry on
   a conflict). A pop-up that stays open (an account) saves what it changed onto the month as it is
   now (`saveMerged` → `merge.js`), so it never writes an old copy over someone else's save. Right
