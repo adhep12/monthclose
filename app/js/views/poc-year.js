@@ -6,7 +6,7 @@
 import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget } from '../ui.js';
 import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
-import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo } from '../poc/calc.js';
+import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks, depositHint } from '../poc/gl-deposits.js';
 import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
@@ -944,18 +944,30 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       const isTodo = (x) => confirmOf(saved, x).st !== 'confirmed';
       const confirmOne = (x) => decide(m, confirmLines([x], user), `Confirmed ${x.date || ''} ${what(x)} ${money(x.shown)}`.replace(/\s+/g, ' '), again_, close);
       const confirmMany = (xs, name) => () => decide(m, confirmLines(xs, user), `Confirmed all ${xs.length} lines of “${name}”`, again_, close);
+      // A Stripe transfer says how it counts, and who decided if a person did.
+      const stripeOf = (x) => (x.a.id === 'auto-stripe' && x.id ? saved.stripeAs?.[x.id] || null : undefined);
       const status = (x) => {
         const { o, st } = confirmOf(saved, x);
-        if (st === 'confirmed') return statusCell({ state: 'confirmed', by: o.confirmation.by, at: o.confirmation.at });
-        return statusCell({ state: st === 'stale' ? 'stale' : 'todo' });
+        const sb = stripeOf(x);
+        const counts = sb !== undefined ? 'Counts as a Stripe payout (a transfer, not revenue)' : '';
+        const note = sb ? `Made a payout by ${sb.by} · ${when(sb.at)}` : '';
+        if (st === 'confirmed') return statusCell({ state: 'confirmed', by: o.confirmation.by, at: o.confirmation.at, counts, note });
+        return statusCell({ state: st === 'stale' ? 'stale' : 'todo', counts, note });
       };
+      const setStripe = (t, as) => decide(m, (rec) => { rec.stripeAs = { ...(rec.stripeAs || {}), [t.id]: { as, by: user, at: nowIso() } }; },
+        `${t.date} ${t.desc} ${money(Math.abs(t.amount ?? t.shown))}: counted as ${as === 'gift' ? 'revenue — a gift, not a Stripe payout' : 'a Stripe payout (transfer)'}`, again_, close);
+      const undoStripe = (t) => decide(m, (rec) => { if (rec.stripeAs) delete rec.stripeAs[t.id]; },
+        `${t.date} ${t.desc} ${money(Math.abs(t.amount ?? t.shown))}: back to how the GL has it`, again_, close);
       const typeName = (t) => (REVIEW_TYPES.find((y) => y[0] === t) || [, ADJUSTMENT_TYPES[t] || t])[1];
       const action = (x) => {
         const id = lineOf(x.a);
         const todo = isTodo(x);
         const more = [];
         let change = null;
-        if (id) change = changeSelect(REVIEW_TYPES, x.a.type || 'not-revenue', (v) => treatAs(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, v, '', again_, close), 'Change how it counts…');
+        if (stripeOf(x) !== undefined) {
+          change = changeSelect([['gift', 'A gift — count as revenue']], null, () => setStripe(x, 'gift'), 'Change how it counts…');
+          if (stripeOf(x)) more.push(h('button', { class: 'small-btn', onclick: () => undoStripe(x) }, 'Undo'));
+        } else if (id) change = changeSelect(REVIEW_TYPES, x.a.type || 'not-revenue', (v) => treatAs(m, { id, date: x.date, desc: x.desc, amount: Math.abs(x.shown) }, v, '', again_, close), 'Change how it counts…');
         else if (/^auto-gl/.test(x.a.id || '')) more.push(h('button', { class: 'small-btn', title: 'Found in the GL, but it doesn’t belong in this month’s proof of cash', onclick: () => leaveOut(m, x.a, again_, close) }, 'Leave out'));
         else if (!x.a.auto) more.push(h('button', { class: 'small-btn', onclick: () => fillForm(x.a) }, 'Edit'),
           h('button', { class: 'small-btn danger', onclick: async () => {
@@ -1046,6 +1058,20 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         .filter((d) => d.from === key && !inGroup.has(d.id))
         .map((d) => ({ ...d, v: typeof d.v === 'object' ? d.v : {} }));
       const movedTo = (d) => { const a = c.adjustments.find((y) => lineOf(y) === d.id); return a ? adjGroup(a) : null; };
+      // Stripe transfers that stay in revenue: gifts through someone else's Stripe account.
+      const gifts = key === ADJ_GROUPS[0] ? stripeSplit(saved, c.deposits).gifts : [];
+      const giftSection = gifts.length ? h('div', { class: 'adj-section' },
+        reviewHead('Stripe transfers counted as revenue (gifts)', { total: round2(sum(gifts, (t) => t.amount)) }),
+        h('p', { class: 'muted small' }, 'Stripe transfers into Cass that aren’t one of our payouts — a gift paid through someone else’s Stripe account (Every.org). They stay in revenue, so they aren’t taken out above.'),
+        table([
+          { label: 'Date', cell: (t) => t.date },
+          { label: 'Description', cell: (t) => h('div', {}, h('span', { class: 'wrap' }, t.desc), h('div', { class: 'small muted wrap' }, t.gl ? `Per the GL: ${t.gl.batch} ${t.gl.desc} (${t.gl.label})` : 'Cass Operating')) },
+          { label: 'Amount', num: true, cell: (t) => money(t.amount) },
+          { label: 'Status', cell: (t) => (t.by ? statusCell({ state: 'changed', by: t.by.by, at: t.by.at, counts: 'Counts as revenue — a gift' })
+            : statusCell({ state: 'statement', text: '✓ The GL books it as revenue', counts: 'Counts as revenue — a gift' })) },
+          { label: '', cell: (t) => actionsCell({ change: changeSelect([['payout', 'A Stripe payout — take it out as a transfer']], null, () => setStripe(t, 'payout'), 'Change how it counts…'),
+            more: t.by ? [h('button', { class: 'small-btn', onclick: () => undoStripe(t) }, 'Undo')] : [] }) },
+        ], gifts)) : null;
       const changedHere = decisions.length ? h('div', { class: 'adj-section' },
         reviewHead('Changed here', { count: 0 }),
         h('p', { class: 'muted small' }, 'Lines someone took out of this group in this pop-up. They no longer count here; Undo puts them back the way the statements and the GL have them.'),
@@ -1070,7 +1096,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         todoN ? h('button', { class: 'small-btn confirm-btn', onclick: () => decide(m, (rec) => { confirmLines(allTodo, user)(rec); confirmDit(ditTodo)(rec); }, `Confirmed all ${todoN} lines of “${key}”`, again, close) }, `Confirm all ${todoN}`) : null) : null;
       mount(body,
         bar,
-        dit, kinds.map(section), changedHere,
+        dit, kinds.map(section), giftSection, changedHere,
         h('div', { class: 'recon', style: { marginTop: '.75rem' } }, rowKV(`${key}, total`, h('strong', {}, money(round2(sum(list, (a) => a.amount) + (dit ? c.ditChange : 0)))))),
         evidenceSummary(list),
         formHost);
