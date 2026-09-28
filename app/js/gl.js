@@ -20,7 +20,7 @@ export function parseGlRegister(XLSX, wb) {
     const a = text(at(r, 0));
     if (/^\d{2}-\d{4}$/.test(a)) {
       period = a; module = text(at(r, 1));
-      batch = { batch: text(at(r, 2)), module, date: isoDate(at(r, 3)), desc: text(at(r, 5)), accounts: {}, refunds: 0 };
+      batch = { batch: text(at(r, 2)), module, date: isoDate(at(r, 3)), desc: text(at(r, 5)), status: text(at(r, 4)), by: text(at(r, 6)), mod: text(at(r, 7)), accounts: {}, refunds: 0, lines: [] };
       const m = fromPeriod(period);
       (periods[m] || (periods[m] = { month: m, period, accounts: {}, lines: 0, batches: [] })).batches.push(batch);
       continue;
@@ -34,6 +34,9 @@ export function parseGlRegister(XLSX, wb) {
     const p = periods[m];
     p.accounts[acct] = (p.accounts[acct] || 0) + net;
     batch.accounts[acct] = (batch.accounts[acct] || 0) + net;
+    // Each line keeps Acumatica's identifier ("GL GL017661 2": module, batch, line), unique across
+    // the ledger, and who it names — the payer on a gift line ("Fidelity", customer FIDEC001).
+    batch.lines.push({ id: ident, a: acct, cv: text(at(r, 0)), d: text(at(r, 5)), ref: text(at(r, 4)), amt: round2(net) });
     // PayPal gifts given back ("Payment Refund", a debit to 4012) inside the month's PayPal batch.
     // (A whole batch reversed out of the wrong period also debits 4012, but it isn't money given back.)
     if (acct === '4012' && net > 0 && /refund/i.test(text(at(r, 5)))) batch.refunds += net;
@@ -51,6 +54,9 @@ export function parseGlRegister(XLSX, wb) {
     p.stripeReclass = stripeReclasses(p.batches);
     p.investmentFees = investmentFees(p.batches);
     p.investmentGl = investmentGl(p.batches);
+    // Every batch in the month, by Acumatica's batch number, so the next upload can say what was
+    // added, changed or removed since.
+    p.index = Object.fromEntries(p.batches.map((b) => [b.batch, { fp: fingerprint(b.lines), total: round2(b.lines.reduce((t, l) => t + Math.max(l.amt, 0), 0)), desc: b.desc.slice(0, 80), date: b.date, status: b.status }]));
     delete p.batches;
   }
   if (!lines) throw new Error('No journal lines found in that file.');
@@ -86,9 +92,19 @@ function cashReceipts(batches, cashGl = CASS_GL) {
     for (const [acct, net] of Object.entries(b.accounts)) if (acct !== cashGl && Math.abs(net) >= 0.005) other[acct] = round2(-net);
     // Only money in, and money out that takes revenue back (a chargeback, a deposit reclassed).
     if (cash < 0 && !Object.entries(other).some(([acct, v]) => /^4/.test(acct) && v < 0)) continue;
-    out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: cash, accounts: other, ...(b.module === 'AP' ? { ap: true } : {}) });
+    out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: cash, accounts: other, ...(b.module === 'AP' ? { ap: true } : {}),
+      module: b.module, status: b.status, by: b.by, mod: b.mod, lines: b.lines, fp: fingerprint(b.lines) });
   }
   return out;
+}
+
+// What a batch is, line for line: changes if any line's account or amount changes, or a line is
+// added or removed — so a later upload can tell a batch someone edited in Acumatica.
+export function fingerprint(lines) {
+  const s = (lines || []).map((l) => `${l.id}:${l.a}:${l.amt}`).sort().join('|');
+  let h = 0x811c9dc5; // FNV-1a
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `${(lines || []).length}-${h.toString(16)}`;
 }
 
 // Revenue entries with no cash on the other side: merchandise sold on account (Dr 1210), a gift
@@ -180,4 +196,19 @@ export function parseStatementOfActivities(XLSX, wb) {
     revenueTotal: ptdOf('Total Contributions') + ptdOf('Total Merchandise Revenue') + ptdOf('Total Other Income'),
     interestTotal: interestLine ? -interestLine.ptd : 0,
   };
+}
+
+// What changed in a month's GL between two uploads, batch by batch: added, changed (a line's
+// account or amount, or lines added or removed — someone edited it in Acumatica) and removed
+// (deleted or moved to another period). An earlier upload without an index can't be compared.
+export function glChanges(before, after) {
+  if (!before?.index || !after?.index) return null;
+  const added = [], changed = [], removed = [];
+  for (const [b, x] of Object.entries(after.index)) {
+    const was = before.index[b];
+    if (!was) added.push({ batch: b, ...x });
+    else if (was.fp !== x.fp) changed.push({ batch: b, desc: x.desc, date: x.date, was: was.total, now: x.total });
+  }
+  for (const [b, x] of Object.entries(before.index)) if (!after.index[b]) removed.push({ batch: b, ...x });
+  return { added, changed, removed };
 }

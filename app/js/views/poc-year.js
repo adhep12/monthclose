@@ -9,7 +9,7 @@ import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks, depositHint } from '../poc/gl-deposits.js';
-import { parseGlRegister, parseStatementOfActivities } from '../gl.js';
+import { parseGlRegister, parseStatementOfActivities, glChanges } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
 import { money, round2, sum, parseAmount } from '../money.js';
@@ -139,6 +139,18 @@ function reviewHead(title, { total = null, todo = 0, count = 0, onConfirmAll = n
     total != null ? h('strong', { class: 'num' }, money(total)) : null);
 }
 
+// How sure a deposit's match to its GL entry is (gl-deposits.js confidenceOf), as a pill.
+const MATCH_LEVEL = { confirmed: ['✓ Confirmed match', 'good'], high: ['High', 'good'], medium: ['Medium', 'info'], low: ['Low', 'warn'] };
+const matchPill = (cf) => { const [t, k] = MATCH_LEVEL[cf?.level] || ['', 'neutral']; return t ? statusPill(t, k) : null; };
+// Matches a person should look at: low confidence (including a confirmed one whose GL entry has
+// changed since), and confirmed ones that couldn't be kept (the GL entry is gone, or taken).
+function matchesToCheck(c) {
+  const dep = c.deposits;
+  if (!dep) return [];
+  return [...(dep.lines || []).filter((x) => x.match && x.match.confidence?.level === 'low').map((x) => ({ ...x, kind: 'low' })),
+    ...(dep.pinIssues || []).map((p) => ({ line: p.line, match: null, pin: p.pin, kind: p.state }))];
+}
+
 const PLUMBING = /^Trnsfr (from|to) Checking Acct/i;
 function whatLanded(c, items) {
   const glOnly = (c.deposits?.glOnly || []).map((g) => g.receipt).filter((r) => r.kind !== 'revenue');
@@ -218,6 +230,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (id === 'cassOp' && k === 'rev' && missing.length) return { mark: '⚠', title: missing.map((w) => w.text).join('\n') };
       if (id === 'cassOp' && k === 'rev' && c.deposits?.conflicts?.length) return { mark: '⚠', title: `${c.deposits.conflicts.length} deposits a rule takes out but the GL booked as revenue — open the month to decide` };
       if (id === 'keyOp' && k === 'rev' && l.rev != null && c.deposits?.keyBank && Math.abs(l.rev - c.deposits.keyBank.glIn) >= 0.005) return { mark: '⚠', title: `KeyBank deposits ${money(l.rev || 0, { dash: false })}; the GL booked ${money(c.deposits.keyBank.glIn, { dash: false })} into 1061 — open the month to check` };
+      if (id === 'cassOp' && k === 'rev' && matchesToCheck(c).length) return { mark: '⚠', title: `${matchesToCheck(c).length} matches to the GL to check (low confidence, or the GL entry changed since it was confirmed) — open to check` };
       if (id === 'cassOp' && k === 'rev' && c.deposits?.noGl?.some((x) => !x.covered && !x.decided)) return { mark: '⚠', title: `${c.deposits.noGl.filter((x) => !x.covered && !x.decided).length} deposits the GL doesn’t have, not decided yet — open to check` };
       if (id === 'wise' && k === 'rev' && rec?.bankStatements?.wise && !statementTies(rec, 'wise')) return { mark: '⚠', title: 'The Wise statement doesn’t tie to its own balances — attach it again' };
       if (l[k] == null) return null;
@@ -617,7 +630,29 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     });
     const takenTodo = kinds.flatMap((k) => k.todo);
     const review = (group) => { close(true); openAdjustments(group, m); };
+    const toCheck = matchesToCheck(c);
+    const lowLines = toCheck.filter((x) => x.match);
+    const saved_ = byMonth[m] || {};
+    const matchSection = toCheck.length ? h('div', { class: 'adj-section' },
+      reviewHead('Matches to the GL to check', { count: toCheck.length, todo: toCheck.length,
+        onConfirmAll: lowLines.length ? () => confirmMatch(m, c, lowLines, again, close) : null }),
+      h('p', { class: 'muted small' }, 'Each deposit is matched to the GL entry that booked it by amount and date, then checked against the names, the GL line, the kind of deposit and whether another entry could as well be it. These are the weak ones. Confirm match pins it (later uploads and rules won’t move it, and it’s flagged if the GL entry changes); Not this entry matches it again without that entry.'),
+      table([
+        { label: 'Date', cell: (x) => x.line.date },
+        { label: 'Description', cell: (x) => depositCell(x.line) },
+        { label: 'Amount', num: true, cell: (x) => money(x.line.amount) },
+        { label: 'GL entry', cell: (x) => (x.match ? matchCell(x) : h('span', { class: 'small wrap' }, `Confirmed ${x.pin.batch} (${x.pin.desc || ''}) — ${x.kind === 'gone' ? 'no longer in the GL' : 'now matched to another deposit'}`)) },
+        { label: 'Status', cell: (x) => statusCell(x.match ? { state: 'todo', text: x.match.pin ? 'GL changed since confirmed' : 'Low confidence', by: x.match.pin?.by, at: x.match.pin?.at }
+          : { state: 'todo', text: x.kind === 'gone' ? 'GL entry gone' : 'GL entry taken', by: x.pin.by, at: x.pin.at }) },
+        { label: '', cell: (x) => actionsCell(x.match
+          ? { confirm: () => confirmMatch(m, c, [x], again, close), confirmLabel: x.match.pin ? 'Confirm again' : 'Confirm match',
+            more: [h('button', { class: 'small-btn', onclick: () => rejectMatch(m, x, again, close) }, 'Not this entry')] }
+          : { more: [h('button', { class: 'small-btn', onclick: () => unconfirmMatch(m, c, x, again, close) }, 'Clear the confirmation')] }) },
+      ], toCheck)) : null;
+    const rejectedAny = Object.keys(saved_.glNot || {}).length;
     return h('div', {},
+      matchSection,
+      rejectedAny ? h('p', { class: 'small muted' }, `${rejectedAny} deposit${rejectedAny === 1 ? '' : 's'} with a GL entry ruled out (“Not this entry”) — see the deposit list below to undo.`) : null,
       conflicts.length ? h('div', { class: 'adj-section' },
         reviewHead('A rule and the GL disagree', { count: conflicts.length, todo: conflicts.length }),
         h('p', { class: 'muted small' }, 'A statement rule says the deposit isn’t revenue, but the GL booked it as revenue. It counts as revenue, the GL’s way, until you decide: Confirm keeps it as revenue; Change… takes it out the rule’s way.'),
@@ -732,9 +767,14 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { label: 'Date', cell: (t) => t.date },
         { label: 'Description', cell: (t) => h('div', {}, h('span', { class: 'wrap', title: t.detail || '' }, t.desc), h('div', { class: 'small muted' }, t.kind === 'incoming' ? 'Cass Incoming' : t.kind === 'wise' ? 'Wise' : 'Cass Operating')) },
         { label: 'Amount', num: true, cell: (t) => money(t.amount) },
-        { label: 'Per the GL', cell: (t) => { const x = glOf.get(t.id); return t.kind === 'wise' ? '' : x ? h('span', { class: 'small' }, `${kindName[x.kind] || x.kind} · ${x.batch} ${x.desc.slice(0, 50)}`) : dep?.available ? statusPill('No GL deposit', 'bad') : ''; } },
-        { label: 'Status', cell: (t) => statusCell({ state: null, counts: `Counts as ${typeName(out.get(t.id)?.type || 'revenue').toLowerCase()}`, note: out.get(t.id)?.note || '' }) },
-        { label: '', cell: (t) => actionsCell({ change: changeSelect(REVIEW_TYPES, out.get(t.id)?.type || 'revenue', (v) => treatAs(m, t, v, '', again, close), 'Change how it counts…') }) },
+        { label: 'Per the GL', cell: (t) => { const x = glOf.get(t.id); return t.kind === 'wise' ? '' : x ? h('div', {}, h('span', { class: 'small' }, `${kindName[x.kind] || x.kind} · `), matchCell({ line: t, match: x })) : dep?.available ? statusPill('No GL deposit', 'bad') : ''; } },
+        { label: 'Status', cell: (t) => { const x = glOf.get(t.id); return h('div', { class: 'status' }, x ? matchPill(x.confidence) : null, statusCell({ state: null, by: x?.pin ? `Match confirmed by ${x.pin.by}` : '', at: x?.pin?.at, counts: `Counts as ${typeName(out.get(t.id)?.type || 'revenue').toLowerCase()}`, note: out.get(t.id)?.note || '' })); } },
+        { label: '', cell: (t) => { const x = glOf.get(t.id); const e = { line: t, match: x };
+          return actionsCell({ confirm: x && !x.pin ? () => confirmMatch(m, c, [e], again, close) : null, confirmLabel: 'Confirm match',
+            change: changeSelect(REVIEW_TYPES, out.get(t.id)?.type || 'revenue', (v) => treatAs(m, t, v, '', again, close), 'Change how it counts…'),
+            more: [x?.pin ? h('button', { class: 'small-btn', onclick: () => unconfirmMatch(m, c, e, again, close) }, 'Undo confirm match') : null,
+              x && !x.pin ? h('button', { class: 'small-btn', onclick: () => rejectMatch(m, e, again, close) }, 'Not this entry') : null,
+              byMonth[m]?.glNot?.[t.id] ? h('button', { class: 'small-btn', title: `Ruled out: ${byMonth[m].glNot[t.id].batches.join(', ')}`, onclick: () => undoReject(m, t, again, close) }, 'Allow ruled-out entries') : null] }); } },
       ], deps));
   }
 
@@ -848,6 +888,44 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       else { rec.excluded[line.id] = { type, note: note || '', by: user, at: nowIso(), ...madeIn(again, line) }; if (rec.dismissed) delete rec.dismissed[line.id]; }
     }, `${line.date} ${line.desc} ${money(line.amount)}: ${type === 'revenue' ? 'counted as revenue' : `marked as ${name}`} (from the fiscal year sheet)`, again, close);
   }
+  // Confirming a deposit's match to its GL entry pins it: kept whatever later uploads or rules do,
+  // and flagged if the entry changes. Every deposit matched to the same entry (a day's wires, a
+  // "PayPal Grants (6)") is pinned with it, since they stand or fall together.
+  const groupOf = (c, x) => (c.deposits?.lines || []).filter((y) => y.match && y.match.batch === x.match.batch);
+  function confirmMatch(m, c, xs, again, close) {
+    const all_ = [...new Set(xs.flatMap((x) => groupOf(c, x)))];
+    return decide(m, (rec) => {
+      rec.glMatch ||= {};
+      for (const y of all_) rec.glMatch[y.line.id] = { batch: y.match.batch, batches: y.match.batchIds, fp: y.match.fps?.[0] || null, fps: y.match.fps, amount: y.line.amount, desc: y.match.desc, by: user, at: nowIso() };
+    }, `Confirmed the GL match: ${xs.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount)} = ${x.match.batch}`).join('; ')}${all_.length > xs.length ? ` (with ${all_.length - xs.length} more deposits in the same GL entry)` : ''}`, again, close);
+  }
+  function unconfirmMatch(m, c, x, again, close) {
+    const ids = x.match ? groupOf(c, x).map((y) => y.line.id) : [x.line.id];
+    return decide(m, (rec) => { for (const id of ids) if (rec.glMatch) delete rec.glMatch[id]; },
+      `Took back the confirmed GL match of ${x.line.date} ${x.line.desc} ${money(x.line.amount)}${x.match ? ` (${x.match.batch})` : ''}`, again, close);
+  }
+  // Not this entry: the deposit is matched again without it (and never to it again).
+  function rejectMatch(m, x, again, close) {
+    return decide(m, (rec) => {
+      rec.glNot ||= {};
+      const was = rec.glNot[x.line.id]?.batches || [];
+      rec.glNot[x.line.id] = { batches: [...new Set([...was, ...(x.match.batchIds || [x.match.batch])])], by: user, at: nowIso() };
+      if (rec.glMatch) delete rec.glMatch[x.line.id];
+    }, `${x.line.date} ${x.line.desc} ${money(x.line.amount)}: not GL ${x.match.batch} (${x.match.desc}) — matched again without it`, again, close);
+  }
+  function undoReject(m, line, again, close) {
+    return decide(m, (rec) => { if (rec.glNot) delete rec.glNot[line.id]; }, `${line.date} ${line.desc} ${money(line.amount)}: rejected GL entries allowed again`, again, close);
+  }
+  // The GL entry a deposit is matched to, with what backs the match and what doesn't.
+  function matchCell(x) {
+    const mt = x.match, cf = mt?.confidence;
+    if (!mt) return h('span', { class: 'small muted' }, 'No GL entry');
+    return h('div', { class: 'small' }, h('div', { class: 'wrap' }, `${mt.batch} · ${mt.desc.slice(0, 60)}`),
+      cf?.tie ? h('div', { class: 'muted' }, `Line ${cf.tie.id}${cf.tie.desc ? ` — ${cf.tie.desc}` : ''}`) : null,
+      cf?.plus?.length ? h('div', { class: 'good-text wrap' }, `✓ ${cf.plus.filter((p) => !/^GL line/.test(p)).join(' · ')}`) : null,
+      cf?.minus?.length ? h('div', { class: 'warn-text wrap' }, `⚠ ${cf.minus.join(' · ')}`) : null);
+  }
+
   // Back to how the statements and the GL have it, as if nobody had decided.
   function undoDecision(m, id, what, again, close) {
     return decide(m, (rec) => { if (rec.excluded) delete rec.excluded[id]; if (rec.dismissed) delete rec.dismissed[id]; }, `${what}: decision undone — back to the automatic treatment`, again, close);
@@ -1187,6 +1265,22 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   }
 
   // ---- GL panel: statement of activities or GL register, or typed --------------------------
+  // Each GL register upload for the month against the one before, batch by batch.
+  function glHistory(m) {
+    const hist = glBy[m]?.history || [];
+    if (!hist.length) return null;
+    return h('details', { class: 'adj-section' }, h('summary', {}, h('strong', {}, `GL uploads (${hist.length})`), h('span', { class: 'muted small' }, ' — what each upload added, changed or removed')),
+      table([
+        { label: 'Uploaded', cell: (e) => h('div', {}, `${e.by || ''} · ${when(e.at)}`, h('div', { class: 'small muted break' }, `${e.file || ''}${e.runAt ? ` (run ${e.runAt})` : ''}`)) },
+        { label: 'Batches', num: true, cell: (e) => e.batches ?? '' },
+        { label: 'What changed', cell: (e) => (e.first ? h('span', { class: 'small muted' }, 'First upload with batch detail') : h('div', { class: 'small wrap' },
+          !e.added?.length && !e.changed?.length && !e.removed?.length ? 'Nothing' : null,
+          e.added?.length ? h('div', {}, `${e.added.length} new: ${e.added.slice(0, 8).join(', ')}${e.added.length > 8 ? '…' : ''}`) : null,
+          e.changed?.length ? h('div', { class: 'warn-text' }, `${e.changed.length} changed: ${e.changed.map((x) => `${x.batch} ${x.desc} ${money(x.was, { dash: false })} → ${money(x.now, { dash: false })}`).join('; ')}`) : null,
+          e.removed?.length ? h('div', { class: 'warn-text' }, `${e.removed.length} removed: ${e.removed.map((x) => `${x.batch} ${x.desc} ${money(x.total, { dash: false })}`).join('; ')}`) : null)) },
+      ], [...hist].reverse()));
+  }
+
   async function openGl(m) {
     let dirty = false;
     await panel(`GL — ${monthName(m)}`, (body, close) => {
@@ -1206,6 +1300,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               : h('p', { class: 'small muted' }, 'Matches the figures from the old workbook (to the dollar).');
           })(),
           soa && !gl?.soaOnly ? h('p', { class: 'small' }, `Statement of activities: revenue ${money(soa.revenueTotal)}, interest ${money(soa.interestTotal)} — ${Math.abs(soa.revenueTotal - (gl?.revenueTotal || 0)) < 1 && Math.abs(soa.interestTotal - (gl?.interestTotal || 0)) < 1 ? 'matches the GL register' : 'differs from the GL register'}.`) : null,
+          glHistory(m),
           glOverride(m, close),
           h('div', { class: 'row', style: { marginTop: '.75rem' } },
             fileButton('Upload statement of activities…', '.xlsx,.xls', async (file) => {
@@ -1254,12 +1349,21 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       toast(`Reading ${file.name}… a full year takes a few seconds.`);
       const { XLSX, wb } = await readWorkbook(file);
       const res = parseGlRegister(XLSX, wb);
-      if (!(await ask('Load GL register', `${res.lines.toLocaleString()} journal lines for ${res.periods.map((p) => short(p.month)).join(', ')}. Each month replaces any earlier upload for it.`, { ok: `Load ${res.periods.length} months` }))) return false;
+      if (!(await ask('Load GL register', `${res.lines.toLocaleString()} journal lines for ${res.periods.map((p) => short(p.month)).join(', ')}. Each month is compared with its last upload, batch by batch: anything added, changed or removed is listed and kept in the month's GL history.`, { ok: `Load ${res.periods.length} months` }))) return false;
+      const report = [];
       for (const p of res.periods) {
-        const g = { ...p, fileName: file.name, runAt: res.runAt, uploadedBy: user, uploadedAt: nowIso() };
+        const before = glBy[p.month];
+        const ch = glChanges(before, p);
+        const entry = { at: nowIso(), by: user, file: file.name, runAt: res.runAt, batches: Object.keys(p.index).length,
+          ...(ch ? { added: ch.added.map((x) => x.batch), changed: ch.changed, removed: ch.removed } : { first: true }) };
+        const g = { ...p, fileName: file.name, runAt: res.runAt, uploadedBy: user, uploadedAt: nowIso(), history: [...(before?.history || []), entry].slice(-24) };
         await saveGlActivity(g); glBy[p.month] = g;
+        if (ch && (ch.added.length || ch.changed.length || ch.removed.length)) {
+          report.push(`${monthName(p.month)}: ${[ch.added.length ? `${ch.added.length} new` : '', ch.changed.length ? `${ch.changed.length} changed (${ch.changed.slice(0, 4).map((x) => `${x.batch} ${money(x.was, { dash: false })} → ${money(x.now, { dash: false })}`).join(', ')}${ch.changed.length > 4 ? '…' : ''})` : '', ch.removed.length ? `${ch.removed.length} removed (${ch.removed.slice(0, 4).map((x) => `${x.batch} ${x.desc}`).join(', ')}${ch.removed.length > 4 ? '…' : ''})` : ''].filter(Boolean).join(' · ')}`);
+        }
       }
-      toast(`GL loaded for ${res.periods.length} months.`);
+      if (report.length) await notify('GL loaded — what changed since the last upload', report);
+      else toast(`GL loaded for ${res.periods.length} months — nothing changed in months uploaded before.`);
       return true;
     } catch (err) { notify('Couldn’t load the GL register', [explain(err, '')]); return false; }
   }
@@ -1315,6 +1419,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         const open = dep.noGl.filter((x) => !x.covered && !x.decided);
         checks.push([monthName(m), 'Deposits vs GL', open.length ? `${open.length} NOT IN THE GL` : 'All matched',
           `${dep.lines.filter((x) => x.match).length} of ${dep.lines.length} matched; ${Object.keys(dep.exclusions).length} not revenue per the GL${open.length ? `; not in the GL: ${open.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })}`).join(', ')}` : ''}`]);
+      }
+      if (dep?.lines?.some((x) => x.match)) {
+        const lv = {}; for (const x of dep.lines) if (x.match) lv[x.match.confidence?.level || 'medium'] = (lv[x.match.confidence?.level || 'medium'] || 0) + 1;
+        const low = matchesToCheck(c);
+        checks.push([monthName(m), 'Match confidence', low.length ? `${low.length} TO CHECK` : 'OK',
+          `${['confirmed', 'high', 'medium', 'low'].filter((k) => lv[k]).map((k) => `${lv[k]} ${k}`).join(', ')}${low.length ? `; to check: ${low.map((x) => `${x.line.date} ${x.line.desc} ${money(x.line.amount, { dash: false })} → ${x.match?.batch || x.pin?.batch} (${x.match ? x.match.confidence.minus.join('; ') : x.kind === 'gone' ? 'confirmed entry no longer in the GL' : 'confirmed entry taken'})`).join('; ')}` : ''}`]);
       }
       { const glOnly = c.adjustments.filter((a) => a.evidence === 'gl');
         if (glOnly.length) checks.push([monthName(m), 'Evidence: GL only', money(round2(sum(glOnly, (a) => Math.abs(a.amount))), { dash: false }), `${glOnly.length} adjustments no statement shows: ${glOnly.map((a) => `${adjDetail(a)} ${money(a.amount, { dash: false })}`).join('; ')}`]); }

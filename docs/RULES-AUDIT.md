@@ -66,6 +66,10 @@ the wrong entry.
   payee in the deposit description isn't in the batch description; the batch is AP; the match
   borrows from another month; or a group match spans more than two days. Confirming a line should
   record *which* GL batch it was confirmed against (see B1).
+- *Done 2026-09-28:* every match has a confidence (High / Medium / Low) with its reasons; Low goes to
+  "Matches to the GL to check". Confirm match pins the deposit to the batch and its fingerprint, and
+  a pinned match is flagged if the batch changes or disappears in a later upload. Each upload is
+  compared with the last one (batches added, changed, removed) and kept in the GL history.
 
 **A3. A signed-off month isn't frozen.**
 Every finding is recalculated from the statements, the GL upload and the rules each time. A new GL

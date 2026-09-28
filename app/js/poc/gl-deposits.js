@@ -64,6 +64,36 @@ export function depositHint(desc) {
   return (HINTS.find(([re]) => re.test(String(desc || ''))) || [, ''])[1];
 }
 
+// Names, for telling whether a deposit and a GL entry are about the same payer: the bank's words
+// for it ("FIDELITY INVESTM/GrantPaymt", "NCF/ACH", "PAYPAL INC./PAYMENT") against the GL's
+// (the batch description, each line's description — the payer on a gift line — and customer).
+const GENERIC = new Set(['orig', 'ach', 'payment', 'payments', 'pmt', 'inc', 'llc', 'ltd', 'corp', 'transfer', 'trnsfr', 'deposit', 'deposits', 'daf',
+  'gift', 'gifts', 'grant', 'grants', 'the', 'and', 'for', 'from', 'via', 'with', 'bank', 'business', 'mobile', 'connection', 'checking', 'acct', 'account',
+  'ending', 'foundation', 'charitable', 'fund', 'giving', 'donation', 'donations', 'cass', 'operating', 'wire', 'wires', 'credit', 'debit', 'usd', 'reference',
+  'received', 'money', 'general', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']);
+// The same payer under the bank's name and the GL's: giving platforms pay through funds with
+// other names (Your Cause through the Blackbaud Giving Fund, "BBGF-…"; Benevity through the
+// American / UK Online Giving Foundation).
+const ALIASES = [
+  [/\bBBGF\b|BLACKBAUD|YOUR ?CAUSE/i, 'yourcause'], [/AMER(ICAN)? ONLINE GIV|UK ONLINE GIVING|BENEVITY/i, 'benevity'],
+  [/AMRCNENDWMNT|AMERICAN ENDOWMENT|\bAEF\b/i, 'aef'], [/\bU\.? ?S\.? CHARITABLE/i, 'uscharitable'], [/\bNCF\b|NATIONAL CHRISTIAN/i, 'ncf'],
+  [/FIDELITY|\bFID\b/i, 'fidelity'], [/SCHWAB/i, 'schwab'], [/PAYPAL/i, 'paypal'], [/STRIPE/i, 'stripe'], [/\bWISE\b/i, 'wise'], [/OVERFLOW/i, 'overflow'],
+  [/\bIPAY\b/i, 'ipay'], [/RENAISSANCE/i, 'renaissance'], [/SIGNATRY/i, 'signatry'], [/GIVE ?CLEAR/i, 'giveclear'], [/CHARIOT/i, 'chariot'],
+  [/FRONT ?STREAM/i, 'frontstream'], [/MORGAN STANLEY/i, 'morganstanley'], [/THRIVENT/i, 'thrivent'], [/CYBER ?GRANTS/i, 'cybergrants'], [/DIVVY/i, 'divvy'],
+];
+export const nameWords = (s) => {
+  const t = String(s || '');
+  return [...new Set([...ALIASES.filter(([re]) => re.test(t)).map(([, w]) => w),
+    ...t.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3 && !GENERIC.has(w))])];
+};
+const sameWord = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && (a.startsWith(b.slice(0, 5)) || b.startsWith(a.slice(0, 5))));
+// The GL words a deposit agrees with ([] when none), and whether both sides name someone at all.
+export function namesAgree(bankText, glTexts) {
+  const bank = nameWords(bankText), gl = nameWords(glTexts.join(' '));
+  return { agree: bank.filter((w) => gl.some((u) => sameWord(w, u))), bankNamed: bank.length > 0, glNamed: gl.length > 0 };
+}
+const CHECK = /DEPOSIT CONNECTION|MOBILE DEPOSIT|REMOTE DEPOSIT|BRANCH DEPOSIT/i;
+
 // What the GL booked a batch to, in proof of cash terms.
 export function glKind(r, config = DEFAULT_POC_CONFIG, names = {}) {
   const credited = Object.entries(r.accounts || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
@@ -129,8 +159,9 @@ function subsetSum(pool, target) {
 // matched a day at a time: the day's credits against one batch, or a few that add up to them.
 // Operating deposits are matched one to one, then in groups (a check deposit and its mobile
 // deposits; several PayPal grants), steered by what the batch says it is.
-function matchMonth(month, lines, receiptsBy, used) {
+function matchMonth(month, lines, receiptsBy, used, rec = {}) {
   const byLine = new Map();
+  byLine.pinIssues = [];
   const RANK = { this: 0, prior: 1, next: 2 };
   const all = [[month, 'this'], [addMonths(month, -1), 'prior'], [addMonths(month, 1), 'next']]
     .flatMap(([m, when]) => (receiptsBy[m] || []).filter((r) => r.amount > 0).map((r) => { const kind = glKind(r).kind; return { r, when, w: bankWindow(r), kind, stripe: kind === 'stripe' }; }));
@@ -148,11 +179,43 @@ function matchMonth(month, lines, receiptsBy, used) {
     return d <= Math.min(days, 3);
   };
   const order = (date) => (a, b) => RANK[a.when] - RANK[b.when] || distance(date, a.w) - distance(date, b.w);
+  // A person's word comes first. A match someone confirmed (rec.glMatch[line] = { batch, fp }) is
+  // taken before any rule runs, so a new upload or a rule change can't move it; if the batch has
+  // changed in the GL since, or is gone, that's flagged. A batch someone said isn't this deposit
+  // (rec.glNot[line].batches) is never tried for it again.
+  const rejected = (x, l) => (rec.glNot?.[l.id]?.batches || []).includes(x.r.batch);
+  const pinned = {};
+  for (const l of lines) { const p = rec.glMatch?.[l.id]; if (p?.batch) (pinned[p.batch] ||= []).push(l); }
+  const find = (batch) => {
+    const x = all.find((y) => y.r.batch === batch);
+    if (x) return x;
+    const r = Object.entries(receiptsBy).flatMap(([m, rs]) => rs.map((r_) => ({ r: r_, m }))).find((y) => y.r.batch === batch);
+    return r ? { r: r.r, when: r.m < month ? 'prior' : r.m > month ? 'next' : 'this', w: bankWindow(r.r), kind: glKind(r.r).kind, stripe: glKind(r.r).kind === 'stripe' } : null;
+  };
+  for (const [key, ls] of Object.entries(pinned)) {
+    const pin = rec.glMatch[ls[0].id];
+    // One deposit confirmed against several batches (two receivable payments in one wire).
+    const ids = pin.batches?.length > 1 ? pin.batches : [key];
+    const xs = ids.map(find);
+    if (xs.some((x) => !x || !open(x))) { for (const l of ls) byLine.pinIssues.push({ line: l, pin, state: xs.some((x) => !x) ? 'gone' : 'used' }); continue; }
+    const fps = xs.map((x) => x.r.fp);
+    const state = (pin.fps || [pin.fp]).some((f, i) => f && fps[i] && f !== fps[i]) ? 'changed' : 'ok';
+    if (xs.length === 1) take(xs[0], ls);
+    else {
+      for (const x of xs) used.add(x.r.batch);
+      const accounts = {};
+      for (const x of xs) for (const [a, v] of Object.entries(x.r.accounts)) accounts[a] = round2((accounts[a] || 0) + v);
+      const r = { batch: ids.join(' + '), date: xs[0].r.date, desc: xs.map((x) => x.r.desc).join(' + '), amount: ls[0].amount, accounts };
+      byLine.set(ls[0], { r, when: xs[0].when, group: 1, batches: xs.map((x) => x.r) });
+    }
+    for (const l of ls) if (byLine.get(l)) byLine.get(l).pin = { ...pin, state };
+  }
   // Batches that can only be an Operating deposit: a PayPal grant, or a deposit the GL names by
   // its bank date ("1.9.2026 January Deposit"). Incoming wires and Stripe transfers never take them.
   const operatingOnly = (x) => /paypal/i.test(x.r.desc) || (x.w.named && /\bdeposits?\b/i.test(x.r.desc));
 
   const fits = (x, l) => {
+    if (rejected(x, l)) return false;
     if (STRIPE.test(l.desc) !== x.stripe) return false;
     if (operatingOnly(x) && l.kind !== 'operating') return false;
     if (/paypal/i.test(x.r.desc) && l.kind === 'operating') return /PAYPAL/i.test(l.desc);
@@ -164,23 +227,23 @@ function matchMonth(month, lines, receiptsBy, used) {
   };
 
   // Stripe payouts, one to one.
-  for (const l of lines.filter((y) => STRIPE.test(y.desc))) {
-    const x = all.filter((y) => open(y) && y.stripe && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
+  for (const l of lines.filter((y) => STRIPE.test(y.desc) && !byLine.has(y))) {
+    const x = all.filter((y) => open(y) && y.stripe && !rejected(y, l) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
     if (x) take(x, [l]);
   }
   // A Stripe transfer that isn't one of our payouts can be a gift paid through someone else's Stripe
   // account (Every.org, October: 9.43), which the GL books as revenue.
   for (const l of lines.filter((y) => STRIPE.test(y.desc) && !byLine.has(y))) {
-    const x = all.filter((y) => open(y) && y.kind === 'revenue' && !operatingOnly(y) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
+    const x = all.filter((y) => open(y) && y.kind === 'revenue' && !operatingOnly(y) && !rejected(y, l) && Math.abs(y.r.amount - l.amount) < 0.005 && near(y, l.date, 5)).sort(order(l.date))[0];
     if (x) take(x, [l]);
   }
 
   // Incoming, a day at a time.
   const days = {};
-  for (const l of lines.filter((y) => y.kind === 'incoming')) (days[l.date] ||= []).push(l);
+  for (const l of lines.filter((y) => y.kind === 'incoming' && !byLine.has(y))) (days[l.date] ||= []).push(l);
   for (const [date, ls] of Object.entries(days).sort()) {
     const total = cents(sum(ls, (l) => l.amount));
-    const cands = all.filter((x) => open(x) && !x.stripe && !operatingOnly(x) && near(x, date, 3) && cents(x.r.amount) <= total).sort(order(date));
+    const cands = all.filter((x) => open(x) && !x.stripe && !operatingOnly(x) && !ls.some((l) => rejected(x, l)) && near(x, date, 3) && cents(x.r.amount) <= total).sort(order(date));
     const one = cands.find((x) => cents(x.r.amount) === total);
     if (one) { take(one, ls); continue; }
     const batches = subsetSum(cands.slice(0, 16).map((x) => ({ line: x, c: cents(x.r.amount) })), total);
@@ -281,7 +344,7 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
   const matchedBatch = new Map(); // batch → { month, lines }
   for (const m of months) {
     const lines = bankLines(recs[m]);
-    const byLine = lines.length ? matchMonth(m, lines, receiptsBy, used) : new Map();
+    const byLine = lines.length ? matchMonth(m, lines, receiptsBy, used, recs[m] || {}) : Object.assign(new Map(), { pinIssues: [] });
     matched[m] = { lines, byLine };
     for (const [l, x] of byLine) {
       for (const r of x.batches || [x.r]) {
@@ -319,6 +382,64 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     return round2(sum(Object.entries(accounts || {}).filter(([a]) => config.revenueAccounts.includes(a)), ([, v]) => v));
   }
 
+  // How sure the match between a deposit and its GL batch is, and why. The amount always agrees
+  // (that's how it was found); what else does:
+  //   the names — the payer on the statement is the payer on the GL line (Fidelity, NCF, PayPal);
+  //   the line — a GL line in the batch has this deposit's amount (its identifier is kept);
+  //   the kind — a check deposit to a "<date> Deposit" batch, Stripe to Stripe clearing;
+  //   the date — the bank date the GL names, or the same day;
+  // and what counts against it: another free GL entry of the same amount nearby (it could as well
+  // be that one), names that differ, an AP entry (a vendor check), borrowing across the month end,
+  // a group spread over several days. A person confirming it (a pin) settles it.
+  function confidenceOf(l, x, m) {
+    const r = x.r;
+    const plus = [], minus = [];
+    if (x.pin) {
+      return x.pin.state === 'changed'
+        ? { level: 'low', plus: [], minus: [`Confirmed by ${x.pin.by}, but the GL batch has changed since (re-upload) — check it again`] }
+        : { level: 'confirmed', plus: [`Confirmed by ${x.pin.by}`], minus: [] };
+    }
+    const glLines = (x.batches || [r]).flatMap((b) => b.lines || []);
+    const credits = glLines.filter((g) => g.amt < 0);
+    // The GL line that is this deposit: same amount, the payer named alike if both are named.
+    const bankText = `${l.desc} ${l.detail || ''}`;
+    const same = credits.filter((g) => Math.abs(Math.abs(g.amt) - l.amount) < 0.005);
+    const tieLine = same.find((g) => namesAgree(bankText, [g.d, g.cv]).agree.length) || (same.length === 1 ? same[0] : null);
+    const tie = x.group > 1 || (x.batches || []).length > 1 ? tieLine : glLines.find((g) => g.a === '1100' && Math.abs(g.amt - l.amount) < 0.005) || tieLine;
+    const names = namesAgree(bankText, [r.desc, ...glLines.map((g) => `${g.d} ${g.cv}`)]);
+    // A GL line of its own with this amount, inside an entry that adds up to the day or the group.
+    // (For a deposit matched one to one, its GL line having the same amount is just the match itself.)
+    const lineTie = !!tie && same.length > 0 && (x.group > 1 || (x.batches || []).length > 1);
+    if (names.agree.length) plus.push(`Names agree: ${names.agree.join(', ')}`);
+    else if (names.bankNamed && names.glNamed && !CHECK.test(l.desc) && !lineTie) minus.push(`The statement names ${nameWords(bankText).slice(0, 3).join(', ')}; the GL entry doesn’t`);
+    if (tie) plus.push(`GL line ${tie.id}${tie.d ? ` (${tie.d})` : ''}${lineTie && x.group > 1 ? ' — its own line, in an entry that adds up to the group' : ''}`);
+    if (CHECK.test(l.desc) && (bankWindow(r).named || /\bdeposits?\b/i.test(r.desc))) plus.push('A check deposit, and the GL entry is the day’s deposit');
+    if (STRIPE.test(l.desc) && glKind(r).kind === 'stripe') plus.push('Stripe to Stripe clearing');
+    const d = distance(l.date, bankWindow(r));
+    if (bankWindow(r).named && d === 0) plus.push('The GL names this bank date');
+    else if (d === 0) plus.push('Same day');
+    else if (d > 2) minus.push(`${d} days apart`);
+    // Borrowing across the month end is expected when the GL names the bank date (a deposit in transit).
+    if (x.when !== 'this' && !(bankWindow(r).named && d === 0)) minus.push(`${x.when === 'prior' ? 'Last' : 'Next'} month’s GL entry`);
+    if (r.ap || r.module === 'AP') minus.push('An AP entry (a vendor check or refund), not a receipt');
+    // One entry for several deposits is normal (a day's wires, "PayPal Grants (6)"); it's weak only
+    // when they're days apart or this deposit has no line of its own in it.
+    if (x.group > 1 && l.kind !== 'incoming') {
+      const ls = [...(matched[m]?.byLine || [])].filter(([, y]) => y.r === r).map(([ll]) => ll.date).sort();
+      const span = ls.length ? (Date.parse(ls[ls.length - 1]) - Date.parse(ls[0])) / DAY : 0;
+      if (span > 2) minus.push(`One GL entry for ${x.group} deposits over ${span} days`);
+      else if (!lineTie) minus.push(`One GL entry for ${x.group} deposits, none of its lines this amount`);
+    }
+    // Another GL entry with this amount, within a week, that nothing else matched.
+    const alt = [addMonths(m, -1), m, addMonths(m, 1)].flatMap((mm) => receiptsBy[mm] || [])
+      .filter((y) => y.batch !== r.batch && y.amount > 0 && Math.abs(y.amount - l.amount) < 0.005 && !matchedBatch.has(y.batch) && distance(l.date, bankWindow(y)) <= 7);
+    if (alt.length && !names.agree.length) minus.push(`Could also be ${alt.slice(0, 2).map((y) => `${y.batch} ${y.desc.slice(0, 30)}`).join(', ')}${alt.length > 2 ? '…' : ''} (same amount, unmatched)`);
+    const strong = names.agree.length || lineTie || plus.some((p) => /check deposit|Stripe to Stripe|names this bank date/.test(p));
+    const bad = minus.some((p) => /AP entry|names .* doesn’t|Could also be/.test(p));
+    const level = bad || (minus.length >= 2) ? 'low' : strong && !minus.length ? 'high' : 'medium';
+    return { level, plus, minus, tie: tie ? { id: tie.id, desc: tie.d, cv: tie.cv } : null };
+  }
+
   function monthFindings(m) {
     const rec = recs[m] || {};
     const receipts = receiptsBy[m] || null;
@@ -335,6 +456,9 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const x = (res.investment ||= {})[g.account] || (res.investment[g.account] = { gain: 0, batches: [] });
       x.gain = round2(x.gain + g.gain); x.batches.push(g);
     }
+    // Confirmed matches that couldn't be kept: the batch is gone from the GL, or another deposit
+    // has it now.
+    res.pinIssues = (byLine.pinIssues || []).map((p) => ({ line: p.line, pin: p.pin, state: p.state }));
     // This month's end of a Stripe clearing link (see above): money received now, recognized later.
     if (late[m]) res.stripeLate = Object.values(late[m]);
     if (!receipts && !byLine.size && !glBy[m]?.keyReceipts) return res;
@@ -357,7 +481,8 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     for (const l of lines) {
       const x = byLine.get(l);
       const k = x ? glKind(x.r, config, names) : null;
-      res.lines.push({ line: l, match: x ? { ...x.r, when: x.when, group: x.group, ...k } : null });
+      res.lines.push({ line: l, match: x ? { ...x.r, lines: undefined, when: x.when, group: x.group, ...k, confidence: confidenceOf(l, x, m), pin: x.pin || null,
+        batchIds: (x.batches || [x.r]).map((b) => b.batch), fps: (x.batches || [x.r]).map((b) => b.fp || null) } : null });
       if (x && STRIPE.test(l.desc) && k.kind === 'revenue') (res.stripeGifts ||= []).push({ id: l.id, batch: x.r.batch, desc: x.r.desc, label: k.label });
       if (!x) {
         // Someone may already have said how it counts (revenue, or taken out and why).

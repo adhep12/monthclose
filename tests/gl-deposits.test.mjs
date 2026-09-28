@@ -373,3 +373,39 @@ test('revenue above the cash deposited: platform fees and revenue released from 
   assert.equal(by['auto-glrelease-GL018378-2052'].type, 'timing');
   assert.match(by['auto-glrelease-GL018378-2052'].note, /held back by GL GL017932/);
 });
+
+test('a confirmed match is kept, flagged if the GL entry changes, and a rejected entry is never tried again', () => {
+  const pp = (id, date, amount) => cr(id, date, amount, `PAYPAL INC./PAYMENT 0000${id}`);
+  const rec = { month: '2026-01', statements: { operating: { transactions: [pp('1', '2026-01-09', 100)] } } };
+  const g = (fp) => ({ '2026-01': { receipts: [
+    { ...gl('GL017495', '2026-01-09', 100, { 4018: 100 }, 'DAF Gifts - PayPal Grant'), fp, lines: [{ id: 'GL GL017495 1', a: '1100', amt: 100 }, { id: 'GL GL017495 2', a: '4018', cv: 'PAYPC001', d: 'PayPal Grant', amt: -100 }] },
+    { ...gl('GL017499', '2026-01-10', 100, { 4018: 100 }, 'DAF Gifts - PayPal Grant'), fp: 'x' },
+  ] } });
+  let d = depositChecks({ recs: { '2026-01': rec }, glBy: g('a') })['2026-01'];
+  assert.equal(d.lines[0].match.batch, 'GL017495');
+  assert.equal(d.lines[0].match.confidence.tie.id, 'GL GL017495 1');
+  // Confirmed, then the batch is edited in Acumatica: still matched, flagged low.
+  rec.glMatch = { 1: { batch: 'GL017495', fp: 'a', by: 'Alex', at: 'x' } };
+  d = depositChecks({ recs: { '2026-01': rec }, glBy: g('a') })['2026-01'];
+  assert.equal(d.lines[0].match.confidence.level, 'confirmed');
+  d = depositChecks({ recs: { '2026-01': rec }, glBy: g('b') })['2026-01'];
+  assert.equal(d.lines[0].match.confidence.level, 'low');
+  // Rejected: matched to the other entry instead.
+  delete rec.glMatch;
+  rec.glNot = { 1: { batches: ['GL017495'] } };
+  d = depositChecks({ recs: { '2026-01': rec }, glBy: g('a') })['2026-01'];
+  assert.equal(d.lines[0].match.batch, 'GL017499');
+});
+
+test('match confidence: names agree is high; an AP entry naming someone else is low', () => {
+  const rec = { month: '2026-08', statements: { operating: { transactions: [
+    cr('p', '2026-08-12', 150, 'PAYPAL INC./PAYMENT 0000p'), cr('a', '2026-08-14', 600, 'PARAMOUNT SECURI/BILL PAYMT')] } } };
+  const g = { '2026-08': { receipts: [
+    gl('GL018673', '2026-08-12', 150, { 4018: 150 }, 'DAF Gifts - PayPal Grant'),
+    { ...gl('AP014203', '2026-08-14', 600, { 2010: 600 }, 'Quarterly Door License Fee'), ap: true, module: 'AP' },
+  ] } };
+  const d = depositChecks({ recs: { '2026-08': rec }, glBy: g })['2026-08'];
+  const lv = (id) => d.lines.find((x) => x.line.id === id).match.confidence.level;
+  assert.equal(lv('p'), 'high');
+  assert.equal(lv('a'), 'low');
+});
