@@ -25,7 +25,7 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
     (`app/js/poc/audit-trail.js`), five tabs: the sheet (first — `scripts/compare-to-workbook.mjs`
     reads it); *How to audit this*; *Adjustments summary* (each sheet row by kind of line, tied to
     the sheet); *Adjustments detail* (11 columns, one row per item that moves, deposits in transit
-    included: Ref · Sheet row · What it is · Who · Date · Amount · Evidence · Bank statement (file
+    included: Ref · Period · Sheet row · What it is · Who · Amount · Evidence · Bank statement (file
     name, section, date, amount, wording) · GL batch · GL entry · Why); *Checks*. No links to the
     statements: platform file URLs expire and anyone holding one can open it — the file name is
     given instead, and the PDFs are sent alongside.

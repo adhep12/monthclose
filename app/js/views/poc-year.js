@@ -1772,8 +1772,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     // ref, who, where it is on the statement and in the GL, and why (audit-trail.js). Refs are
     // saved on the month the first time a line is exported, so they never change.
     const glIndex = glBatchIndex(glBy);
-    const adj = [['Ref', 'Sheet row', 'What it is', 'Who', 'Date', 'Amount', 'Evidence', 'Bank statement', 'GL batch', 'GL entry', 'Why']];
-    const summary = [['Month', 'Sheet row', 'Kind of line', 'Lines', 'Amount', 'GL only', 'Sheet shows', 'Ties']];
+    const adj = [['Ref', 'Period', 'Sheet row', 'What it is', 'Who', 'Amount', 'Evidence', 'Bank statement', 'GL batch', 'GL entry', 'Why']];
+    const summary = [['Period', 'Sheet row', 'Kind of line', 'Lines', 'Amount', 'GL only', 'Sheet shows', 'Ties']];
     const checks = [['Month', 'Check', 'Result', 'Detail']];
     const trails = {};
     try {
@@ -1798,15 +1798,16 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (!c) continue;
       const t = trails[m];
       if (t) {
-        adj.push([monthName(m)]);
-        for (const r of t.rs) adj.push([r.ref, r.group, r.what, r.who, r.date, r.amount, r.evidence, r.bank, r.glBatch, r.gl, r.why]);
+        // The month as a real date shown "Feb 2026", so Excel's filter lists the months by year, in order.
+        const period = { v: new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1, 12), z: 'mmm yyyy' };
+        for (const r of t.rs) adj.push([r.ref, period, r.group, r.what, r.who, r.amount, r.evidence, r.bank, r.glBatch, r.gl, r.why]);
         const rowTotal = Object.fromEntries(ADJ_GROUPS.map((k) => [k, adjFor(k)(c)]));
         const sm = auditSummary(t.rs);
         for (const k of ADJ_GROUPS) {
           const xs = sm.filter((x) => x.group === k);
           if (!xs.length) continue;
           const tot = round2(sum(xs, (x) => x.total));
-          xs.forEach((x, i) => summary.push([monthName(m), k, x.line, x.count, x.total, x.glOnly || null,
+          xs.forEach((x, i) => summary.push([period, k, x.line, { v: x.count, z: '0' }, x.total, x.glOnly || null,
             i === xs.length - 1 ? rowTotal[k] : null, i === xs.length - 1 ? (Math.abs(tot - (rowTotal[k] || 0)) < 0.005 ? 'Yes' : `NO — lines ${money(tot, { dash: false })}`) : '']));
         }
         for (const s_ of t.retired) checks.push([monthName(m), 'Ref no longer an adjustment', s_.ref, `Was: ${s_.what}${s_.date ? ` ${s_.date}` : ''} ${money(s_.amount, { dash: false })}. Its number isn’t used again; the month’s activity log says what changed.`]);
@@ -1846,8 +1847,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
         { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
         { name: 'How to audit this', rows: readMeRows(stamp), cols: [30, 110] },
-        { name: 'Adjustments summary', rows: summary, cols: [14, 28, 44, 7, 15, 14, 15, 18], freeze: { ySplit: 1 } },
-        { name: 'Adjustments detail', rows: adj, cols: [15, 26, 50, 32, 11, 14, 22, 60, 12, 60, 60], freeze: { xSplit: 1, ySplit: 1 } },
+        { name: 'Adjustments summary', rows: summary, cols: [10, 28, 44, 7, 15, 14, 15, 18], freeze: { ySplit: 1 } },
+        { name: 'Adjustments detail', rows: adj, cols: [15, 10, 26, 50, 32, 14, 22, 60, 12, 60, 60], freeze: { xSplit: 1, ySplit: 1 } },
         { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
       ]);
     } catch (err) { toast(explain(err, 'Couldn’t build the Excel file.'), 'error'); }
@@ -1868,6 +1869,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       ['  Checks', 'Controls run each month: Stripe payouts vs Cass, deposits vs GL, match confidence, GL-only items, deposits in transit, and refs that changed.'],
       [],
       ['Reference numbers', 'A-YYYY-MM-NNN. A line gets its number the first time it is exported and keeps it, so a ref from an older export still means the same line. A line added later gets the next free number, so numbers within a sheet row aren’t always in order. A number is never reused: if a line stops being an adjustment, the Checks tab says so.'],
+      ['Period', 'The month the adjustment belongs to, on every row of Adjustments summary and Adjustments detail — filter on it to see one month or several. Each line’s own date is in its Bank statement or GL entry.'],
       ['Signs', 'Amounts are as they affect bank revenue: negative is taken out (not revenue, or not this month’s), positive is added.'],
       [],
       ['Evidence — what backs each line'],

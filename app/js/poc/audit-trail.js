@@ -112,7 +112,7 @@ export function auditRows({ m, rec, c, glIndex = new Map(), priorDeposits = null
         key: a.auto ? `${a.id}|${d.date || ''}|${d.desc || ''}` : `typed|${a.id}`,
         month: m, group: groupOf(a), line,
         // (An adjustment without per-item detail is its own label, which already says what it is.)
-        what: !desc || desc === line ? line : desc === a.label ? desc : `${line} — ${desc}`,
+        what: `${!desc || desc === line ? line : desc === a.label ? desc : `${line} — ${desc}`}${!a.auto && a.date && !t ? ` (${md(a.date)})` : ''}`,
         who: whoOf({ a, d, t, glLine }),
         date: d.date || '', amount: round2(shown),
         evidence: (EVIDENCE[evidence] || EVIDENCE.statement).label, evidenceKey: evidence,
