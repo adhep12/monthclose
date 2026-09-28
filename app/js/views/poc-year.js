@@ -4,7 +4,7 @@
 // Adjustments to open up what's being taken out; click GL to load Acumatica's numbers.
 
 import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget, carryScroll, topPanelScroll, nextDialog } from '../ui.js';
-import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa } from '../data.js';
+import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa, listSfGiving, saveSfGiving } from '../data.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
@@ -16,6 +16,7 @@ import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
+import { parseSalesforceSummary, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
@@ -175,6 +176,7 @@ let reopenAfter = null;
 // the month as it was before, and a save based on that is refused as a conflict (409).
 const recentSaves = {};
 const recentGl = {}; // the same, for GL register uploads
+const recentSf = {}; // and Salesforce reports
 // The months as last listed, reused when the page redraws after a decision (listing again straight
 // after a save can bring back the old copies). Listed afresh when the page is opened, and at most
 // every five minutes.
@@ -192,7 +194,7 @@ function blank(month) {
 
 export default async function (main, { user, rerender, month: openMonthParam = null }) {
   const relist = !listed || Date.now() - listed.at > LIST_FRESH_MS || !Object.keys(recentSaves).length;
-  const [recs, glActs, cfg, cds, soas] = await Promise.all([relist ? loadPocMonths() : listed.recs, listGlActivity(), loadPocConfig(), loadCds(), listSoa()]);
+  const [recs, glActs, cfg, cds, soas, sfList] = await Promise.all([relist ? loadPocMonths() : listed.recs, listGlActivity(), loadPocConfig(), loadCds(), listSoa(), listSfGiving().catch(() => [])]);
   if (relist) listed = { at: Date.now(), recs };
   // Right after a save, the platform's list can still hand back the month as it was; what this
   // page just saved wins until the list catches up.
@@ -201,6 +203,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const glBy = Object.fromEntries(glActs.map((g) => [g.month, recentGl[g.month] && String(recentGl[g.month].uploadedAt || '') > String(g.uploadedAt || '') ? recentGl[g.month] : g]));
   for (const [m_, g_] of Object.entries(recentGl)) if (!glBy[m_]) glBy[m_] = g_;
   const soaBy = Object.fromEntries(soas.map((s) => [s.month, s]));
+  const sfBy = Object.fromEntries(sfList.map((x) => [x.month, recentSf[x.month] && String(recentSf[x.month].uploadedAt || '') > String(x.uploadedAt || '') ? recentSf[x.month] : x]));
+  for (const [m_, x_] of Object.entries(recentSf)) if (!sfBy[m_]) sfBy[m_] = x_;
   main.classList.add('wide-page');
 
   const hasData = (r) => r && !r.source?.ditOnly;
@@ -1328,6 +1332,186 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   }
 
   // ---- GL panel: statement of activities or GL register, or typed --------------------------
+  // ---- Salesforce vs the GL: giving, month by month ------------------------------------------------
+  // Separate from the proof of cash: Salesforce's gifts by close date and payment method against the
+  // GL's giving (4010, 4012, 4015, 4017, 4018) in the same channels, with every reason the app can
+  // put a number on, and what's left.
+  const CHECKISH = /DEPOSIT CONNECTION|MOBILE DEPOSIT|REMOTE DEPOSIT|BRANCH DEPOSIT/i;
+  const GIVING_ACCTS = ['4010', '4012', '4015', '4017', '4018'];
+  function sfFound(m) {
+    const c = cols.find((x) => x.m === m)?.c;
+    // Only gifts: a deposit collected on a grant or pledge receivable (1220). Merchandise sold on
+    // account (1210, the air orders) and card rewards aren't in Salesforce's giving at all.
+    const priorPeriod = (c?.adjustments || []).filter((a) => a.type === 'prior-period' && /^auto-ex-/.test(a.id || '') && /\b1220\b/.test(a.note || ''))
+      .map((a) => ({ channel: CHECKISH.test(a.detail?.[0]?.desc || a.label) ? 'Check' : 'Wire', amount: -a.amount, desc: (a.detail?.[0]?.desc || a.label).slice(0, 60), source: a.note || '' }));
+    const noCash = (glBy[m]?.noCashRevenue || []).map((x) => ({ amount: round2(GIVING_ACCTS.reduce((t, a) => t + (x.accounts[a] || 0), 0)), desc: x.desc, source: `GL ${x.batch} (${x.date})` }))
+      .filter((x) => Math.abs(x.amount) >= 0.005);
+    const releases = (c?.adjustments || []).filter((a) => /^auto-glrelease-/.test(a.id || '')).map((a) => ({ amount: a.amount, desc: a.label, source: a.note || '' }));
+    return { priorPeriod, noCash, releases };
+  }
+  const sfYear = (() => {
+    const ms = cols.map((x) => x.m).filter((m) => sfBy[m] || glBy[m]?.giving);
+    const res = reconcileYear(ms.map((m) => ({ sf: sfBy[m] ? { ...sfBy[m], month: m } : { month: m, methods: {} }, giving: glBy[m]?.giving, found: sfFound(m) })));
+    // What's not explained, added up month by month through the complete months.
+    let run = 0;
+    const doneMs = new Set(done.map((x) => x.m));
+    res.forEach((r, i) => { if (sfBy[ms[i]] && doneMs.has(ms[i])) { run = round2(run + r.unexplained); r.running = run; } });
+    return Object.fromEntries(res.map((r, i) => [ms[i], r]));
+  })();
+  const pct = (v) => (v == null ? '' : `${(v * 100).toFixed(1)}%`);
+  // The section's rows, shared with the Excel export.
+  const sfRowsDef = () => [
+    { label: 'Salesforce (by close date)', f: (r) => r.sfTotal, strong: true },
+    { label: 'GL giving (4010, 4012, 4015, 4017, 4018)', f: (r) => r.glTotal, strong: true },
+    { label: 'Difference (Salesforce − GL)', f: (r) => r.diff, strong: true },
+    { label: '% of GL', f: (r) => r.pct, fmt: pct, noYtd: true, share: true },
+    { label: 'Explained', f: (r) => r.explained, cls: 'good-text' },
+    { label: 'Not explained', f: (r) => r.unexplained, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
+    { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true },
+    { section: 'Not explained, by channel' },
+    ...SF_CHANNELS.map((ch) => ({ label: ch, indent: true, f: (r) => r.rows.find((x) => x.channel === ch)?.unexplained ?? null, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') })),
+    // DAF grants paid by check are "Check" in Salesforce and 4018 ("Wire") in the GL, so the two
+    // are best read together.
+    { label: 'Check + Wire together', indent: true, f: (r) => round2(sum(r.rows.filter((x) => x.channel === 'Check' || x.channel === 'Wire'), (x) => x.unexplained)), cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
+    // Timing spread over several months (year-end giving recorded in Salesforce in Nov–Dec, reaching
+    // the GL in Jan–Feb) shows as a running total that rises, then comes back.
+    { label: 'Not explained, running total', f: (r) => r.running ?? null, noYtd: true, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
+  ];
+  // YTD over the months the proof of cash counts (Cass deposits in): a month whose GL isn't
+  // finished (September, mid-close) would swamp it.
+  const sfDoneSet = new Set(done.map((x) => x.m));
+  const sfYtdMonths = () => cols.map((x) => x.m).filter((m) => sfBy[m] && glBy[m]?.giving && sfDoneSet.has(m));
+  function sfSection() {
+    const ms = cols.map((x) => x.m);
+    const any = ms.some((m) => sfBy[m]);
+    const doneSet = sfDoneSet;
+    const both = sfYtdMonths();
+    const needGl = ms.some((m) => sfBy[m] && glBy[m] && !glBy[m].giving);
+    const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'The GL isn’t complete for this month yet (no Cass deposits in the proof of cash) — not in YTD', onclick: () => openSfMonth(m) }, v);
+    const ytd = (f) => { const v = both.map((m) => f(sfYear[m])).filter((x) => x != null); return v.length ? round2(sum(v, (x) => x)) : null; };
+    const rowsDef = sfRowsDef();
+    return h('div', { class: 'sheet-block', style: { marginTop: '1.5rem' } },
+      h('div', { class: 'row' }, h('h2', {}, 'Salesforce vs GL — giving'), h('span', { class: 'spacer' }),
+        any ? h('button', { class: 'btn', onclick: exportSalesforce, title: 'Download Salesforce vs GL — the months, each channel, every reason with its source, restricted gifts and the largest GL lines — as an Excel workbook' }, 'Export Excel') : null,
+        fileButton('Upload Salesforce report…', '.xlsx,.xls', async (file) => { if (await uploadSalesforce(file)) rerender(); })),
+      h('p', { class: 'muted small' }, 'Salesforce’s gifts by close date and payment method against the GL’s giving in the same channels. Some difference is expected — refunds, month-end timing, grants the GL recognizes when pledged, gifts held back — and each reason the app can put a number on is counted as explained. Click a month for the detail.'),
+      !any ? h('p', { class: 'muted' }, 'Upload the Salesforce opportunity summary (by close date and payment method) to start.')
+        : h('div', { class: 'table-wrap sheet' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', { class: 'label-col' }, ''), h('th', { class: 'num ytd' }, 'YTD', h('div', { class: 'muted small' }, `${both.length} mo.`)),
+            ms.map((m) => h('th', { class: 'num month' }, h('a', { href: '#/poc', onclick: (e) => { e.preventDefault(); openSfMonth(m); } }, short(m)))))),
+          h('tbody', {}, rowsDef.map((d) => (d.section ? h('tr', { class: 'section' }, h('td', { class: 'label-col', colspan: ms.length + 2 }, d.section))
+            : h('tr', { class: d.strong ? 'strong' : '' }, h('td', { class: `label-col${d.indent ? ' indent' : ''}` }, d.label),
+              h('td', { class: 'num ytd' }, d.noYtd ? '' : money(ytd(d.f))),
+              ms.map((m) => { const r = sfYear[m]; if (!r || !sfBy[m]) return h('td', { class: 'num muted' }, sfBy[m] ? '' : '');
+                const v = d.f(r); const cls = typeof d.cls === 'function' ? (v == null ? '' : d.cls(v)) : d.cls || '';
+                return cell(m, v == null ? '' : (d.fmt ? d.fmt(v) : money(v)), cls); }))))))),
+      needGl ? h('p', { class: 'small warn-text' }, 'Some months’ GL register was uploaded before giving was kept by channel — upload the GL register again to compare them.') : null);
+  }
+  // Excel: the section as it stands, then everything behind it.
+  async function exportSalesforce() {
+    const ms = cols.map((x) => x.m).filter((m) => sfBy[m]);
+    const ytdMs = sfYtdMonths();
+    const share = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: '0.0%' });
+    const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · Salesforce opportunities by close date against GL giving (4010, 4012, 4015, 4017, 4018)`;
+    const summary = [[`FY${fy} Salesforce vs GL — giving`], [stamp],
+      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months with the GL complete)` : 'no complete months yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
+      ['', 'YTD', ...ms.map((m) => monthName(m))]];
+    for (const d of sfRowsDef()) {
+      if (d.section) { summary.push([d.section.toUpperCase()]); continue; }
+      const vals = ms.map((m) => { const v = sfYear[m] ? d.f(sfYear[m]) : null; return d.share ? share(v) : v; });
+      const ytd = d.noYtd ? null : round2(sum(ytdMs.map((m) => d.f(sfYear[m]) ?? 0), (x) => x));
+      const ytdShare = d.share && ytdMs.length ? (() => { const df = sum(ytdMs, (m) => sfYear[m].diff), gl = sum(ytdMs, (m) => sfYear[m].glTotal), un = sum(ytdMs, (m) => sfYear[m].unexplained);
+        return share(d.label === '% of GL' ? (gl ? df / gl : null) : df ? Math.max(0, Math.min(1, 1 - Math.abs(un) / Math.abs(df))) : 1); })() : null;
+      summary.push([`${d.indent ? '    ' : ''}${d.label}`, d.share ? ytdShare : ytd, ...vals]);
+    }
+    const byChannel = [['Month', 'Channel', 'Salesforce', 'Salesforce gifts', 'GL', 'Difference', 'Explained', 'Not explained', 'In YTD']];
+    const reasons = [['Month', 'Channel', 'Reason', 'Why', 'Source', 'Evidence', 'Amount']];
+    const EV = { gl: 'GL', pattern: 'Pattern across months', flag: 'To check' };
+    const restricted = [['Month', 'Date', 'GL batch', 'GL line', 'Payer', 'Batch description', 'Channel', 'Amount']];
+    const largest = [['Month', 'Channel', 'Not explained in the channel', 'Date', 'GL line', 'Payer', 'Batch description', 'Amount']];
+    for (const m of ms) {
+      const r = sfYear[m]; if (!r) continue;
+      for (const x of r.rows) byChannel.push([monthName(m), x.channel, x.sf, x.count || null, x.gl, x.diff, x.explained, x.unexplained, ytdMs.includes(m) ? 'Yes' : 'No — GL not complete']);
+      byChannel.push([monthName(m), 'Total', r.sfTotal, null, r.glTotal, r.diff, r.explained, r.unexplained, ytdMs.includes(m) ? 'Yes' : 'No — GL not complete']);
+      for (const x of r.reasons) reasons.push([monthName(m), x.channel, x.what, x.why, x.source || '', EV[x.evidence] || x.evidence || '', x.flag ? 'CHECK' : x.amount]);
+      for (const x of r.restricted) restricted.push([monthName(m), x.date, x.batch, x.line, x.payer, x.desc, x.channel, x.amount]);
+      for (const row of r.rows.filter((x) => Math.abs(x.unexplained) >= 1000 && x.channel !== 'Stripe')) {
+        for (const l of (glBy[m]?.giving?.big?.[row.channel] || []).slice(0, 20)) largest.push([monthName(m), row.channel, row.unexplained, l.date, l.line, l.payer, l.desc, l.amount]);
+      }
+    }
+    const sources = [['Month', 'Salesforce file', 'As of', 'Uploaded by', 'Uploaded at', 'Salesforce filters', 'GL file', 'GL uploaded by', 'GL uploaded at']];
+    for (const m of ms) { const x = sfBy[m], g = glBy[m]; sources.push([monthName(m), x?.fileName || '', x?.asOf || '', x?.uploadedBy || '', x?.uploadedAt ? when(x.uploadedAt) : '', (x?.filters || []).join(' · '), g?.fileName || '', g?.uploadedBy || '', g?.uploadedAt ? when(g.uploadedAt) : '']); }
+    try {
+      await downloadWorkbook(`Salesforce vs GL FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
+        { name: 'Salesforce vs GL', rows: summary, cols: [42, 16, ...ms.map(() => 16)], freeze: { xSplit: 1, ySplit: 5 } },
+        { name: 'By channel', rows: byChannel, cols: [16, 12, 16, 12, 16, 16, 16, 16, 22] },
+        { name: 'Reasons', rows: reasons, cols: [16, 10, 50, 80, 50, 20, 16] },
+        { name: 'Restricted gifts', rows: restricted, cols: [16, 12, 12, 16, 30, 40, 10, 14] },
+        { name: 'Largest GL lines', rows: largest, cols: [16, 10, 18, 12, 16, 30, 40, 14] },
+        { name: 'Sources', rows: sources, cols: [16, 40, 12, 18, 20, 70, 40, 18, 20] },
+      ]);
+    } catch (err) { toast(explain(err, 'Couldn’t build the Excel file.'), 'error'); }
+  }
+  async function uploadSalesforce(file) {
+    try {
+      const { XLSX, wb } = await readWorkbook(file);
+      const res = parseSalesforceSummary(XLSX, wb);
+      if (!(await ask('Load Salesforce report', `${res.title || file.name}${res.asOf ? ` (as of ${res.asOf})` : ''}: ${res.months.map((x) => `${short(x.month)} ${money(x.total, { dash: false })}`).join(', ')}. ${res.filters.join(' · ')}. Each month replaces any earlier Salesforce upload for it.`, { ok: `Load ${res.months.length} months` }))) return false;
+      for (const x of res.months) {
+        const rec = { ...x, fileName: file.name, asOf: res.asOf, filters: res.filters, uploadedBy: user, uploadedAt: nowIso() };
+        await saveSfGiving(rec); sfBy[x.month] = rec; recentSf[x.month] = rec;
+      }
+      toast(`Salesforce loaded for ${res.months.length} months.`);
+      return true;
+    } catch (err) { notify('Couldn’t load the Salesforce report', [explain(err, '')]); return false; }
+  }
+  async function openSfMonth(m) {
+    const r = sfYear[m];
+    const sfm = sfBy[m];
+    await panel(`Salesforce vs GL — ${monthName(m)}`, (body) => {
+      if (!r || !sfm) { mount(body, h('p', { class: 'muted' }, 'No Salesforce figures for this month yet — upload the report.')); return; }
+      const g = glBy[m]?.giving;
+      const leftCh = r.rows.filter((x) => Math.abs(x.unexplained) >= 1000).map((x) => x.channel);
+      mount(body,
+        h('div', { class: 'review-bar' },
+          statusPill(Math.abs(r.unexplained) < 1000 ? 'Explained' : `${money(r.unexplained, { dash: false })} not explained`, Math.abs(r.unexplained) < 1000 ? 'good' : 'warn'),
+          h('span', { class: 'muted small' }, `Salesforce ${money(r.sfTotal, { dash: false })} · GL ${money(r.glTotal, { dash: false })} · difference ${money(r.diff, { dash: false })} (${pct(r.pct)}) · ${pct(r.explainedShare)} of it explained`)),
+        h('h3', {}, 'By channel'),
+        table([
+          { label: 'Channel', cell: (x) => x.channel },
+          { label: 'Salesforce', num: true, cell: (x) => h('div', {}, money(x.sf), x.count ? h('div', { class: 'small muted' }, `${x.count.toLocaleString()} gifts`) : null) },
+          { label: 'GL', num: true, cell: (x) => money(x.gl) },
+          { label: 'Difference', num: true, cell: (x) => money(x.diff) },
+          { label: 'Explained', num: true, cell: (x) => money(x.explained) },
+          { label: 'Not explained', num: true, cell: (x) => h('strong', { class: Math.abs(x.unexplained) >= 1000 ? 'warn-text' : '' }, money(x.unexplained)) },
+        ], r.rows, { foot: (col_) => ({ Channel: 'Total', Salesforce: money(r.sfTotal), GL: money(r.glTotal), Difference: money(r.diff), Explained: money(r.explained), 'Not explained': money(r.unexplained) }[col_.label] || '') }),
+        h('h3', {}, 'What explains it'),
+        r.reasons.length ? table([
+          { label: 'Channel', cell: (x) => x.channel },
+          { label: 'Reason', cell: (x) => h('div', {}, h('strong', {}, x.what), h('div', { class: 'small muted wrap' }, x.why)) },
+          { label: 'Source', cell: (x) => h('span', { class: 'small wrap' }, x.source || '') },
+          { label: 'Amount', num: true, cell: (x) => (x.flag ? statusPill('Check', 'warn') : money(x.amount)) },
+        ], r.reasons) : h('p', { class: 'muted small' }, 'Nothing the app can put a number on yet.'),
+        r.restricted.length ? h('div', {}, h('h3', {}, 'Restricted gifts (4017) in the GL'),
+          h('p', { class: 'muted small' }, 'Counted in the channel they came in by, as Salesforce does. Salesforce may record a restricted gift when it’s given and the GL when it’s released, so they’re listed here to check.'),
+          table([
+            { label: 'Date', cell: (x) => x.date },
+            { label: 'GL', cell: (x) => h('span', { class: 'small wrap' }, `${x.batch} · ${x.payer} · ${x.desc}`) },
+            { label: 'Channel', cell: (x) => x.channel },
+            { label: 'Amount', num: true, cell: (x) => money(x.amount) },
+          ], r.restricted)) : null,
+        leftCh.length ? h('div', {}, h('h3', {}, 'Where to look'),
+          h('p', { class: 'muted small' }, 'The largest GL gifts in each channel with a difference left. With a gift-level Salesforce report these would be matched one by one; until then, check these against Salesforce first.'),
+          leftCh.map((ch) => h('details', { class: 'adj-section' }, h('summary', {}, `${ch}: ${money(r.rows.find((x) => x.channel === ch).unexplained, { dash: false })} not explained`),
+            table([
+              { label: 'Date', cell: (x) => x.date },
+              { label: 'GL line', cell: (x) => h('span', { class: 'small wrap' }, `${x.line} · ${x.payer}`, h('div', { class: 'muted' }, x.desc)) },
+              { label: 'Amount', num: true, cell: (x) => money(x.amount) },
+            ], (g?.big?.[ch] || []).slice(0, 20), { empty: ch === 'Stripe' ? 'Stripe is one monthly total in the GL.' : 'No single GL line of 1,000 or more.' })))) : null,
+        h('p', { class: 'small muted', style: { marginTop: '1rem' } }, `Salesforce: ${sfm.fileName || ''}${sfm.asOf ? ` (as of ${sfm.asOf})` : ''} · uploaded by ${sfm.uploadedBy || ''} ${when(sfm.uploadedAt)}. ${(sfm.filters || []).join(' · ')}`));
+    }, { wide: true });
+  }
+
   // ---- A month's to-do list: every decision still open, with a way to it -------------------------
   // GL-only items this large need someone to confirm them against a document (the platform's
   // remittance, the investment statement), not just the GL.
@@ -1668,6 +1852,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       h('div', { class: 'seg' }, [['stacked', 'Revenue above interest'], ['side', 'Side by side (workbook)']].map(([v, l]) =>
         h('button', { class: v === show ? 'active' : '', onclick: () => { store.set(SHOW_KEY, v); rerender(); } }, l)))),
     h('div', { class: 'screen-only' }, show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')]),
+    h('div', { class: 'screen-only' }, sfSection()),
     // What prints: both halves stacked, whichever view is on screen.
     h('div', { class: 'print-only' },
       h('p', { class: 'muted small' }, `Printed ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · YTD = ${done.length ? `${range}, ${done.length} months` : 'no months yet'}`),

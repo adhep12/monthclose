@@ -119,6 +119,20 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **Stripe sales the GL moves out of revenue come off the Stripe line**, read from the GL's Stripe reclass batches: shipping (9050), sales tax (2042). Merchandise moved to 4081–4085 stays revenue. A stray Stripe transfer the GL reclasses into giving (1200 → 4015) is added. | With disputes, this explains the Stripe line vs GL to $0.00 every month Nov–Jul. Oct leaves 9.43 (that month's stray, which the GL never booked as giving). Jan's 97.50 stray was booked as giving in Feb (GL017834), so ignored strays are revenue per the GL, a month late. |
 | **Deposits in transit come from the GL.** A revenue batch booked in month M whose money reached the bank in M+1 is in transit at M (the GL names the bank date: "3.3.2026 February Deposit"); one in the bank in M but booked in M+1 is a minus. The M+1 statement confirms it; until then the batch date suggests it and a person confirms (`rec.ditGl`). Typed DIT still counts unless the GL has the same amount; workbook DIT is shown for comparison only. | GL DIT = workbook DIT for Nov, Feb, Mar, Apr, Jul exactly. Dec/Jan differ by the 8,565 Cigna check the workbook put in DIT (GL: 8015, not revenue); May/Jun by a 50.00 6/11 deposit the workbook missed. Aug: 53,093.52. |
 
+## Salesforce vs GL (giving), below the proof of cash
+
+`app/js/sf/salesforce.js`, section `sfSection` in `poc-year.js`, records in `sf-giving` (one per month).
+
+| Rule | Evidence |
+| --- | --- |
+| **Salesforce side:** the opportunity summary by close date and payment method (Record Type ≠ Purchase), month × method: amount and count. | Report "Opportunity Proof of Cash". |
+| **GL side: giving** = 4010, 4012, 4015, 4017, 4018 (not merchandise 408x, Amazon 4075, card rewards 4077), split into Salesforce's channels line by line at GL upload (`gl.js` `givingChannel`): Stripe 4015; PayPal 4012 + "PayPal Grant" lines; Patreon lines; Cash = KeyBank (1061) batches; Check = 4010 (customer PATROC001 is patrons, not Patreon); Wire = 4018. Restricted 4017 goes to the channel it came in by and is listed. | FY2026 Oct: Check 346,068 incl. a 100k restricted gift. |
+| **Explained, automatically:** Stripe refunds and disputes (Salesforce keeps the gift, the GL takes them off); money received for revenue the GL recognized earlier (the proof of cash's "recognized in another month" deposits); GL revenue with no cash (grants recognized when pledged, gifts moved to/from a liability); releases from a liability in a deposit; month-end timing — a channel's leftover one month cancelled (within 10%) by the next month's. | Stripe Dec +308,547 / Jan −307,908: year-end gifts, Salesforce Pacific vs Stripe UTC. Mar Wire: 750,595 Murdock grant (receivable). |
+| **Deposits in transit don't explain Salesforce vs GL.** The GL books a check deposited early next month in the month it was received ("3.3.2026 **February** Deposit", posted in February), the same month Salesforce dates it; deposits in transit are a bank-vs-GL item. FY2026: June DIT +116k, Check + Wire not explained +11k; February DIT −0.4k, −134k. What does show is year-end giving: Salesforce ahead Nov–Dec (+381k Check + Wire), the GL catching up Jan–Feb (−187k) — read on the *running total* row. Received-earlier items count only when collected on a grant/pledge receivable (1220), not merchandise AR (1210, air orders) or card rewards. Check and Wire are read together too (DAF grants paid by check: Salesforce Check, GL 4018). | User export 2026-09-28. |
+| **Flagged:** a GL channel far above Salesforce's (5×, over $5,000), with its largest lines. | Feb: GL017631 "Patreon" 100,478.47 vs Salesforce Patreon 2,285.08. |
+| **YTD** covers the months the proof of cash counts (Cass deposits in); a month whose GL isn't finished is greyed. | |
+| **Next:** a gift-level Salesforce report to match gifts one by one (Wire/DAF against GL payer lines, checks by deposit date). | |
+
 ## 3. FY2026 tie-out: where it stands
 
 Source: the user's export `Proof of Cash FY2026 2026-09-27.xlsx` compared with the tied-out workbook

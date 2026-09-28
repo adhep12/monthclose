@@ -166,3 +166,13 @@ export async function listSoa() {
 export async function saveSoa(rec) {
   await store.upsert('soa', rec.month, rec);
 }
+
+// ---- Salesforce giving (the opportunity summary by close date and payment method), by month ----
+
+export async function listSfGiving() {
+  return store.listAll('sf-giving');
+}
+
+export async function saveSfGiving(rec) {
+  await store.upsert('sf-giving', rec.month, rec);
+}

@@ -1,14 +1,35 @@
 {
   "platform": 1,
   "collections": {
-    "fa-assets": { "access": "shared" },
-    "fa-closes": { "access": "shared" },
-    "trial-balances": { "access": "shared" },
-    "settings": { "access": "shared" },
-    "poc-months": { "access": "shared" },
-    "gl-activity": { "access": "shared" },
-    "statements": { "access": "shared" },
-    "cds": { "access": "shared" },
-    "soa": { "access": "shared" }
+    "fa-assets": {
+      "access": "shared"
+    },
+    "fa-closes": {
+      "access": "shared"
+    },
+    "trial-balances": {
+      "access": "shared"
+    },
+    "settings": {
+      "access": "shared"
+    },
+    "poc-months": {
+      "access": "shared"
+    },
+    "gl-activity": {
+      "access": "shared"
+    },
+    "statements": {
+      "access": "shared"
+    },
+    "cds": {
+      "access": "shared"
+    },
+    "soa": {
+      "access": "shared"
+    },
+    "sf-giving": {
+      "access": "shared"
+    }
   }
 }
