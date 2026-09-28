@@ -1,14 +1,15 @@
 // The export's audit trail. Every adjustment line, and every deposit in transit, as a row someone
-// outside the team can follow without the app: a reference number, what moved and who it was,
-// where it is on the bank statement, the GL batch and line that booked it, and how to check it.
+// outside the team can follow without the app: a permanent reference number, what moved and who it
+// was, where it is on the bank statement (by file name, so the PDFs can be sent along), the GL
+// batch that booked it, and why it's adjusted.
 //
 // Pure: takes what the sheet already worked out (computePoc, depositChecks, the GL uploads), so it
 // can be tested without a browser.
 
-import { reviewableDeposits, outgoingItems, EVIDENCE, ADJUSTMENT_TYPES } from './calc.js';
+import { reviewableDeposits, outgoingItems, EVIDENCE } from './calc.js';
 import { wiseSender } from './banks.js';
-import { accountName, depositHint } from './gl-deposits.js';
-import { round2, sum } from '../money.js';
+import { accountName } from './gl-deposits.js';
+import { round2 } from '../money.js';
 
 const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -16,6 +17,7 @@ const monthLabel = (m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}
 const nextMonth = (m) => { const [y, mo] = m.split('-').map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`; };
 const priorMonth = (m) => { const [y, mo] = m.split('-').map(Number); return mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`; };
 const same = (a, b) => Math.abs(Math.abs(a) - Math.abs(b)) < 0.005;
+const md = (d) => (d ? `${Number(d.slice(5, 7))}/${d.slice(8, 10)}` : '');
 // Acumatica batch numbers named in a note ("GL GL017661", "AP014203").
 const BATCH = /\b((?:GL|AR|AP|CA|IN)\d{5,})\b/;
 const PLUMBING = /^Trnsfr (from|to) Checking Acct/i;
@@ -29,7 +31,7 @@ export function glBatchIndex(glBy = {}) {
     const accounts = { ...(x.accounts || {}) };
     // Cash receipts keep the cash side apart (x.amount, debit positive); put it back.
     if (cash && x.amount) accounts[cash] = round2((accounts[cash] || 0) - x.amount);
-    out.set(x.batch, { batch: x.batch, month: m, date: x.date, desc: x.desc, accounts, cash, lines: x.lines || null, module: x.module || null });
+    out.set(x.batch, { batch: x.batch, month: m, date: x.date, desc: x.desc, accounts, cash, lines: x.lines || null });
   };
   for (const [m, g] of Object.entries(glBy)) {
     for (const x of g?.receipts || []) put(m, x, '1100');
@@ -41,24 +43,23 @@ export function glBatchIndex(glBy = {}) {
   return out;
 }
 
-// What a batch booked, as a journal entry: "Dr 1100 Cass 5,000.00 · Cr 4018 5,000.00". The
+// What a batch booked, as a journal entry: "Dr 1100 Cass 5,000.00 / Cr 4018 5,000.00". The
 // accounts are kept net credit positive.
 export function bookedText(b) {
   if (!b?.accounts) return '';
   const e = Object.entries(b.accounts).filter(([, v]) => Math.abs(v) >= 0.005);
-  const dr = e.filter(([, v]) => v < 0), cr = e.filter(([, v]) => v > 0);
   const name = (a) => accountName(a, { 1100: 'Cass' });
-  return [...dr.map(([a, v]) => `Dr ${name(a)} ${money2(-v)}`), ...cr.map(([a, v]) => `Cr ${name(a)} ${money2(v)}`)].join(' · ');
+  return [...e.filter(([, v]) => v < 0).map(([a, v]) => `Dr ${name(a)} ${money2(-v)}`), ...e.filter(([, v]) => v > 0).map(([a, v]) => `Cr ${name(a)} ${money2(v)}`)].join(' / ');
 }
 
-// Every transaction on the month's statements, with the document it's on.
+// Every transaction on the month's statements, with the file it's on.
 function statementLines(rec) {
   const out = [];
   for (const kind of ['operating', 'incoming', 'outgoing']) {
     const s = rec?.statements?.[kind];
     if (!s) continue;
-    const doc = `${s.label || 'Cass'}${s.last4 ? ` …${s.last4}` : ''} statement${s.statementDate ? ` dated ${s.statementDate}` : ''}${s.fileName ? ` (${s.fileName})` : ''}`;
-    for (const t of s.transactions || []) out.push({ ...t, doc, where: t.section === 'credit' ? 'Deposits and other credits' : t.section === 'check' ? 'Checks' : 'Other debits and withdrawals' });
+    const doc = `${s.label || 'Cass'}${s.last4 ? ` …${s.last4}` : ''}${s.statementDate ? `, statement ${s.statementDate}` : ''}${s.fileName ? ` (${s.fileName})` : ''}`;
+    for (const t of s.transactions || []) out.push({ ...t, doc, where: t.section === 'credit' ? 'Credits' : t.section === 'check' ? 'Checks' : 'Debits' });
   }
   const w = rec?.bankStatements?.wise;
   if (w) {
@@ -71,18 +72,18 @@ function statementLines(rec) {
 
 // The document an account's figure comes from, when the item isn't a line on a statement.
 function accountDoc(rec, account) {
-  const b = rec?.bankStatements?.[account];
-  const f = b?.fileName ? ` (${b.fileName})` : '';
-  if (account === 'stripe') return `Stripe monthly statement CSV${rec?.stripe?.fileName ? ` (${rec.stripe.fileName})` : ''}`;
-  if (account === 'paypal') return `PayPal statement${f}`;
-  if (account === 'wise') return `Wise statement${f}`;
-  if (account === 'keyOp') return `KeyBank Operating statement${f} — total deposits only`;
+  const f = (b) => (b?.fileName ? ` (${b.fileName})` : '');
+  if (account === 'stripe') return `Stripe monthly CSV${f(rec?.stripe)}`;
+  if (account === 'paypal') return `PayPal statement${f(rec?.bankStatements?.paypal)}`;
+  if (account === 'wise') return `Wise statement${f(rec?.bankStatements?.wise)}`;
+  if (account === 'keyOp') return `KeyBank Operating statement${f(rec?.bankStatements?.keyOp)}, total deposits only`;
   return '';
 }
 
 // One row per line of each adjustment (a sweep, a transfer, a refund), then this month's deposits
-// in transit and last month's that cleared. Rows are in sheet order (order: the sheet's adjustment
-// rows), each kind of line together by date, and numbered in that order: A-2025-11-001.
+// in transit and last month's that cleared, in sheet order (order: the sheet's adjustment rows),
+// each kind of line together by date. Each row has a key that stays the same from one export to
+// the next, for its permanent ref (assignRefs).
 // ctx: { m, rec, c (computePoc), glIndex, priorDeposits, priorRec, groupOf, lineOf, order }
 export function auditRows({ m, rec, c, glIndex = new Map(), priorDeposits = null, priorRec = null, groupOf, lineOf, order = [] }) {
   const stmt = statementLines(rec || {});
@@ -91,7 +92,7 @@ export function auditRows({ m, rec, c, glIndex = new Map(), priorDeposits = null
   const rows = [];
 
   for (const a of c.adjustments) {
-    const items = a.detail?.length ? a.detail : [{ date: a.date || '', desc: a.label, amount: a.amount, note: a.note }];
+    const items = a.detail?.length ? a.detail : [{ date: a.date || '', desc: a.label, amount: a.amount }];
     const txnOf = /^auto-(tr|ex)-/.test(a.id || '') ? a.id.replace(/^auto-(tr|ex)-/, '') : null;
     for (const d of items) {
       const shown = a.detail?.length ? (a.amount < 0 ? -1 : 1) * Math.abs(d.amount) : a.amount;
@@ -104,60 +105,60 @@ export function auditRows({ m, rec, c, glIndex = new Map(), priorDeposits = null
       const batchNo = (String(d.note || '').match(BATCH) || [])[1] || a.gl || match?.batch || (String(a.note || '').match(BATCH) || [])[1] || null;
       const b = batchNo ? glIndex.get(batchNo) || (match?.batch === batchNo ? match : null) : null;
       const glLine = glLineFor(b, match, shown, t);
-      const plumbing = PLUMBING.test(d.desc || '');
-      const who = whoOf({ a, d, t, glLine, plumbing });
+      const line = lineOf(a);
+      const desc = PLUMBING.test(d.desc || '') && d.note ? d.note.replace(/^Per the GL:\s*/, '') : d.desc || a.label;
       const evidence = a.evidence || 'statement';
-      const row = {
-        ref: '', month: m, group: groupOf(a), line: lineOf(a), account: a.account || 'cassOp',
-        type: ADJUSTMENT_TYPES[a.type] || (a.auto ? 'From the statements' : ''),
-        date: d.date || '', desc: plumbing && d.note ? `${d.desc} — ${d.note}` : d.desc || a.label, who, amount: round2(shown),
-        direction: shown < 0 ? 'Taken out of bank revenue' : 'Added to bank revenue',
-        bankDoc: t?.doc || (a.statement ? a.statement.replace(/:.*$/, '') : accountDoc(rec, a.account)),
-        bankWhere: t?.where || '', bankDate: t?.date || '', bankDesc: t ? [t.desc, t.detail].filter(Boolean).join(' — ') : a.statement ? a.statement.replace(/^[^:]*:\s*/, '') : '',
-        bankAmount: t ? t.amount : null,
-        glBatch: batchNo || '', glDate: b?.date || '', glDesc: b?.desc || '', glMonth: b?.month ? monthLabel(b.month) : '',
-        glLine: glLine?.id || '', glPayer: glLine ? [glLine.cv, glLine.d].filter(Boolean).join(' · ') : '', glBooked: bookedText(b),
+      rows.push({
+        key: a.auto ? `${a.id}|${d.date || ''}|${d.desc || ''}` : `typed|${a.id}`,
+        month: m, group: groupOf(a), line,
+        // (An adjustment without per-item detail is its own label, which already says what it is.)
+        what: !desc || desc === line ? line : desc === a.label ? desc : `${line} — ${desc}`,
+        who: whoOf({ a, d, t, glLine }),
+        date: d.date || '', amount: round2(shown),
         evidence: (EVIDENCE[evidence] || EVIDENCE.statement).label, evidenceKey: evidence,
-        why: a.why || '', note: [a.note, d.note && d.note !== a.note ? d.note : ''].filter(Boolean).join(' · '),
-        enteredBy: a.enteredBy || '', enteredAt: a.enteredAt || '',
-        a, item: { a, date: d.date || '', desc: d.desc || a.label, shown },
-      };
-      row.verify = verifyText(row, { a, t, b, rec });
-      rows.push(row);
+        bank: t ? `${t.doc} · ${t.where} · ${md(t.date)} ${money2(t.amount)} “${[t.desc, t.detail].filter(Boolean).join(' — ')}”`
+          : a.statement ? a.statement
+            : evidence === 'gl' ? 'None: a book entry, the statement shows the net deposit only'
+              : accountDoc(rec, a.account),
+        glBatch: batchNo || '',
+        gl: b ? [`${md(b.date)} ${b.desc || ''}`.trim(), bookedText(b), glLine?.id ? `line ${glLine.id}` : ''].filter(Boolean).join(' · ') : '',
+        why: a.auto ? a.why || a.note || '' : [a.note ? `“${a.note}”` : '', a.enteredBy ? `typed by ${a.enteredBy}${a.enteredAt ? `, ${a.enteredAt.slice(0, 10)}` : ''}` : ''].filter(Boolean).join(' — '),
+        a,
+      });
     }
   }
   // Deposits in transit: this month's, less last month's (which reached the bank this month). The
   // sheet's Timing row includes the change.
   if (c.ditChange != null) {
-    for (const x of ditList(dep?.dit, rec)) rows.push(ditRow(x, 1, `Deposits in transit at the end of ${monthLabel(m)}`));
-    if (!c.priorDitMissing) for (const x of ditList(priorDeposits?.dit, priorRec)) rows.push(ditRow(x, -1, `${monthLabel(priorMonth(m))}’s deposits in transit, cleared this month`));
+    for (const x of ditList(dep?.dit, rec)) rows.push(ditRow(x, 1, `Deposit in transit at the end of ${monthLabel(m)}`));
+    if (!c.priorDitMissing) for (const x of ditList(priorDeposits?.dit, priorRec)) rows.push(ditRow(x, -1, `${monthLabel(priorMonth(m))}’s deposit in transit, cleared this month`));
   }
+  // Two lines alike in every way (the same fee twice on one day) are told apart by their order.
+  const seen = {};
+  for (const r of rows) { seen[r.key] = (seen[r.key] || 0) + 1; if (seen[r.key] > 1) r.key += `#${seen[r.key]}`; }
   const rank = (g) => (order.includes(g) ? order.indexOf(g) : order.length);
   const lines = [...new Set(rows.map((r) => r.line))];
   rows.forEach((r, i) => { r.i = i; });
   rows.sort((x, y) => rank(x.group) - rank(y.group) || lines.indexOf(x.line) - lines.indexOf(y.line) || String(x.date).localeCompare(String(y.date)) || x.i - y.i);
-  rows.forEach((r, i) => { r.ref = `A-${m}-${String(i + 1).padStart(3, '0')}`; delete r.i; });
+  rows.forEach((r) => { delete r.i; });
   return rows;
 
   function ditRow(x, sign, line) {
     const b = x.batch ? glIndex.get(x.batch) : null;
     const amount = round2(sign * x.amount);
     const cleared = sign > 0 ? nextMonth(m) : m;
-    const row = {
-      ref: '', month: m, group: groupOf({ type: 'timing' }), line, account: 'cassOp', type: ADJUSTMENT_TYPES.timing,
-      date: x.date || '', desc: x.desc, who: '', amount, direction: amount < 0 ? 'Taken out of bank revenue' : 'Added to bank revenue',
-      bankDoc: x.batch ? `Cass Operating statement for ${monthLabel(cleared)}` : '', bankWhere: x.batch ? 'Deposits and other credits' : '', bankDate: '', bankDesc: x.evidence || '', bankAmount: null,
-      glBatch: x.batch || '', glDate: b?.date || x.date || '', glDesc: b?.desc || (x.batch ? x.desc : ''), glMonth: b?.month ? monthLabel(b.month) : '',
-      glLine: '', glPayer: '', glBooked: bookedText(b),
+    return {
+      key: `dit|${sign > 0 ? 'in' : 'out'}|${x.batch || `${x.date}|${x.desc}`}`,
+      month: m, group: groupOf({ type: 'timing' }), line, what: `${line} — ${x.desc}`, who: 'Deposit',
+      date: x.date || '', amount,
       evidence: x.batch ? (x.settled ? EVIDENCE.both.label : EVIDENCE.gl.label) : EVIDENCE.typed.label, evidenceKey: x.batch ? (x.settled ? 'both' : 'gl') : 'typed',
-      why: sign > 0 ? 'Booked as revenue in the GL this month, but reached the bank next month — added so the bank side matches the GL.'
-        : 'Counted in last month’s deposits in transit; the money reached the bank this month, so it comes out here to avoid counting it twice.',
-      note: x.status || '', enteredBy: x.by || '', enteredAt: '', dit: true,
+      bank: `Cass Operating, ${monthLabel(cleared)} statement${x.evidence ? ` · ${x.evidence}` : ''}`,
+      glBatch: x.batch || '',
+      gl: b ? [`${md(b.date)} ${b.desc || ''}`.trim(), bookedText(b)].filter(Boolean).join(' · ') : '',
+      why: sign > 0 ? `Booked as revenue in ${monthLabel(m)}, reached the bank in ${monthLabel(cleared)}.${x.status && x.status !== 'The statements show it' ? ` ${x.status}.` : ''}`
+        : `Counted in ${monthLabel(priorMonth(m))}’s deposits in transit; reached the bank this month, so it comes out here.`,
+      dit: true,
     };
-    row.verify = x.batch
-      ? `In Acumatica open batch ${x.batch}${row.glDate ? ` (${row.glDate})` : ''}: revenue booked in ${row.glMonth || 'the month'}. On the ${monthLabel(cleared)} Cass Operating statement, find the deposit of ${money2(Math.abs(x.amount))} in the first days of the month.`
-      : `Entered by hand${x.by ? ` by ${x.by}` : ''}. Ask for the deposit slip, and find the ${money2(Math.abs(x.amount))} deposit early on the ${monthLabel(cleared)} statement.`;
-    return row;
   }
 }
 
@@ -167,11 +168,11 @@ function ditList(dit, rec) {
   if (dit) {
     return [
       ...dit.rows.filter((r) => r.counts).map((r) => ({ batch: r.batch, date: r.date, desc: r.desc, amount: round2(r.sign * r.amount), evidence: r.evidence, settled: r.settled,
-        status: r.settled ? 'The statements show it' : r.choice ? `Confirmed by ${r.choice.by}${r.choice.note ? ` — ${r.choice.note}` : ''}` : r.flagged ? 'To confirm' : 'From the GL', by: r.choice?.by || '' })),
-      ...dit.manual.filter((x) => !x.duplicate).map((x) => ({ batch: null, date: x.d.date || '', desc: x.d.note || 'Typed deposit in transit', amount: x.d.amount, status: 'Typed', by: x.d.enteredBy || '' })),
+        status: r.settled ? 'The statements show it' : r.choice ? `Confirmed by ${r.choice.by}${r.choice.note ? ` — ${r.choice.note}` : ''}` : r.flagged ? 'Not confirmed yet' : 'From the GL' })),
+      ...dit.manual.filter((x) => !x.duplicate).map((x) => ({ batch: null, date: x.d.date || '', desc: x.d.note || 'Typed deposit in transit', amount: x.d.amount, status: 'Typed' })),
     ];
   }
-  return (rec?.dit || []).map((d) => ({ batch: null, date: d.date || '', desc: d.note || 'Deposit in transit', amount: d.amount, status: String(d.id || '').startsWith('imp-') ? 'From the workbook' : 'Typed', by: d.enteredBy || '' }));
+  return (rec?.dit || []).map((d) => ({ batch: null, date: d.date || '', desc: d.note || 'Deposit in transit', amount: d.amount, status: String(d.id || '').startsWith('imp-') ? 'From the workbook' : 'Typed' }));
 }
 
 // The GL line that is this item: the one the deposit match tied it to, else the one line of the
@@ -182,68 +183,61 @@ function glLineFor(b, match, amount, t) {
   const tie = match?.confidence?.tie;
   const tied = tie?.id ? b?.lines?.find((x) => x.id === tie.id) || { id: tie.id, d: tie.desc, cv: tie.cv } : null;
   if (tied && tied.a !== cash) return tied;
-  const lines = (b?.lines || []).filter((x) => x.a !== cash);
-  const hits = lines.filter((x) => same(x.amt, amount));
+  const hits = (b?.lines || []).filter((x) => x.a !== cash && same(x.amt, amount));
   if (hits.length === 1) return hits[0];
   if (t && hits.length > 1) return hits.find((x) => `${x.d} ${x.cv}`.toLowerCase().split(/\W+/).some((w) => w.length > 3 && `${t.desc} ${t.detail || ''}`.toLowerCase().includes(w))) || null;
   return null;
 }
 
 // Who the money came from or went to, in the words of whichever document names them best.
-function whoOf({ a, d, t, glLine, plumbing }) {
-  if (a.id === 'auto-stripe' || a.id === 'auto-stripe-disputes') return 'Stripe (our own account)';
+function whoOf({ a, d, t, glLine }) {
+  if (a.id === 'auto-stripe' || a.id === 'auto-stripe-disputes') return 'Stripe (our account)';
+  if (!a.auto) return a.enteredBy ? `Typed by ${a.enteredBy}` : 'From the workbook';
   if (glLine?.cv || glLine?.d) return [glLine.d, glLine.cv].filter(Boolean).join(' · ');
   const sender = t?.account === 'wise' ? wiseSender(t.desc) : '';
   if (sender) return sender;
-  if (plumbing) return d.note ? d.note.replace(/^Per the GL:\s*/, '') : 'Between our own Cass accounts';
+  if (PLUMBING.test(d.desc || '')) return 'Between our own Cass accounts';
   if (t) return [t.desc, t.detail].filter(Boolean).join(' — ');
   return '';
 }
 
-// How to check it, step by step, in the order an auditor would: the bank document, then the GL.
-function verifyText(r, { a, t, b }) {
-  const steps = [];
-  if (t) steps.push(`On the ${r.bankDoc}, under “${t.where}”, find ${t.date} ${money2(t.amount)} “${t.desc}”.`);
-  else if (r.bankDesc) steps.push(`On the ${r.bankDoc || 'statement'}, find ${r.bankDesc}.`);
-  else if (r.bankDoc && a.account !== 'cassOp') steps.push(`The ${r.bankDoc} is the source of the ${a.account === 'stripe' ? 'Stripe' : a.account} line this adjusts.`);
-  if (r.glBatch) {
-    steps.push(`In Acumatica, open batch ${r.glBatch}${r.glDate ? ` (${r.glDate})` : ''}${b?.desc ? ` “${b.desc}”` : ''}${r.glBooked ? `: it books ${r.glBooked}` : ''}${r.glLine ? `; line ${r.glLine}${r.glPayer ? ` names ${r.glPayer}` : ''}` : ''}.`);
+// Permanent refs. stored = rec.refs ({ seq, lines: { [key]: { ref, amount, what, date, at, retired? } } }),
+// changed in place. A row seen before keeps its ref; a new one gets the next number (A-2026-02-010);
+// a numbered line no longer among the rows is retired (its number is never used again) and comes
+// back to life if it returns. Returns what to report: retired lines and amounts changed since.
+export function assignRefs(m, rows, stored, now = new Date().toISOString()) {
+  stored.lines ||= {};
+  stored.seq ||= Object.keys(stored.lines).length;
+  let changed = false;
+  for (const r of rows) {
+    let s = stored.lines[r.key];
+    if (!s) {
+      s = stored.lines[r.key] = { ref: `A-${m}-${String(++stored.seq).padStart(3, '0')}`, amount: r.amount, what: r.what, date: r.date, at: now };
+      changed = true;
+    } else if (s.retired) { delete s.retired; changed = true; }
+    r.ref = s.ref;
+    if (!same(s.amount, r.amount) || Math.sign(s.amount) !== Math.sign(r.amount)) r.was = s.amount;
   }
-  if (a.type === 'transfer' && /Matches .* leaving/.test(a.note || '')) steps.push(`The other side: ${a.note.replace(/^Matches /, '')} — find it on that account’s statement.`);
-  if (r.evidenceKey === 'gl') steps.push('No bank document shows this — it is a book entry. Ask for the support behind the GL batch (the reclass memo, the platform’s payout report, the receipt).');
-  if (r.evidenceKey === 'glWhat') steps.push(`The statement doesn’t say who paid; vouch it to the check image or deposit slip${t ? ` (${depositHint(t.desc) || 'the bank’s deposit detail'})` : ''}.`);
-  if (r.evidenceKey === 'typed') steps.push(`Entered by hand${r.enteredBy ? ` by ${r.enteredBy}` : ''}${a.note ? `: “${a.note}”` : ''} — ask for the document behind it.`);
-  if (!steps.length && a.why) steps.push(`Worked out from the statements: ${a.why}`);
-  return steps.join(' ');
+  const live = new Set(rows.map((r) => r.key));
+  const retired = [];
+  for (const [k, s] of Object.entries(stored.lines)) {
+    if (live.has(k)) continue;
+    if (!s.retired) { s.retired = now; changed = true; }
+    retired.push(s);
+  }
+  return { changed, retired: retired.sort((x, y) => x.ref.localeCompare(y.ref)), amountChanged: rows.filter((r) => r.was != null) };
 }
 
-// The rows totalled by month, group and line, with the refs each covers, for going from a number
-// on the sheet to its lines.
+// The rows totalled by month, sheet row and kind of line: the bridge from a number on the sheet
+// to its lines.
 export function auditSummary(rows) {
-  const out = [];
-  const key = (r) => `${r.month}|${r.group}|${r.line}`;
   const by = new Map();
   for (const r of rows) {
-    const x = by.get(key(r)) || { month: r.month, group: r.group, line: r.line, count: 0, total: 0, first: r.ref, last: r.ref, glOnly: 0 };
-    x.count++; x.total = round2(x.total + r.amount); x.last = r.ref;
+    const k = `${r.month}|${r.group}|${r.line}`;
+    const x = by.get(k) || { month: r.month, group: r.group, line: r.line, count: 0, total: 0, glOnly: 0 };
+    x.count++; x.total = round2(x.total + r.amount);
     if (r.evidenceKey === 'gl') x.glOnly = round2(x.glOnly + Math.abs(r.amount));
-    by.set(key(r), x);
+    by.set(k, x);
   }
-  for (const x of by.values()) out.push(x);
-  return out;
+  return [...by.values()];
 }
-
-// Every GL line of the batches the rows name, so the batches can be vouched without Acumatica.
-export function auditGlLines(rows, glIndex) {
-  const refs = new Map();
-  for (const r of rows) if (r.glBatch) refs.set(r.glBatch, [...(refs.get(r.glBatch) || []), r.ref]);
-  const out = [];
-  for (const [batch, rs] of refs) {
-    const b = glIndex.get(batch);
-    if (!b?.lines?.length) continue;
-    for (const l of b.lines) out.push({ refs: rs.join(', '), batch, date: b.date, desc: b.desc, id: l.id, account: accountName(l.a, { 1100: 'Cass' }), cv: l.cv || '', d: l.d || '', ref: l.ref || '', debit: l.amt > 0 ? l.amt : null, credit: l.amt < 0 ? -l.amt : null });
-  }
-  return out;
-}
-
-export const auditTotal = (rows) => round2(sum(rows, (r) => r.amount));

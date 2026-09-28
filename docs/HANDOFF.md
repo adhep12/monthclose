@@ -22,13 +22,18 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - Click a cell for detail, typed figures, confirmation, and detach.
   - On ICS, CDARS, Delap and Tschetter cells, "−" undoes an attachment or typed entry.
   - Buttons: **Export Excel** and **Print / PDF**. The export is built for an auditor
-    (`app/js/poc/audit-trail.js`): the sheet; *How to audit this* (tabs, refs, evidence levels,
-    steps); *Adjustments summary* (each sheet row by kind of line, with its ref range and a tie to
-    the sheet); *Adjustments detail* (one row per item that moves, deposits in transit included:
-    ref `A-YYYY-MM-NNN`, who, the statement document / section / date / description, the GL batch,
-    line, payer and entry, why, how to verify, confirmation status); *GL lines* (every line of
-    the batches named); sources; checks. The first tab stays the sheet —
-    `scripts/compare-to-workbook.mjs` reads it.
+    (`app/js/poc/audit-trail.js`), five tabs: the sheet (first — `scripts/compare-to-workbook.mjs`
+    reads it); *How to audit this*; *Adjustments summary* (each sheet row by kind of line, tied to
+    the sheet); *Adjustments detail* (11 columns, one row per item that moves, deposits in transit
+    included: Ref · Sheet row · What it is · Who · Date · Amount · Evidence · Bank statement (file
+    name, section, date, amount, wording) · GL batch · GL entry · Why); *Checks*. No links to the
+    statements: platform file URLs expire and anyone holding one can open it — the file name is
+    given instead, and the PDFs are sent alongside.
+  - **Refs are permanent** (`assignRefs`, saved in `rec.refs`): a line gets `A-YYYY-MM-NNN` the
+    first time it's exported and keeps it; new lines get the next number; a line that stops being
+    an adjustment is retired (listed in Checks), never reused. Keys are the adjustment id + date +
+    statement wording (typed: `typed|id`; deposits in transit: the GL batch). Exporting saves the
+    month when it numbers something new; if that save fails the export isn't made.
 - **Month pop-up** (click the month name) — replaced the month page:
   - deposits to review (revenue / transfer / not revenue)
   - automatic and manual adjustments

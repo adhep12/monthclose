@@ -9,7 +9,7 @@ import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks, depositHint, aliasList } from '../poc/gl-deposits.js';
-import { glBatchIndex, auditRows, auditSummary, auditGlLines } from '../poc/audit-trail.js';
+import { glBatchIndex, auditRows, auditSummary, assignRefs } from '../poc/audit-trail.js';
 import { parseGlRegister, parseStatementOfActivities, glChanges } from '../gl.js';
 import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
@@ -1768,46 +1768,50 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       sheetRows.push([r.label, r.rev ? ytd(r.rev) : null, r.int ? ytd(r.int) : null, ...cols.flatMap(({ c }) => [at(r.rev, c), at(r.int, c)])]);
     }
 
-    // The audit trail: every adjustment line (deposits in transit included) with a reference, who,
-    // where it is on the statement and in the GL, and how to check it (audit-trail.js).
+    // The audit trail: every adjustment line (deposits in transit included) with its permanent
+    // ref, who, where it is on the statement and in the GL, and why (audit-trail.js). Refs are
+    // saved on the month the first time a line is exported, so they never change.
     const glIndex = glBatchIndex(glBy);
-    const trail = [];
-    const adj = [['Ref', 'Month', 'Sheet row', 'Line', 'What moved', 'Who', 'Date', 'Amount', 'Effect', 'Account adjusted', 'Evidence',
-      'Bank document', 'Section', 'Statement date', 'Statement description', 'Statement amount',
-      'GL batch', 'GL date', 'GL batch description', 'GL line', 'GL payer / vendor', 'GL entry',
-      'Why it is adjusted', 'Note', 'How to verify', 'Status', 'Confirmed / entered by', 'When']];
-    const summary = [['Month', 'Sheet row', 'Line', 'Lines', 'Amount', 'Refs', 'GL only (no bank document)', 'Sheet row total', 'Ties to the sheet']];
-    const src = [['Month', 'Account', 'Revenue', 'Interest', 'Ending balance', 'Source', 'Entered / attached by', 'When', 'Confirmation']];
+    const adj = [['Ref', 'Sheet row', 'What it is', 'Who', 'Date', 'Amount', 'Evidence', 'Bank statement', 'GL batch', 'GL entry', 'Why']];
+    const summary = [['Month', 'Sheet row', 'Kind of line', 'Lines', 'Amount', 'GL only', 'Sheet shows', 'Ties']];
     const checks = [['Month', 'Check', 'Result', 'Detail']];
+    const trails = {};
+    try {
+      for (const { m, c, rec } of cols) {
+        if (!c) continue;
+        const rows_ = (r) => auditRows({ m, rec: r, c, glIndex, priorDeposits: depChecks[addMonths(m, -1)] || null, priorRec: byMonth[addMonths(m, -1)] || null, groupOf: adjGroup, lineOf: adjDetail, order: ADJ_GROUPS });
+        const rs = rows_(rec || byMonth[m] || blank(m));
+        if (!rs.length) continue;
+        // A month with nothing saved yet (only its GL) has nowhere to keep refs: numbered for this
+        // export only, and said so.
+        if (!rec) { const tmp = {}; trails[m] = { rs, ...assignRefs(m, rs, tmp), unsaved: true }; continue; }
+        for (let attempt = 0; ; attempt++) {
+          const fresh = Object.assign(blank(m), structuredClone((await readMonth(m, { fresh: attempt > 0 })) || {}));
+          fresh.refs = structuredClone(fresh.refs || {});
+          const res = assignRefs(m, rs, fresh.refs);
+          if (!res.changed) { trails[m] = { rs, ...res }; break; }
+          try { await saveRec(fresh); trails[m] = { rs, ...res }; break; } catch (err) { if (!err?.conflict || attempt) throw err; }
+        }
+      }
+    } catch (err) { toast(explain(err, 'Couldn’t save the reference numbers, so the export wasn’t made. Try again.'), 'error'); return; }
     for (const { m, c, rec } of cols) {
       if (!c) continue;
-      const saved = byMonth[m] || {};
-      const rs = auditRows({ m, rec: rec || saved, c, glIndex, priorDeposits: depChecks[addMonths(m, -1)] || null, priorRec: byMonth[addMonths(m, -1)] || null, groupOf: adjGroup, lineOf: adjDetail, order: ADJ_GROUPS });
-      trail.push(...rs);
-      for (const r of rs) {
-        const cf = r.dit ? null : confirmOf(saved, r.item);
-        const status = r.dit ? r.note : cf.st === 'confirmed' ? 'Confirmed' : cf.st === 'stale' ? 'Changed since confirmed' : 'To check';
-        const by = cf?.st === 'confirmed' ? cf.o.confirmation.by : r.enteredBy;
-        const at_ = cf?.st === 'confirmed' ? when(cf.o.confirmation.at) : r.enteredAt ? when(r.enteredAt) : '';
-        adj.push([r.ref, monthName(m), r.group, r.line, r.desc, r.who, r.date, r.amount, r.direction, label(r.account), r.evidence,
-          r.bankDoc, r.bankWhere, r.bankDate, r.bankDesc, r.bankAmount, r.glBatch, r.glDate, r.glDesc, r.glLine, r.glPayer, r.glBooked,
-          r.why, r.dit ? '' : r.note, r.verify, status, by || '', at_]);
-      }
-      const rowTotal = Object.fromEntries(ADJ_GROUPS.map((k) => [k, adjFor(k)(c)]));
-      const sm = auditSummary(rs);
-      for (const k of ADJ_GROUPS) {
-        const xs = sm.filter((x) => x.group === k);
-        if (!xs.length) continue;
-        const tot = round2(sum(xs, (x) => x.total));
-        xs.forEach((x, i) => summary.push([monthName(m), k, x.line, x.count, x.total, x.first === x.last ? x.first : `${x.first} – ${x.last}`, x.glOnly || null,
-          i === xs.length - 1 ? rowTotal[k] : null, i === xs.length - 1 ? (Math.abs(tot - (rowTotal[k] || 0)) < 0.005 ? 'Yes' : `NO — lines ${money(tot, { dash: false })}`) : '']));
-      }
-      for (const l of c.lines) {
-        if (l.rev == null && l.int == null && l.ending == null) continue;
-        const st = rec ? confirmationState(rec.bank?.[l.id], l.values) : 'none';
-        const conf = rec?.bank?.[l.id]?.confirmation;
-        src.push([monthName(m), label(l.id), l.rev ?? null, l.int ?? null, l.ending ?? null, sourceOf(l), l.enteredBy || '', l.enteredAt ? when(l.enteredAt) : '',
-          st === 'confirmed' ? `Confirmed by ${conf.by} · ${when(conf.at)}` : st === 'stale' ? 'Changed since confirmed' : 'Not confirmed']);
+      const t = trails[m];
+      if (t) {
+        adj.push([monthName(m)]);
+        for (const r of t.rs) adj.push([r.ref, r.group, r.what, r.who, r.date, r.amount, r.evidence, r.bank, r.glBatch, r.gl, r.why]);
+        const rowTotal = Object.fromEntries(ADJ_GROUPS.map((k) => [k, adjFor(k)(c)]));
+        const sm = auditSummary(t.rs);
+        for (const k of ADJ_GROUPS) {
+          const xs = sm.filter((x) => x.group === k);
+          if (!xs.length) continue;
+          const tot = round2(sum(xs, (x) => x.total));
+          xs.forEach((x, i) => summary.push([monthName(m), k, x.line, x.count, x.total, x.glOnly || null,
+            i === xs.length - 1 ? rowTotal[k] : null, i === xs.length - 1 ? (Math.abs(tot - (rowTotal[k] || 0)) < 0.005 ? 'Yes' : `NO — lines ${money(tot, { dash: false })}`) : '']));
+        }
+        for (const s_ of t.retired) checks.push([monthName(m), 'Ref no longer an adjustment', s_.ref, `Was: ${s_.what}${s_.date ? ` ${s_.date}` : ''} ${money(s_.amount, { dash: false })}. Its number isn’t used again; the month’s activity log says what changed.`]);
+        for (const r of t.amountChanged) checks.push([monthName(m), 'Ref amount changed', r.ref, `${r.what}: ${money(r.was, { dash: false })} when first numbered, now ${money(r.amount, { dash: false })}`]);
+        if (t.unsaved) checks.push([monthName(m), 'Refs not saved', 'TEMPORARY', 'Nothing is saved for this month yet (only its GL is loaded), so its refs are for this export only.']);
       }
       const sc = c.stripeCheck;
       if (sc && sc.state !== 'incomplete') {
@@ -1842,20 +1846,13 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
         { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
         { name: 'How to audit this', rows: readMeRows(stamp), cols: [30, 110] },
-        { name: 'Adjustments summary', rows: summary, cols: [14, 28, 40, 7, 15, 30, 16, 16, 18], freeze: { ySplit: 1 } },
-        { name: 'Adjustments detail', rows: adj, cols: [15, 14, 26, 32, 50, 36, 11, 14, 22, 18, 22, 44, 22, 11, 50, 14, 12, 11, 44, 18, 36, 50, 50, 50, 80, 20, 20, 18], freeze: { xSplit: 1, ySplit: 1 } },
-        { name: 'GL lines', rows: glLinesRows(trail, glIndex), cols: [30, 12, 11, 44, 18, 26, 22, 36, 14, 14, 14], freeze: { ySplit: 1 } },
-        { name: 'Sources', rows: src, cols: [14, 26, 15, 13, 16, 44, 20, 20, 32] },
+        { name: 'Adjustments summary', rows: summary, cols: [14, 28, 44, 7, 15, 14, 15, 18], freeze: { ySplit: 1 } },
+        { name: 'Adjustments detail', rows: adj, cols: [15, 26, 50, 32, 11, 14, 22, 60, 12, 60, 60], freeze: { xSplit: 1, ySplit: 1 } },
         { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
       ]);
     } catch (err) { toast(explain(err, 'Couldn’t build the Excel file.'), 'error'); }
   }
 
-  // Every line of each GL batch the adjustments name, so a batch can be vouched without Acumatica.
-  function glLinesRows(trail, glIndex) {
-    return [['Refs', 'GL batch', 'Date', 'Batch description', 'GL line', 'Account', 'Customer / vendor', 'Line description', 'Line ref', 'Debit', 'Credit'],
-      ...auditGlLines(trail, glIndex).map((l) => [l.refs, l.batch, l.date, l.desc, l.id, l.account, l.cv, l.d, l.ref, l.debit, l.credit])];
-  }
   // The export's first page for someone who hasn't seen the app: what each tab is and how to check
   // a line.
   function readMeRows(stamp) {
@@ -1866,20 +1863,17 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       [],
       ['Tabs'],
       [`  FY${fy} Proof of Cash`, 'The sheet. The five adjustment rows (Transfers between our accounts · Wire sweeps · Deposits that aren’t revenue · Fees, refunds & reclasses · Timing) are opened up under Total Adjustments.'],
-      ['  Adjustments summary', 'Each sheet row, month by month, broken into its kinds of line, with the reference numbers it covers and whether the lines add up to the sheet. Start here to go from a number on the sheet to its lines.'],
-      ['  Adjustments detail', 'One row per item that moves — each sweep, transfer, refund, reclass and deposit in transit — with who it was, where to find it on the bank statement, the GL batch and line that booked it, and how to verify it.'],
-      ['  GL lines', 'Every line of each GL batch named in the detail (Acumatica identifier, account, customer / vendor, debit, credit), so a batch can be vouched without opening Acumatica.'],
-      ['  Sources', 'Where each account’s monthly figure came from (which statement or file), who attached it and whether it was confirmed.'],
-      ['  Checks', 'Controls run each month: Stripe payouts vs Cass, deposits vs GL, match confidence, GL-only items, deposits in transit.'],
+      ['  Adjustments summary', 'Each sheet row, month by month, broken into its kinds of line, and whether the lines add up to what the sheet shows. Start here to go from a number on the sheet to its lines: filter Adjustments detail by that Sheet row.'],
+      ['  Adjustments detail', 'One row per item that moves — each sweep, transfer, refund, reclass and deposit in transit — with who it was, where it is on the bank statement and the GL batch that booked it.'],
+      ['  Checks', 'Controls run each month: Stripe payouts vs Cass, deposits vs GL, match confidence, GL-only items, deposits in transit, and refs that changed.'],
       [],
-      ['Reference numbers', 'A-YYYY-MM-NNN, numbered within the month (A-2025-11-004 is November 2025’s fourth line). They are made fresh on each export — cite them with the export date.'],
+      ['Reference numbers', 'A-YYYY-MM-NNN. A line gets its number the first time it is exported and keeps it, so a ref from an older export still means the same line. A line added later gets the next free number, so numbers within a sheet row aren’t always in order. A number is never reused: if a line stops being an adjustment, the Checks tab says so.'],
       ['Signs', 'Amounts are as they affect bank revenue: negative is taken out (not revenue, or not this month’s), positive is added.'],
       [],
       ['Evidence — what backs each line'],
       ev('statement'), ev('both'), ev('glWhat'), ev('gl'), ev('typed'),
       [],
-      ['To verify a line', '1. Find it by Ref on Adjustments detail. 2. Open the Bank document and find the Statement date, description and amount under the Section named. 3. In Acumatica, open the GL batch and check the GL entry (and the GL line, which names the payer). 4. For a transfer, the note names the other side — find it on that account’s statement. 5. GL-only and typed lines have no bank document: ask for the support named in How to verify.'],
-      ['Status', 'Confirmed means a person in the app checked the line against its documents (who and when are shown). To check means nobody has yet.'],
+      ['To verify a line', '1. Find it by Ref on Adjustments detail. 2. Bank statement names the file (the PDFs or CSVs sent with this workbook), the section, and the date, amount and wording to look for. 3. In Acumatica, open the GL batch and check it books the GL entry shown. 4. For a transfer, Why names the other side — find it on that account’s statement. 5. GL-only and typed lines have no bank document: ask for the support behind the GL batch or the note.'],
       [],
       [stamp],
     ];
