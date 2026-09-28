@@ -258,7 +258,11 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
   (keeps how it counts now), **Change…** (a menu of the other ways it can count), then Undo, Leave
   out, Edit or Remove. Every section heading shows what's left to check, *Confirm all* and the
   subtotal; each pop-up opens with a bar counting everything left, with one *Confirm all*. Going
-  from one pop-up to another closes the first. Keep new pop-ups to this.
+  from one pop-up to another closes the first. Nothing is final: a confirmed line has *Undo
+  confirm*; a line decided out of a group (counted as revenue, left out, moved) stays listed in
+  that pop-up under *Changed here* (decisions record `from`, the group) with Undo; and Cass
+  Operating's *Decisions made this month* lists every decision on the month, wherever it was made.
+  Keep new pop-ups to this.
 - **Gotchas:**
   - Native `confirm`/`prompt`/`alert` are blocked in the platform iframe. Use `ask`, `askValue`,
     `notify` and `panel` from `app/js/ui.js`.
