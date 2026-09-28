@@ -27,6 +27,9 @@ import { DEFAULT_POC_CONFIG, isSweep, defaultExclusions, manualExclusions, exclu
 const STRIPE = /^STRIPE/i;
 const DAY = 86400000;
 const cents = (n) => Math.round(n * 100);
+const CLEARING = '1200';
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const monthLabel = (m) => `${MONTH_NAMES[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
 
 // Names for the accounts a Cass deposit is usually booked to, for the notes.
 const ACCOUNT_NAMES = {
@@ -283,6 +286,27 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       }
     }
   }
+  // Money that came in through Stripe but wasn't one of Stripe's payouts (a gift through another
+  // Stripe account): the GL holds it in Stripe clearing (1200) and moves it to giving later
+  // ("reclass of stripe clearing account to giving"). That's timing — received in one month,
+  // recognized in a later one — so the two ends are linked. January: 97.50 in (GL017570), moved to
+  // giving in February (GL017834).
+  const late = {}, clearing = {};
+  for (const m of months) {
+    for (const x of glBy[m]?.stripeReclass || []) {
+      if (!(x.accounts?.[CLEARING] < 0)) continue;
+      const amount = revenueIn(x.accounts);
+      if (amount < 0.005) continue;
+      for (const mm of [addMonths(m, -1), addMonths(m, -2), m]) {
+        const hit = [...(matched[mm]?.byLine || [])].find(([l, y]) => STRIPE.test(l.desc) && glKind(y.r).kind === 'stripe' && Math.abs(l.amount - amount) < 0.005 && !late[mm]?.[l.id]);
+        if (!hit) continue;
+        const [l, y] = hit;
+        (late[mm] ||= {})[l.id] = { id: l.id, date: l.date, desc: l.desc, amount: l.amount, glIn: y.r.batch, to: { month: m, batch: x.batch, date: x.date, desc: x.desc } };
+        (clearing[m] ||= {})[x.batch] = { month: mm, id: l.id, date: l.date, desc: l.desc, glIn: y.r.batch };
+        break;
+      }
+    }
+  }
   const out = {};
   for (const m of months) out[m] = monthFindings(m);
   return out;
@@ -307,6 +331,8 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const x = (res.investment ||= {})[g.account] || (res.investment[g.account] = { gain: 0, batches: [] });
       x.gain = round2(x.gain + g.gain); x.batches.push(g);
     }
+    // This month's end of a Stripe clearing link (see above): money received now, recognized later.
+    if (late[m]) res.stripeLate = Object.values(late[m]);
     if (!receipts && !byLine.size && !glBy[m]?.keyReceipts) return res;
 
     // Hand-entered adjustments (typed, or from the workbook) already cover some of these. One
@@ -380,6 +406,14 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         const moved = Object.entries(x.accounts).filter(([a, v]) => !config.revenueAccounts.includes(a) && Math.abs(v) >= 0.005);
         const id = `auto-glstripe-${x.batch}`;
         if (dismissed[id]) continue;
+        const from = clearing[m]?.[x.batch];
+        if (from) {
+          res.adjustments.push({ id, account: 'cassOp', type: 'timing', label: 'Stripe money received earlier, recognized as giving now', amount: net, auto: true, gl: x.batch, evidence: 'both', clearing: true,
+            note: `Received ${from.date} through Stripe (${from.desc} ${money2(net)}, GL ${from.glIn}); GL ${x.batch} (${x.date}) moves it from Stripe clearing to giving`,
+            why: 'Came into Cass through Stripe but wasn’t one of Stripe’s payouts (a gift through another Stripe account). The GL held it in Stripe clearing (1200) and moved it to giving this month, so it’s counted now — it was taken out as timing the month it arrived.',
+            detail: [{ date: x.date, amount: net, desc: `${x.desc} — received ${from.date} (${monthLabel(from.month)})` }] });
+          continue;
+        }
         res.adjustments.push({ id, account: 'stripe', type: 'not-revenue', label: `Stripe, per the GL: ${x.desc}`, amount: net, auto: true, gl: x.batch,
           note: `GL ${x.batch} (${x.date}): ${moved.map(([a, v]) => `${v > 0 ? 'to' : 'from'} ${accountName(a, names)} ${round2(Math.abs(v)).toFixed(2)}`).join(', ')}`,
           why: 'Stripe’s gross includes sales the GL doesn’t count as revenue — shipping (9050) and sales tax (2042) on merchandise — and the GL sometimes adds a stray Stripe transfer to giving.',

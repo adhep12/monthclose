@@ -238,7 +238,14 @@ export function statementAdjustments(rec, deposits = null) {
   }
   if (st.operating) {
     // Gifts that arrived through someone else's Stripe account stay in revenue.
-    const stripe = stripeSplit(rec, deposits).payouts;
+    const split = stripeSplit(rec, deposits);
+    const stripe = split.payouts;
+    for (const t of split.late) {
+      adj.push({ id: `auto-stripelate-${t.id}`, account: 'cassOp', type: 'timing', label: 'Stripe money the GL recognizes as giving later', amount: -t.amount, auto: true, gl: t.late.glIn, evidence: 'both',
+        note: `Not one of Stripe’s payouts: GL ${t.late.glIn} holds it in Stripe clearing; GL ${t.late.to.batch} (${t.late.to.date}) moves it to giving`,
+        why: 'Came into Cass through Stripe but wasn’t one of Stripe’s payouts (a gift through another Stripe account). The GL held it in Stripe clearing (1200) and recognizes it as giving in a later month, so it comes out now and is counted then.',
+        detail: [{ id: t.id, date: t.date, amount: t.amount, desc: t.desc, note: `${t.desc} — the GL recognizes it as giving on ${t.late.to.date} (${t.late.to.batch})` }] });
+    }
     if (stripe.length) {
       adj.push({ id: 'auto-stripe', account: 'cassOp', type: 'transfer', label: 'Stripe transfers into Cass', amount: -round2(sum(stripe, (t) => t.amount)), auto: true,
         detail: stripe.map((t) => ({ id: t.id, date: t.date, amount: t.amount, desc: t.desc })),
@@ -333,13 +340,16 @@ export function stripeSplit(recIn, deposits = null) {
   const rec = asRec(recIn);
   const all = (rec.statements?.operating?.transactions || []).filter((t) => t.section === 'credit' && STRIPE.test(t.desc));
   const gl = Object.fromEntries((deposits?.stripeGifts || []).map((g) => [g.id, g]));
-  const payouts = [], gifts = [];
+  const lateBy = Object.fromEntries((deposits?.stripeLate || []).map((x) => [x.id, x]));
+  const payouts = [], gifts = [], late = [];
   for (const t of all) {
     const by = rec.stripeAs?.[t.id] || null;
+    // Not a payout, and the GL recognizes it in a later month: timing (see gl-deposits.js).
+    if (lateBy[t.id] && !by) { late.push({ ...t, late: lateBy[t.id] }); continue; }
     const gift = by ? by.as === 'gift' : !!gl[t.id];
     (gift ? gifts : payouts).push({ ...t, gl: gl[t.id] || null, by });
   }
-  return { payouts, gifts };
+  return { payouts, gifts, late };
 }
 
 export function stripePayoutCheck(rec, deposits = null) {
@@ -350,6 +360,7 @@ export function stripePayoutCheck(rec, deposits = null) {
   // through someone else's Stripe account (per the GL) is left out too, and stays in revenue.
   const split = stripeSplit(rec, deposits);
   const gifts = Object.fromEntries(split.gifts.map((g) => [g.id, { note: g.by ? `A gift, not a Stripe payout — counted as revenue by ${g.by.by || 'someone'}` : `A gift, not a Stripe payout — the GL books it as revenue: ${g.gl.batch} ${g.gl.desc} (${g.gl.label})`, gift: true, by: g.by?.by || 'GL' }]));
+  for (const t of split.late) gifts[t.id] = { note: `Not a Stripe payout — the GL recognizes it as giving on ${t.late.to.date} (${t.late.to.batch}); timing`, gift: true, late: true, by: 'GL' };
   const ignoredBy = { ...(rec.stripeIgnored || {}), ...gifts };
   const transfers = all ? all.filter((t) => !ignoredBy[t.id]) : null;
   const ignored = all ? all.filter((t) => ignoredBy[t.id]).map((t) => ({ ...t, ignored: ignoredBy[t.id] })) : [];

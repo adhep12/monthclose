@@ -317,3 +317,28 @@ test('a PayPal deposit only matches a PayPal batch, never a same-amount AP entry
   assert.deepEqual(['1', '2', '3'].map(batch), ['GL017465', 'GL017465', 'GL017495']);
   assert.deepEqual(d.exclusions, {});
 });
+
+test('Stripe money that isn’t a payout, moved to giving the next month, is timing in both months', () => {
+  // January: 97.50 in through Stripe, booked to Stripe clearing (GL017570); February: the GL moves
+  // it to giving (GL017834, Dr 1200 Cr 4015).
+  const st = (id, date, amount) => cr(id, date, amount, 'STRIPE/TRANSFER');
+  const jan = { month: '2026-01', statements: { operating: { transactions: [st('1', '2026-01-05', 1000), st('2', '2026-01-06', 97.5)], summary: { credits: { total: 1097.5 }, ending: 0 } } }, stripe: { payouts: 1000 } };
+  const g = {
+    '2026-01': { receipts: [
+      gl('S1', '2026-01-05', 1000, { 1200: 1000 }, 'Transfer Stripe Checking to Cass Operating - CC & ACH'),
+      gl('GL017570', '2026-01-06', 97.5, { 1200: 97.5 }, 'Transfer Stripe Checking to Cass Operating - CC & ACH'),
+    ] },
+    '2026-02': { receipts: [], stripeReclass: [{ batch: 'GL017834', date: '2026-02-28', desc: 'reclass of stripe clearing account to giving', accounts: { 1200: -97.5, 4015: 97.5 } }] },
+  };
+  const d = depositChecks({ recs: { '2026-01': jan }, glBy: g });
+  const cj = computePoc(jan, { deposits: d['2026-01'] });
+  const by = Object.fromEntries(cj.adjustments.map((a) => [a.id, a]));
+  assert.equal(by['auto-stripe'].amount, -1000);
+  assert.equal(by['auto-stripelate-2'].amount, -97.5);
+  assert.equal(by['auto-stripelate-2'].type, 'timing');
+  assert.equal(cj.stripeCheck.state, 'match');
+  const feb = d['2026-02'].adjustments.find((a) => a.id === 'auto-glstripe-GL017834');
+  assert.equal(feb.amount, 97.5);
+  assert.equal(feb.type, 'timing');
+  assert.match(feb.note, /Received 2026-01-06/);
+});

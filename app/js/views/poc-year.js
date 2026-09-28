@@ -38,6 +38,7 @@ export function adjDetail(a) {
   if (a.id?.startsWith('auto-tr-')) return 'Money from another of our accounts';
   if (a.id?.startsWith('auto-ex-')) return a.type === 'prior-period' ? 'Deposits recognized in another month' : 'Refunds, reimbursements and other non-revenue deposits';
   if (a.id?.startsWith('auto-glrev-')) return 'Chargebacks and reversals';
+  if (a.id?.startsWith('auto-stripelate-') || (a.id?.startsWith('auto-glstripe-') && a.clearing)) return 'Stripe money recognized in another month';
   if (a.id?.startsWith('auto-glstripe-')) return 'Stripe shipping and sales tax';
   if (a.id === 'auto-stripe-disputes') return 'Stripe disputes';
   if (a.id?.startsWith('auto-glpaypal-')) return 'PayPal given back to donors';
@@ -55,7 +56,7 @@ export function adjGroup(a) {
   if (id === 'auto-incoming' || id === 'auto-outgoing') return ADJ_GROUPS[1];
   if (id.startsWith('auto-ex-')) return a.type === 'prior-period' ? ADJ_GROUPS[4] : ADJ_GROUPS[2];
   if (id.startsWith('auto-glrev-')) return ADJ_GROUPS[2];
-  if (id.startsWith('auto-glnocash-')) return ADJ_GROUPS[4];
+  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
   if (id.startsWith('auto-glkey-')) return a.type === 'transfer' ? ADJ_GROUPS[0] : a.amount > 0 ? ADJ_GROUPS[3] : ADJ_GROUPS[2];
   if (id === 'auto-stripe-disputes' || id.startsWith('auto-glstripe-') || id.startsWith('auto-glpaypal-') || id === 'auto-glwise-fees') return ADJ_GROUPS[3];
   // Entered by hand, or from the workbook: by the type chosen.
