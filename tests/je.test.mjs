@@ -173,8 +173,31 @@ test('PayPal JE: giving, fees, net to 1012; payments sent to 8030; chargeback ba
     ['4012', 10, 0, 'Payment Refund'],
     ['1012', 0, 10, 'Chargeback'],
   ]);
-  assert.match(je.notes.join(' '), /2026-08-12 General Payment Some Software Co 66\.00/);
+  assert.deepEqual(je.sent.map((x) => [x.date, x.desc, x.amount, x.as]), [['2026-08-12', 'General Payment Some Software Co', 66, 'software']]);
   // A statement attached before chargebacks were read has to be attached again.
   const { chargeback, ...old } = b;
   assert.equal(jeReady(monthJes({ month: '2026-08', bankStatements: { paypal: old } }).find((x) => x.id === 'paypal')), false);
+});
+
+test('PayPal JE: a payment sent that was a refund to a donor is booked with the chargebacks (Feb 2026 shape)', () => {
+  const lines = [
+    'Merchant Account ID: X PayPal ID: finance@example.com 2/1/26 - 2/28/26', 'USD',
+    'Beginning Available Balance 20,000.00', 'Payments received 16,358.48', 'Payments sent -15,337.00', 'Withdrawals and Debits 0.00',
+    'Deposits and Credits 0.00', 'Fees -800.00', 'Ending Available Balance 20,221.48',
+    'Transaction History - USD', 'General Payment A Donor', '2/13/26 -15,337.00 0.00 -15,337.00',
+  ].map((text) => ({ text }));
+  const b = parsePaypal(lines);
+  assert.equal(b.ties, true);
+  const pp = (chosen) => monthJes({ month: '2026-02', bankStatements: { paypal: b }, paypalSentAs: chosen }).find((x) => x.id === 'paypal');
+  assert.deepEqual(pp().lines.map((l) => [l.account, l.debit, l.credit]).slice(3), [['8030', 15337, 0], ['1012', 0, 15337]]);
+  const [x] = pp().sent;
+  const je = pp({ [x.key]: { as: 'refund' } });
+  assert.deepEqual(je.lines.map((l) => [l.account, l.debit, l.credit, l.tranDescription]), [
+    ['4012', 0, 16358.48, 'Paypal Giving "Payments received Total"'],
+    ['8590', 800, 0, 'Paypal Giving "Fees Total"'],
+    ['1012', 15558.48, 0, 'Paypal Giving less Fees'],
+    ['4012', 15337, 0, 'Payment Refund'],
+    ['1012', 0, 15337, 'Chargeback'],
+  ]);
+  assert.ok(jeReady(je));
 });

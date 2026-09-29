@@ -19,7 +19,7 @@ export const JE_BATCHES = [
   { batch: 1, id: 'stripe', label: 'Stripe', description: STRIPE_JE.description, needs: 'Attach the Stripe CSV.',
     build: (rec) => (rec.stripe ? stripeJe(rec.stripe) : null) },
   { batch: 2, id: 'paypal', label: 'PayPal', description: PAYPAL_JE.description, needs: 'Attach the PayPal statement.',
-    build: (rec) => (rec.bankStatements?.paypal ? paypalJe(rec.bankStatements.paypal) : null) },
+    build: (rec) => (rec.bankStatements?.paypal ? paypalJe(rec.bankStatements.paypal, rec.paypalSentAs) : null) },
   { batch: 3, id: 'tschetter', label: 'Tschetter', description: 'Unrealized Gains - Tschetter Group', needs: 'Attach the statement, or type the ending value.',
     build: (rec, ctx) => investmentJe('tschetter', rec.month, ctx) },
   { batch: 4, id: 'delap', label: 'Delap', description: 'Unrealized Gains - Delap', needs: 'Type the ending value.',

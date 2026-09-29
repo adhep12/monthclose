@@ -4,7 +4,7 @@
 // pop-up changed: each top-level field it changed, each account / statement / decision inside the
 // keyed fields it changed, and the log entries it added.
 
-const KEYED = ['bank', 'statements', 'bankStatements', 'excluded', 'dismissed', 'autoConfirm', 'ditGl', 'stripeAs', 'glMatch', 'glNot', 'signoff', 'timing', 'gl'];
+const KEYED = ['bank', 'statements', 'bankStatements', 'excluded', 'dismissed', 'autoConfirm', 'ditGl', 'stripeAs', 'glMatch', 'glNot', 'signoff', 'timing', 'gl', 'paypalSentAs', 'bankFiles'];
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 export function mergeChanges(current, base, local) {

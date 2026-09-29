@@ -587,7 +587,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
-          accountJeBlock(rec, id, { recs: byMonth, glBy }),
+          accountJeBlock(rec, id, { recs: byMonth, glBy, setSentAs: async (x, as) => {
+            rec.paypalSentAs = { ...(rec.paypalSentAs || {}), [x.key]: { as, by: user, at: nowIso() } };
+            logChange(rec, user, `PayPal payment sent ${x.date} ${x.desc} ${money(x.amount, { dash: false })}: booked as ${as === 'refund' ? 'a refund to a donor (4012)' : 'software (8030)'}`);
+            try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+            draw();
+          } }),
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
