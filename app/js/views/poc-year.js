@@ -17,7 +17,7 @@ import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
 import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
-import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS, SF_ADJ_TYPES, DEFAULT_SF_TOLERANCE, withinTolerance, ytdTolerance } from '../sf/salesforce.js';
+import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS, SF_ADJ_TYPES, DEFAULT_SF_TOLERANCE, withinTolerance, ytdTolerance, suspectGifts } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 
 const FY_KEY = 'monthclose:poc-fy';
@@ -1379,6 +1379,14 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     res.forEach((r, i) => { if (sfBy[ms[i]] && doneMs.has(ms[i])) { run = round2(run + r.unexplained); r.running = run; } });
     return Object.fromEntries(res.map((r, i) => [ms[i], r]));
   })();
+  // Salesforce wire gifts the GL doesn't seem to have (salesforce.js suspectGifts), by month.
+  const sfSuspects = (() => {
+    const ms = cols.map((x) => x.m).filter((m) => sfBy[m]);
+    const tol = { ...DEFAULT_SF_TOLERANCE, ...(cfg.sfTolerance || {}) };
+    const res = suspectGifts(ms.map((m) => ({ sf: { ...sfBy[m], month: m }, giving: glBy[m]?.giving, found: sfFound(m) })), { min: tol.giftMin });
+    const by = {}; for (const g of res.missing) (by[g.month] ||= []).push(g);
+    return { by, looked: res.looked };
+  })();
   const pct = (v) => (v == null ? '' : `${(v * 100).toFixed(1)}%`);
   const pct2 = (v) => (v == null ? '' : `${(v * 100).toFixed(2)}%`);
   // The limits for what's left unexplained (settings: Tolerance…).
@@ -1495,6 +1503,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { name: 'By channel', rows: byChannel, cols: [16, 12, 16, 12, 16, 16, 16, 16, 22] },
         { name: 'Reasons', rows: reasons, cols: [16, 10, 50, 80, 50, 20, 16] },
         { name: 'Running totals', rows: toDate, cols: [16, 44, 16, 16, 16, 16, 16], freeze: { ySplit: 1 } },
+        { name: 'Gifts to look at', rows: [[`Salesforce wire gifts of ${money(sfTol.giftMin, { dash: false })} or more the GL doesn't seem to have (no line from the same sponsor, a processor, or the same amount, 3 days before to 45 days after). ${sfSuspects.looked} looked for.`], [],
+          ['Month', 'Close date', 'Donor-advised fund', 'Primary contact (Salesforce 18-character ID)', 'Amount'],
+          ...Object.entries(sfSuspects.by).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount]))], cols: [16, 12, 44, 30, 14] },
         { name: 'Restricted gifts', rows: restricted, cols: [16, 12, 12, 16, 30, 40, 10, 14] },
         { name: 'Largest GL lines', rows: largest, cols: [16, 10, 18, 12, 16, 30, 40, 14] },
         { name: 'Sources', rows: sources, cols: [16, 40, 12, 18, 20, 70, 40, 18, 20] },
@@ -1624,10 +1635,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         monthPct: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 6, value: String(round2(sfTol.monthPct * 100)) }),
         ytdPct: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 6, value: String(round2(sfTol.ytdPct * 100)) }),
         item: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 10, value: String(sfTol.item) }),
+        giftMin: h('input', { type: 'text', inputmode: 'decimal', class: 'num', size: 10, value: String(sfTol.giftMin) }),
       };
       const save = async () => {
-        const v = { monthPct: parseAmount(fx.monthPct.value) / 100, ytdPct: parseAmount(fx.ytdPct.value) / 100, item: parseAmount(fx.item.value) };
-        if (![v.monthPct, v.ytdPct, v.item].every((x) => Number.isFinite(x) && x >= 0)) { toast('Type a number in each.', 'error'); return; }
+        const v = { monthPct: parseAmount(fx.monthPct.value) / 100, ytdPct: parseAmount(fx.ytdPct.value) / 100, item: parseAmount(fx.item.value), giftMin: parseAmount(fx.giftMin.value) };
+        if (![v.monthPct, v.ytdPct, v.item, v.giftMin].every((x) => Number.isFinite(x) && x >= 0)) { toast('Type a number in each.', 'error'); return; }
         try { cfg.sfTolerance = { ...v, by: user, at: nowIso() }; await savePocConfig(cfg); toast('Tolerance saved'); close(true); rerender(); }
         catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
       };
@@ -1636,7 +1648,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         h('div', { class: 'recon' },
           rowKV('Each month, unexplained as % of GL giving', h('span', {}, fx.monthPct, ' %')),
           rowKV('Year to date, unexplained as % of GL giving', h('span', {}, fx.ytdPct, ' %')),
-          rowKV('List any giving type with more unexplained than', h('span', {}, '$ ', fx.item))),
+          rowKV('List any giving type with more unexplained than', h('span', {}, '$ ', fx.item)),
+          rowKV('Look for Salesforce wire gifts the GL doesn’t have, from', h('span', {}, '$ ', fx.giftMin))),
         h('p', { class: 'muted small' }, `A month over its limit shows “Investigate”. Giving types over the amount are listed in the month to look at, whatever the percentage. Defaults: ${pct2(DEFAULT_SF_TOLERANCE.monthPct)}, ${pct2(DEFAULT_SF_TOLERANCE.ytdPct)}, ${money(DEFAULT_SF_TOLERANCE.item, { dash: false })}.${cfg.sfTolerance?.by ? ` Last set by ${cfg.sfTolerance.by}${cfg.sfTolerance.at ? ` · ${when(cfg.sfTolerance.at)}` : ''}.` : ''}`),
         h('div', { class: 'row dialog-actions' }, h('button', { class: 'primary', onclick: save }, 'Save')));
     });
@@ -1654,6 +1667,15 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           h('span', { class: 'muted small' }, `Salesforce ${money(r.sfTotal, { dash: false })} · GL ${money(r.glTotal, { dash: false })} · difference ${money(r.diff, { dash: false })} (${pct(r.pct)}) · ${pct(r.explainedShare)} of the differences found explained`)),
         h('p', { class: 'muted small' }, `Salesforce from ${sfm.fileName || 'an upload'}${sfm.asOf ? ` (run ${sfm.asOf})` : ''}, ${sfm.kind === 'gifts' ? 'gift by gift' : 'the summary report'}, uploaded by ${sfm.uploadedBy || 'someone'}${sfm.uploadedAt ? ` · ${when(sfm.uploadedAt)}` : ''}.${sfm.excludes?.refunds || sfm.excludes?.disputes ? ' The report leaves out refunded and disputed Stripe gifts, so the GL’s Stripe refunds and disputes aren’t counted as explaining the difference.' : ''}${sfm.partial ? ' The report’s date range covers only part of this month.' : ''}`),
         (() => { const big = withinTolerance(r, sfTol).big; return big.length ? h('p', { class: 'small warn-text' }, `To look at (over ${money(sfTol.item, { dash: false })} unexplained): ${big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(' · ')}. Use “Explain a difference yourself” below for anything you’ve found.`) : null; })(),
+        (sfSuspects.by[m] || []).length ? h('div', { class: 'adj-section' },
+          h('h3', {}, 'Salesforce gifts the GL doesn’t seem to have'),
+          h('p', { class: 'muted small' }, `Wire gifts of ${money(sfTol.giftMin, { dash: false })} or more with no GL line from the same sponsor (or a payment processor, or the same amount under another name) from 3 days before to 45 days after. Worth looking up in Salesforce: a duplicate, a pledge not yet paid, or money that went to another account. Once you know, add it with “Explain a difference yourself” and it drops off this list.`),
+          table([
+            { label: 'Close date', cell: (g) => g.date },
+            { label: 'Donor-advised fund', cell: (g) => g.fund || '(none)' },
+            { label: 'Primary contact', cell: (g) => h('span', { class: 'small' }, g.contact) },
+            { label: 'Amount', num: true, cell: (g) => money(g.amount) },
+          ], sfSuspects.by[m])) : null,
         h('h3', {}, 'By channel'),
         table([
           { label: 'Channel', cell: (x) => x.channel },

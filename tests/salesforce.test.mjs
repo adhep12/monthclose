@@ -220,3 +220,15 @@ test('tolerance: unexplained as a share of GL giving, each month and year to dat
   assert.equal(y.ok, false); // 2.6% for these two months
   assert.equal(ytdTolerance([oct, { ...nov, unexplained: -10000 }]).ok, true);
 });
+
+test('Salesforce wire gifts the GL doesn’t have: two alike gifts, one GL line, the nearer one is paid', async () => {
+  const { suspectGifts } = await import('../app/js/sf/salesforce.js');
+  const W = (date, amount, fund, contact = 'c') => [date, amount, fund, contact, 'W'];
+  const res = suspectGifts([
+    { sf: { month: '2025-11', gifts: [W('2025-11-12', 100000, 'National Christian Foundation', 'donorA'), W('2025-11-20', 6000, 'Fidelity')] }, giving: { wireLines: [['2025-11-21', 6000, 'Fidelity', 'GL1']] } },
+    { sf: { month: '2025-12', gifts: [W('2025-12-11', 100000, 'National Christian Foundation', 'donorA'), W('2025-12-12', 7000, 'National Christian Foundation'), W('2025-12-20', 8000, 'GiveClear Foundation'), W('2025-12-22', 12000, 'Stewardship')] },
+      giving: { wireLines: [['2025-12-15', 110000, 'NCF', 'GL017377'], ['2025-12-28', 8000, 'Chariot', 'GL2']] } },
+  ]);
+  assert.equal(res.looked, 5); // Stewardship pays in lumps: not looked for
+  assert.deepEqual(res.missing.map((g) => [g.date, g.amount, g.contact]), [['2025-11-12', 100000, 'donorA']]);
+});

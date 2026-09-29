@@ -180,7 +180,7 @@ export const explainedShareOf = (reasons, unexplained) => {
   const gross = sum((reasons || []).filter((x) => !x.flag), (x) => Math.abs(x.amount));
   return gross + Math.abs(unexplained) ? gross / (gross + Math.abs(unexplained)) : 1;
 };
-export const DEFAULT_SF_TOLERANCE = { monthPct: 0.01, ytdPct: 0.0025, item: 10000 };
+export const DEFAULT_SF_TOLERANCE = { monthPct: 0.01, ytdPct: 0.0025, item: 10000, giftMin: 5000 };
 export function withinTolerance(r, tol = DEFAULT_SF_TOLERANCE) {
   const share = r?.glTotal ? Math.abs(r.unexplained) / Math.abs(r.glTotal) : null;
   return { share, ok: share != null && share <= tol.monthPct, big: (r?.rows || []).filter((x) => Math.abs(x.unexplained) >= tol.item) };
@@ -201,7 +201,7 @@ const SPONSORS = [
   [/stewardship/i, 'Stewardship'], [/benevity|benvity|online giving/i, 'Benevity'], [/overflow/i, 'Overflow'], [/signatry/i, 'Signatry'],
   [/renaissance|\(ren\)/i, 'Renaissance'], [/morgan stanley/i, 'Morgan Stanley'], [/u\.?s\.? charitable/i, 'US Charitable'],
   [/american endowment|^aef\b/i, 'AEF'], [/giveclear/i, 'GiveClear'], [/murdock/i, 'MJ Murdock'], [/thrivent/i, 'Thrivent'],
-  [/patreon/i, 'Patreon'],
+  [/patreon/i, 'Patreon'], [/fully alive/i, 'Fully Alive Foundation'], [/under the sun/i, 'Under The Sun Foundation'],
 ];
 export const sponsorOf = (name) => { const n = String(name || '').trim(); return (SPONSORS.find(([re]) => re.test(n)) || [, n || '(none)'])[1]; };
 // Platforms that collect gifts from many donors and pay them to us in lumps, months apart:
@@ -223,6 +223,44 @@ function sponsorsGl(giving) {
   const o = {};
   for (const [who, v] of Object.entries(giving.payers.Wire || {})) { const k = sponsorOf(who); o[k] = round2((o[k] || 0) + v); }
   return o;
+}
+
+// ---- Salesforce gifts the GL doesn't seem to have ------------------------------------------
+// Each Salesforce wire gift of `min` or more is looked for in the GL's wire lines from 3 days before
+// to 45 days after its close date: from the same sponsor (the same amount, or inside a larger line
+// that pays several of that day's gifts), through a payment processor (Chariot, iPay, Cybergrants,
+// YourCause), or the same amount under another name. Bigger gifts are placed first, each at the
+// line closest in date, so two alike gifts from one donor don't both claim the same line. Gifts
+// from platforms that pay in lumps, and gifts already explained (the proof of cash's receivables,
+// an explanation typed for that sponsor and amount), aren't looked for. Checks can't be: the GL's
+// check deposits don't name who gave.
+const PROCESSOR = /chariot|ipay|cyber ?grant|your ?cause|allied payment/i;
+const dayOf = (d) => Date.parse(d) / 864e5;
+export function suspectGifts(inputs, { min = DEFAULT_SF_TOLERANCE.giftMin, before = 3, after = 45 } = {}) {
+  const lines = inputs.flatMap((x) => (x.giving?.wireLines || []).map((l) => ({ date: l[0], amount: l[1], payer: l[2], batch: l[3], sp: sponsorOf(l[2]), proc: PROCESSOR.test(l[2]), left: l[1] })));
+  const gifts = [];
+  inputs.forEach((x) => {
+    if (!x.giving?.wireLines || !Array.isArray(x.sf?.gifts)) return;
+    const explained = [...(x.found?.priorPeriod || []).map((y) => ({ amount: y.amount })), ...(x.sf.adjustments || []).map((y) => ({ amount: y.amount, sp: y.sponsor ? sponsorOf(y.sponsor) : null }))];
+    for (const g of x.sf.gifts) {
+      if (g[4] !== 'W' || g[1] < min) continue;
+      const sp = sponsorOf(g[2]);
+      if (LUMP_PLATFORMS.includes(sp) || explained.some((e) => Math.abs(Math.abs(e.amount) - g[1]) < 0.01 && (!e.sp || e.sp === sp))) continue;
+      gifts.push({ month: x.sf.month, date: g[0], amount: g[1], fund: g[2] || '', sp, contact: g[3] });
+    }
+  });
+  const pairs = [];
+  gifts.forEach((g, gi) => lines.forEach((l) => {
+    const gap = dayOf(l.date) - dayOf(g.date);
+    if (gap < -before || gap > after || l.amount < g.amount - 0.005) return;
+    const exact = Math.abs(l.amount - g.amount) < 0.005;
+    const how = l.sp === g.sp ? 0 : l.proc ? 1 : exact ? 2 : null;
+    if (how != null) pairs.push({ gi, l, rank: how * 2 + (exact ? 0 : 1), gap: Math.abs(gap) });
+  }));
+  pairs.sort((a, b) => a.rank - b.rank || gifts[b.gi].amount - gifts[a.gi].amount || a.gap - b.gap);
+  const found = new Set();
+  for (const p of pairs) { const g = gifts[p.gi]; if (found.has(p.gi) || p.l.left < g.amount - 0.005) continue; p.l.left = round2(p.l.left - g.amount); found.add(p.gi); }
+  return { looked: gifts.length, missing: gifts.filter((_, i) => !found.has(i)).sort((a, b) => b.amount - a.amount) };
 }
 
 // One month. sf: parseSalesforceSummary's month. giving: the GL register's p.giving (gl.js).
