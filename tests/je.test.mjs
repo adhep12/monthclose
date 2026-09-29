@@ -70,3 +70,76 @@ test('Import file: one row per line, batch number, month-end date, blank empty s
   const [batch, date, desc, account, sub, debit, credit, tran] = rows[1];
   assert.deepEqual([batch.v, date.v, desc, account.v, sub, debit, credit, tran], [1, 46265, 'Monthly Stripe Giving', 1200, '000-000', 150000, '', '9 Payouts & Transfers']);
 });
+
+// ---- Tschetter and Delap ------------------------------------------------------------------
+import { parseSchwab, detectBank } from '../app/js/poc/banks.js';
+import { investmentJe } from '../app/js/je/investments.js';
+
+const schwabApril = [
+  'Schwab One® Account of', 'Account Number Statement Period', 'BIBLEPROJECT 4730-4318 April 1-30, 2026', 'Account Summary',
+  'Beginning Account Value $5,163,322.62 $5,097,857.19', 'Deposits 0.00 0.00', 'Withdrawals 0.00 0.00',
+  'Dividends and Interest 24,007.12 94,956.84', 'Market Appreciation/(Depreciation) (17,131.46) (12,998.83)',
+  'Expenses (3,227.08) (12,844.00)', 'Ending Account Value $5,166,971.20 $5,166,971.20',
+].map((text) => ({ text }));
+
+test('Schwab statement: period, values, this month’s and year-to-date expenses, ties', () => {
+  assert.equal(detectBank(schwabApril), 'schwab');
+  const s = parseSchwab(schwabApril);
+  assert.deepEqual([s.source, s.month, s.beginning, s.ending, s.fees, s.feesYtd, s.market, s.ties],
+    ['tschetter', '2026-04', 5163322.62, 5166971.2, 3227.08, 12844, -17131.46, true]);
+});
+
+// Jan: photographed statement, figures typed. Feb, Mar: portal screenshots. Apr: the statement.
+const tsch = (bank, extra = {}) => ({ bank: { tschetter: bank }, ...extra });
+const fy = () => ({
+  '2026-01': { month: '2026-01', ...tsch({ ending: 5134615.60, feesYtd: 3186.16 }) },
+  '2026-02': { month: '2026-02', ...tsch({ ending: 5154602.05 }) },
+  '2026-03': { month: '2026-03', ...tsch({ ending: 5163322.62, beginning: 5164013.51 }) },
+  '2026-04': { month: '2026-04', ...tsch({ ending: 5166971.20 }, { bankStatements: { tschetter: parseSchwab(schwabApril) } }) },
+});
+const rows = (je) => je.lines.map((l) => [l.account, l.debit, l.credit]);
+
+test('Tschetter: a statement books the change since last booked and the fees since the last statement', () => {
+  const je = investmentJe('tschetter', '2026-04', { recs: fy() });
+  assert.deepEqual(je.problems, []);
+  assert.deepEqual(rows(je), [['1171', 3648.58, 0], ['8999', 0, 13306.42], ['8070', 9657.84, 0]]);
+  assert.equal(je.lines[0].tranDescription, 'Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026');
+  assert.match(je.working.feeBasis, /12844\.00 less 3186\.16 on the Jan 2026 statement/);
+});
+
+test('Tschetter: screenshot months book the gain only, from the last ending booked, and flag a beginning that differs', () => {
+  const je = investmentJe('tschetter', '2026-03', { recs: fy() });
+  assert.deepEqual(rows(je), [['1171', 8720.57, 0], ['8999', 0, 8720.57]]);
+  assert.equal(je.lines[0].tranDescription, 'Unrealized Gains - Tschetter Group 3-31-2026');
+  assert.match(je.notes.join(' '), /starts at 5164013\.51, not the 5154602\.05 last booked/);
+});
+
+test('Tschetter: fees already booked come from the GL when the earlier statement isn’t in the app', () => {
+  const recs = fy(); delete recs['2026-01'].bank.tschetter.feesYtd;
+  const glBy = { '2026-01': { investmentGl: [{ account: 'tschetter', batch: 'GL1', value: 0, gain: 3186.16, fee: 3186.16 }] } };
+  const je = investmentJe('tschetter', '2026-04', { recs, glBy });
+  assert.equal(je.working.fees, 9657.84);
+  assert.equal(je.working.feeMonths, 'Feb-Apr 2026');
+  // Nothing booked this year at all: the whole year to date.
+  assert.equal(investmentJe('tschetter', '2026-04', { recs }).working.feeMonths, 'Jan-Apr 2026');
+});
+
+test('Tschetter: a month with no value is picked up by the next; a statement from last year short of December is flagged', () => {
+  const recs = fy(); delete recs['2026-02'];
+  const je = investmentJe('tschetter', '2026-03', { recs });
+  assert.equal(je.working.change, round(5163322.62 - 5134615.60));
+  assert.match(je.notes.join(' '), /No ending value for Feb 2026/);
+  recs['2025-10'] = { month: '2025-10', ...tsch({ ending: 5000000, feesYtd: 30000 }) };
+  assert.match(investmentJe('tschetter', '2026-01', { recs }).notes.join(' '), /Fees after Oct 2025 to Dec 2025/);
+  assert.equal(investmentJe('tschetter', '2025-09', { recs }), null);
+});
+
+test('Delap: gain only; money moved out is booked by its own entry, so it isn’t in the change', () => {
+  const recs = { '2026-07': { month: '2026-07', bank: { delap: { ending: 100000 } } }, '2026-08': { month: '2026-08', bank: { delap: { ending: 110000, netDeposits: -10000 } } } };
+  const je = investmentJe('delap', '2026-08', { recs });
+  assert.deepEqual(rows(je), [['1170', 20000, 0], ['8999', 0, 20000]]);
+  assert.equal(je.lines[0].tranDescription, 'Unrealized Gains - Delap 8-31-2026');
+  const all = monthJes(recs['2026-08'], { recs });
+  assert.deepEqual(all.map((x) => [x.batch, x.id, jeReady(x)]), [[1, 'stripe', false], [3, 'tschetter', false], [4, 'delap', true]]);
+});
+const round = (n) => Math.round(n * 100) / 100;

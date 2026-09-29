@@ -26,7 +26,7 @@ const SHOW_KEY = 'monthclose:poc-show';
 const ADJ_OPEN_KEY = 'monthclose:poc-adj-open';
 // Accounts whose empty cells turn into an undo "−" once something is attached or typed.
 const UNDOABLE = ['ics', 'cd', 'delap', 'tschetter'];
-const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits', 'fees'];
+const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits', 'fees', 'beginning', 'feesYtd'];
 // Row order of the workbook's "Per Bank Statement" block.
 const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp'];
 const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
@@ -526,7 +526,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             { label: 'File', cell: (x) => h('span', { class: 'break' }, x.s.fileName || '') },
             { label: 'Attached', cell: (x) => `${x.s.attachedBy || ''} · ${when(x.s.attachedAt)}` },
             { label: '', cell: (x) => h('div', { class: 'row' },
-              x.ok === false ? statusPill('Doesn’t tie', 'bad') : statusPill('Ties', 'good'),
+              x.ok === false ? statusPill('Doesn’t tie', 'bad') : x.evidence ? statusPill('Kept as evidence', 'neutral') : statusPill('Ties', 'good'),
               x.s.fileKey ? h('button', { class: 'small-btn', onclick: async () => { const u = await fileUrl('statements', x.s.fileKey).catch(() => null); if (u) window.open(u, '_blank', 'noopener'); } }, 'View') : null,
               h('button', { class: 'small-btn danger', onclick: async () => {
                 if (!(await ask('Detach statement', `Detach ${x.s.fileName || x.label}? Its figures come out of ${monthName(m)}.`, { ok: 'Detach', danger: true }))) return;
@@ -552,6 +552,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
                   field('Fees taken out', inp('fees'), c.deposits?.fees?.[id] && b.fees == null
                     ? `Left blank: the GL booked ${money(c.deposits.fees[id].amount, { dash: false })} in fees this month (${c.deposits.fees[id].batches.map((x) => x.batch).join(', ')}, Dr 8070), so that’s added back.`
                     : 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
+                  field('Beginning value (optional)', inp('beginning'), 'From the statement or screenshot. Only a check: the JE books the change from the last ending booked, and flags a beginning that differs.'),
+                  id === 'tschetter' ? field('Expenses year to date', rec.bankStatements?.tschetter ? h('span', {}, money(rec.bankStatements.tschetter.feesYtd, { dash: false }), h('span', { class: 'muted small' }, ' (from the statement)')) : inp('feesYtd'),
+                    'From a statement only (January to December). Filled in, the JE books the fees since they were last booked; left blank (screenshots), only the gain.') : null,
                   field('Revenue', inp('rev')),
                   h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Gain / interest'), h('strong', {}, money(l.int ?? balanceMethodInterest(b, prior?.bank?.[id]), { dash: false }))))]
                 : h('div', { class: 'form-grid' }, field('Revenue (deposits)', inp('rev')), field('Interest', inp('int')), field('Ending balance', inp('ending'))),
@@ -584,7 +587,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
-          accountJeBlock(rec, id),
+          accountJeBlock(rec, id, { recs: byMonth, glBy }),
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
@@ -881,7 +884,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             } }, 'Detach')) },
         ], attached) : h('p', { class: 'muted small' }, 'Nothing attached yet.'),
 
-        monthJeBlock(rec),
+        monthJeBlock(rec, { recs: byMonth, glBy }),
 
         h('h3', {}, 'Timing'),
         h('div', { class: 'form-grid' },
@@ -2001,6 +2004,7 @@ function attachedFor(rec, id) {
   if (id === 'ics' && rec.ics) out.push({ label: 'ICS', s: rec.ics, ok: rec.ics.ties !== false, detach: () => { delete rec.ics; } });
   const b = rec.bankStatements?.[id];
   if (b) out.push({ label: BANK_SOURCES.find((s) => s.id === id)?.label || id, s: b, ok: statementTies(rec, id), detach: () => { delete rec.bankStatements[id]; } });
+  (rec.bankFiles?.[id] || []).forEach((f, i) => out.push({ label: f.scanned ? 'Scanned statement' : 'Screenshot', s: f, evidence: true, detach: () => { rec.bankFiles[id].splice(i, 1); } }));
   return out;
 }
 

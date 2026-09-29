@@ -17,12 +17,30 @@ function jeStatus(je) {
   if (je.missing) return statusPill(je.missing, 'neutral');
   if (je.problems.length) return statusPill('Check the file', 'bad');
   if (!je.balanced) return statusPill('Doesn’t balance', 'bad');
+  if (!je.lines.length) return statusPill('Nothing to book', 'neutral');
   return statusPill('Ready', 'good');
+}
+
+// How an investment JE was worked out, from where the last booking left off.
+function working(je) {
+  const w = je.working;
+  if (!w) return null;
+  const from = w.from ? `${monthName(w.from)} ending` : 'Last month’s ending (typed)';
+  return h('div', { class: 'recon' },
+    h('div', { class: 'recon-row' }, h('span', {}, 'Ending value'), h('span', { class: 'num' }, money(w.ending, { dash: false }))),
+    w.prior != null ? h('div', { class: 'recon-row' }, h('span', {}, `Less ${from}, last booked`), h('span', { class: 'num' }, money(-w.prior))) : null,
+    w.net ? h('div', { class: 'recon-row' }, h('span', {}, 'Less money moved in (out), booked by its own entry'), h('span', { class: 'num' }, money(-w.net))) : null,
+    h('div', { class: 'recon-row' }, h('strong', {}, 'Change in value'), h('strong', { class: 'num' }, money(w.change, { dash: false }))),
+    w.ytd != null
+      ? h('div', { class: 'recon-row' }, h('span', {}, `Fees ${w.feeMonths || ''}: ${w.feeBasis}`), h('span', { class: 'num' }, money(w.fees, { dash: false })))
+      : je.id === 'tschetter' ? h('div', { class: 'recon-row' }, h('span', { class: 'muted' }, 'No statement this month (screenshots): fees wait for the next statement'), h('span', { class: 'num' }, '–')) : null);
 }
 
 export function jePreview(je) {
   return h('div', {},
     je.problems.length ? h('div', { class: 'notice warn' }, h('ul', {}, je.problems.map((p) => h('li', {}, p)))) : null,
+    je.notes?.length ? h('div', { class: 'notice' }, h('ul', {}, je.notes.map((p) => h('li', {}, p)))) : null,
+    working(je),
     je.lines.length ? table([
       { label: 'Account', cell: (l) => l.account },
       { label: 'Subaccount', cell: (l) => l.sub },
@@ -34,8 +52,8 @@ export function jePreview(je) {
 }
 
 // One process's JE, for its account pop-up.
-export function accountJeBlock(rec, id) {
-  const je = monthJes(rec).find((x) => x.id === id);
+export function accountJeBlock(rec, id, ctx) {
+  const je = monthJes(rec, ctx).find((x) => x.id === id);
   if (!je || je.missing) return null;
   return h('div', {},
     h('h3', {}, `Journal entry: batch ${je.batch}, ${je.description}`),
@@ -45,8 +63,8 @@ export function accountJeBlock(rec, id) {
 }
 
 // Every JE for the month, for the month pop-up.
-export function monthJeBlock(rec) {
-  const jes = monthJes(rec);
+export function monthJeBlock(rec, ctx) {
+  const jes = monthJes(rec, ctx);
   const ready = jes.filter(jeReady);
   return h('div', {},
     h('h3', {}, 'Journal entries'),

@@ -33,9 +33,10 @@ export const ACCOUNT_FILES = {
   keyMM: { accept: '.pdf', hint: 'KeyBank Money Market statement (PDF).' },
   ics: { accept: '.pdf', hint: 'ICS monthly statement (PDF).' },
   cd: { accept: '.pdf,.xlsx', hint: 'CDARS statements (month-end and any maturities), or the IntraFi accounts export run on the 1st.', multiple: true },
-  delap: { accept: '', hint: 'Type the ending value from the Fidelity statement.' },
-  tschetter: { accept: '', hint: 'Type the ending value from the Tschetter statement.' },
+  delap: { accept: '.png,.jpg,.jpeg,.pdf', hint: 'Type the ending value from Fidelity. A screenshot can be kept with it.', multiple: true },
+  tschetter: { accept: '.pdf,.png,.jpg,.jpeg', hint: 'The Schwab statement (PDF) books the gain and the fees since they were last booked. Portal screenshots only book the gain: keep them here and type the ending value.', multiple: true },
 };
+const INVESTMENT_ACCOUNTS = ['tschetter', 'delap'];
 
 // Returns { changed, messages }. `ask` is an async yes/no (the in-page dialog).
 export async function attachFiles({ files, rec, cds, month, user, expectAccount = null, ask, saveCd }) {
@@ -48,6 +49,21 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
     try { r = await readStatementFile(file); }
     catch (err) { messages.push({ bad: true, text: `${file.name}: ${err.message}` }); continue; }
     if (r.type === 'skip') { messages.push({ text: `${file.name}: ${r.why}` }); continue; }
+    // A screenshot or photographed statement: kept as the evidence for typed Tschetter / Delap figures.
+    if (r.type === 'picture') {
+      if (!INVESTMENT_ACCOUNTS.includes(expectAccount)) { messages.push({ bad: true, text: `${file.name}: ${r.why}` }); continue; }
+      let fileKey = null;
+      if (filesAvailable()) {
+        try { fileKey = (await uploadFile('statements', file))?.key || null; }
+        catch (err) { messages.push({ bad: true, text: explain(err, `Couldn’t store ${file.name}.`) }); continue; }
+      }
+      rec.bankFiles ||= {};
+      rec.bankFiles[expectAccount] = [...(rec.bankFiles[expectAccount] || []), { fileName: file.name, fileKey, attachedBy: user, attachedAt: nowIso(), scanned: !!r.scanned }];
+      logChange(rec, user, `Attached ${label(expectAccount)} ${r.scanned ? 'scanned statement' : 'screenshot'} ${file.name}`);
+      messages.push({ text: `${file.name} kept with ${label(expectAccount)}. Type the figures from it below${expectAccount === 'tschetter' && r.scanned ? ', including the year-to-date expenses so its fees are booked' : ''}.` });
+      changed = true;
+      continue;
+    }
     const d = r.data;
     const acct = accountOf(r);
     if (expectAccount && acct !== expectAccount
@@ -81,6 +97,15 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
       rec.ics = { ...d, ...meta };
       logChange(rec, user, `Attached ICS statement ${file.name}: interest ${money(d.interest)}`);
       messages.push({ text: `ICS: interest ${money(d.interest)}, ending ${money(d.ending)}` });
+    } else if (r.type === 'bank' && d.source === 'tschetter') {
+      rec.bankStatements.tschetter = { ...d, ...meta };
+      // The statement's ending value and year-to-date expenses are the account's figures now.
+      rec.bank ||= {};
+      const b = (rec.bank.tschetter ||= {});
+      b.ending = d.ending; delete b.feesYtd;
+      logChange(rec, user, `Attached Tschetter statement ${file.name}: ending ${money(d.ending)}, expenses ${money(d.fees)} (year to date ${money(d.feesYtd)})`);
+      messages.push({ text: `Tschetter: ending ${money(d.ending)}, expenses ${money(d.fees)}, year to date ${money(d.feesYtd)}` });
+      if (!d.ties) messages.push({ bad: true, text: `${file.name}: the Account Summary doesn’t add up to the ending value — please check it.` });
     } else if (r.type === 'bank') {
       rec.bankStatements[d.source] = { ...d, ...meta };
       logChange(rec, user, `Attached ${label(d.source)} statement ${file.name}`);

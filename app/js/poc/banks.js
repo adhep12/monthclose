@@ -14,7 +14,36 @@ export function detectBank(lines) {
   if (/Wise US Inc\./.test(t) && /statement/i.test(t)) return 'wise';
   if (/Merchant Account ID:.*PayPal ID/.test(t)) return 'paypal';
   if (/KeyBank/.test(t) && /Business Banking Statement/.test(t)) return 'keybank';
+  if (/Schwab One/.test(t) && /Ending Account Value/.test(t)) return 'schwab';
   return null;
+}
+
+// Tschetter Group's Schwab One statement. The Account Summary gives this period and the calendar
+// year to date side by side: "Expenses (3,227.08) (12,844.00)". Expenses are the advisor's fees,
+// taken out of the account; the year to date is what the fee JE works from (je/investments.js).
+export function parseSchwab(lines) {
+  const j = lines.map((l) => l.text).join('\n');
+  const p = j.match(/(January|February|March|April|May|June|July|August|September|October|November|December) (\d{1,2})-(\d{1,2}), (\d{4})/);
+  if (!p) throw new Error('Couldn’t find the Schwab statement period.');
+  const date = iso(Number(p[4]), MONTHS.indexOf(p[1].toLowerCase()) + 1, Number(p[3]));
+  const signed = (s) => (s == null ? null : /^\(.*\)$/.test(s) ? -amt(s.slice(1, -1)) : amt(s));
+  const N = '\\(?\\$?-?[\\d,]+\\.\\d{2}\\)?';
+  const pair = (label) => {
+    const m = j.match(new RegExp(`^${label} (${N}) (${N})$`, 'm'));
+    return m ? [signed(m[1]), signed(m[2])] : [null, null];
+  };
+  const [beginning] = pair('Beginning Account Value');
+  const [ending] = pair('Ending Account Value');
+  const [deposits] = pair('Deposits');
+  const [withdrawals] = pair('Withdrawals');
+  const [dividends] = pair('Dividends and Interest');
+  const [market] = pair('Market Appreciation/\\(Depreciation\\)');
+  const [expenses, expensesYtd] = pair('Expenses');
+  if (ending == null || expensesYtd == null) throw new Error('Couldn’t read the Schwab Account Summary (ending value and expenses).');
+  const res = { source: 'tschetter', date, month: date.slice(0, 7), beginning, ending, deposits, withdrawals, dividends, market,
+    fees: Math.abs(expenses || 0), feesYtd: Math.abs(expensesYtd), revenue: 0, interest: 0 };
+  res.ties = round((beginning || 0) + (deposits || 0) - Math.abs(withdrawals || 0) + (dividends || 0) + (market || 0) - res.fees) === round(ending);
+  return res;
 }
 
 const WISE_DATE = '(?:[A-Za-z]+ \\d{1,2}, \\d{4}|\\d{1,2} [A-Za-z]+ \\d{4})';
