@@ -1384,8 +1384,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const ms = cols.map((x) => x.m).filter((m) => sfBy[m]);
     const tol = { ...DEFAULT_SF_TOLERANCE, ...(cfg.sfTolerance || {}) };
     const res = suspectGifts(ms.map((m) => ({ sf: { ...sfBy[m], month: m }, giving: glBy[m]?.giving, found: sfFound(m) })), { min: tol.giftMin });
-    const by = {}; for (const g of res.missing) (by[g.month] ||= []).push(g);
-    return { by, looked: res.looked };
+    const by = {}, decided = {};
+    for (const g of res.missing) (by[g.month] ||= []).push(g);
+    for (const g of res.decided) (decided[g.month] ||= []).push(g);
+    return { by, decided, looked: res.looked };
   })();
   const pct = (v) => (v == null ? '' : `${(v * 100).toFixed(1)}%`);
   const pct2 = (v) => (v == null ? '' : `${(v * 100).toFixed(2)}%`);
@@ -1504,8 +1506,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { name: 'Reasons', rows: reasons, cols: [16, 10, 50, 80, 50, 20, 16] },
         { name: 'Running totals', rows: toDate, cols: [16, 44, 16, 16, 16, 16, 16], freeze: { ySplit: 1 } },
         { name: 'Gifts to look at', rows: [[`Salesforce wire gifts of ${money(sfTol.giftMin, { dash: false })} or more the GL doesn't seem to have (no line from the same sponsor, a processor, or the same amount, 3 days before to 45 days after). ${sfSuspects.looked} looked for.`], [],
-          ['Month', 'Close date', 'Donor-advised fund', 'Primary contact (Salesforce 18-character ID)', 'Amount'],
-          ...Object.entries(sfSuspects.by).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount]))], cols: [16, 12, 44, 30, 14] },
+          ['Month', 'Close date', 'Donor-advised fund', 'Primary contact (Salesforce 18-character ID)', 'Amount', 'Status', 'Decided by', 'When', 'Note'],
+          ...Object.entries(sfSuspects.by).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount, 'To look at'])),
+          ...Object.entries(sfSuspects.decided).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount,
+            g.decision.status === 'found' ? 'In the GL' : SF_ADJ_TYPES[g.decision.type] || 'Explained', g.decision.by || '', g.decision.at ? when(g.decision.at) : '', g.decision.note || '']))], cols: [16, 12, 44, 30, 14, 40, 18, 20, 60] },
         { name: 'Restricted gifts', rows: restricted, cols: [16, 12, 12, 16, 30, 40, 10, 14] },
         { name: 'Largest GL lines', rows: largest, cols: [16, 10, 18, 12, 16, 30, 40, 14] },
         { name: 'Sources', rows: sources, cols: [16, 40, 12, 18, 20, 70, 40, 18, 20] },
@@ -1629,6 +1633,53 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       spRows.length ? h('details', { class: 'adj-section' }, h('summary', {}, `Wire gifts by sponsor (${spRows.length} with a difference or a payout)`), table(cols_.map((c, i) => (i ? c : { ...c, label: 'Sponsor' })), spRows))
         : h('p', { class: 'muted small' }, 'Wire gifts by sponsor need the gift-level Salesforce report and the GL register uploaded since payers were kept.'));
   }
+  // What a flagged gift is, decided on the gift itself. An explanation (with the gift's amount) counts
+  // as explained; "it's in the GL" only takes it off the list — there's no difference to explain.
+  const GIFT_CHOICES = [
+    ['not-received', 'Not received: a duplicate, or a pledge not paid'],
+    ['other-account', 'Received into another account (stock not sold yet, say)'],
+    ['found', 'It’s in the GL: take it off the list'],
+    ['other', 'Something else: explain it'],
+  ];
+  async function decideGift(m, g, choice, close) {
+    const label = GIFT_CHOICES.find((x) => x[0] === choice)[1];
+    const note = await askValue(label, `${g.date} · ${g.fund || 'no fund named'} · ${money(g.amount, { dash: false })}. Say why, for anyone checking${choice === 'found' ? ' (which GL batch has it)' : ''}.`, { ok: 'Save' });
+    if (note == null) return;
+    if (!note.trim()) { toast('Say why, for anyone checking.', 'error'); return; }
+    const stamp = { by: user, at: nowIso() };
+    saveSfAdj(m, (rec) => {
+      if (choice === 'found') rec.giftChecks = { ...(rec.giftChecks || {}), [g.key]: { status: 'found', note: note.trim(), ...stamp } };
+      else rec.adjustments.push({ id: Math.random().toString(36).slice(2, 9), gift: g.key, channel: 'Wire', sponsor: g.sp, type: choice, amount: g.amount, note: `${g.date} ${g.fund || ''} gift: ${note.trim()}`.replace(/\s+/g, ' '), ...stamp });
+    }, `${g.date} ${money(g.amount, { dash: false })}: ${label.split(':')[0]}`, close);
+  }
+  function undoGift(m, g, close) {
+    saveSfAdj(m, (rec) => {
+      rec.adjustments = (rec.adjustments || []).filter((a) => a.gift !== g.key);
+      if (rec.giftChecks) delete rec.giftChecks[g.key];
+    }, `${g.date} ${money(g.amount, { dash: false })}: back on the list`, close);
+  }
+  function giftsSection(m, close) {
+    const open = sfSuspects.by[m] || [], done_ = sfSuspects.decided[m] || [];
+    if (!open.length && !done_.length) return null;
+    const cols_ = [
+      { label: 'Close date', cell: (g) => g.date },
+      { label: 'Donor-advised fund', cell: (g) => g.fund || '(none)' },
+      { label: 'Primary contact', cell: (g) => h('span', { class: 'small' }, g.contact) },
+      { label: 'Amount', num: true, cell: (g) => money(g.amount) },
+    ];
+    return h('div', { class: 'adj-section' },
+      reviewHead('Salesforce gifts the GL doesn’t seem to have', { count: open.length + done_.length, todo: open.length }),
+      h('p', { class: 'muted small' }, `Wire gifts of ${money(sfTol.giftMin, { dash: false })} or more with no GL line from the same sponsor (or a payment processor, or the same amount under another name) from 3 days before to 45 days after. Look each up and say what it is: an explanation counts toward “Explained”; “it’s in the GL” just takes it off the list.`),
+      open.length ? table([...cols_,
+        { label: 'Status', cell: () => statusCell({ state: 'todo' }) },
+        { label: '', cell: (g) => actionsCell({ change: changeSelect(GIFT_CHOICES, null, (v) => decideGift(m, g, v, close), 'Say what it is…') }) },
+      ], open) : null,
+      done_.length ? h('div', {}, h('h4', {}, 'Looked at'),
+        table([...cols_,
+          { label: 'Status', cell: (g) => statusCell({ state: g.decision.status === 'found' ? 'confirmed' : 'changed', text: g.decision.status === 'found' ? '✓ In the GL' : SF_ADJ_TYPES[g.decision.type] || 'Explained', by: g.decision.by, at: g.decision.at, note: g.decision.note }) },
+          { label: '', cell: (g) => actionsCell({ more: [h('button', { class: 'small-btn', onclick: () => undoGift(m, g, close) }, 'Undo')] }) },
+        ], done_)) : null);
+  }
   async function openSfTolerance() {
     await panel('Salesforce vs GL — tolerance', (body, close) => {
       const fx = {
@@ -1667,15 +1718,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           h('span', { class: 'muted small' }, `Salesforce ${money(r.sfTotal, { dash: false })} · GL ${money(r.glTotal, { dash: false })} · difference ${money(r.diff, { dash: false })} (${pct(r.pct)}) · ${pct(r.explainedShare)} of the differences found explained`)),
         h('p', { class: 'muted small' }, `Salesforce from ${sfm.fileName || 'an upload'}${sfm.asOf ? ` (run ${sfm.asOf})` : ''}, ${sfm.kind === 'gifts' ? 'gift by gift' : 'the summary report'}, uploaded by ${sfm.uploadedBy || 'someone'}${sfm.uploadedAt ? ` · ${when(sfm.uploadedAt)}` : ''}.${sfm.excludes?.refunds || sfm.excludes?.disputes ? ' The report leaves out refunded and disputed Stripe gifts, so the GL’s Stripe refunds and disputes aren’t counted as explaining the difference.' : ''}${sfm.partial ? ' The report’s date range covers only part of this month.' : ''}`),
         (() => { const big = withinTolerance(r, sfTol).big; return big.length ? h('p', { class: 'small warn-text' }, `To look at (over ${money(sfTol.item, { dash: false })} unexplained): ${big.map((x) => `${x.channel} ${money(x.unexplained, { dash: false })}`).join(' · ')}. Use “Explain a difference yourself” below for anything you’ve found.`) : null; })(),
-        (sfSuspects.by[m] || []).length ? h('div', { class: 'adj-section' },
-          h('h3', {}, 'Salesforce gifts the GL doesn’t seem to have'),
-          h('p', { class: 'muted small' }, `Wire gifts of ${money(sfTol.giftMin, { dash: false })} or more with no GL line from the same sponsor (or a payment processor, or the same amount under another name) from 3 days before to 45 days after. Worth looking up in Salesforce: a duplicate, a pledge not yet paid, or money that went to another account. Once you know, add it with “Explain a difference yourself” and it drops off this list.`),
-          table([
-            { label: 'Close date', cell: (g) => g.date },
-            { label: 'Donor-advised fund', cell: (g) => g.fund || '(none)' },
-            { label: 'Primary contact', cell: (g) => h('span', { class: 'small' }, g.contact) },
-            { label: 'Amount', num: true, cell: (g) => money(g.amount) },
-          ], sfSuspects.by[m])) : null,
+        giftsSection(m, close),
         h('h3', {}, 'By channel'),
         table([
           { label: 'Channel', cell: (x) => x.channel },

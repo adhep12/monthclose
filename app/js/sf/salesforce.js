@@ -164,6 +164,7 @@ export const SF_ADJ_TYPES = {
   'not-in-sf': 'In the GL, not in Salesforce',
   'prior-period': 'Belongs to an earlier or later period',
   channel: 'Recorded under a different giving type',
+  'other-account': 'Received into another account, not in the GL’s giving yet',
   other: 'Other',
 };
 
@@ -236,17 +237,23 @@ function sponsorsGl(giving) {
 // check deposits don't name who gave.
 const PROCESSOR = /chariot|ipay|cyber ?grant|your ?cause|allied payment/i;
 const dayOf = (d) => Date.parse(d) / 864e5;
+// A gift someone has looked at stays decided: an explanation tied to it (sf.adjustments[].gift, with
+// an amount — it counts as explained) or "it's in the GL" (sf.giftChecks[key], no amount).
+export const giftKey = (g) => `${g.date}|${g.amount}|${g.contact || ''}`;
 export function suspectGifts(inputs, { min = DEFAULT_SF_TOLERANCE.giftMin, before = 3, after = 45 } = {}) {
   const lines = inputs.flatMap((x) => (x.giving?.wireLines || []).map((l) => ({ date: l[0], amount: l[1], payer: l[2], batch: l[3], sp: sponsorOf(l[2]), proc: PROCESSOR.test(l[2]), left: l[1] })));
-  const gifts = [];
+  const gifts = [], decided = [];
   inputs.forEach((x) => {
     if (!x.giving?.wireLines || !Array.isArray(x.sf?.gifts)) return;
-    const explained = [...(x.found?.priorPeriod || []).map((y) => ({ amount: y.amount })), ...(x.sf.adjustments || []).map((y) => ({ amount: y.amount, sp: y.sponsor ? sponsorOf(y.sponsor) : null }))];
+    const explained = [...(x.found?.priorPeriod || []).map((y) => ({ amount: y.amount })), ...(x.sf.adjustments || []).filter((y) => !y.gift).map((y) => ({ amount: y.amount, sp: y.sponsor ? sponsorOf(y.sponsor) : null }))];
     for (const g of x.sf.gifts) {
       if (g[4] !== 'W' || g[1] < min) continue;
       const sp = sponsorOf(g[2]);
       if (LUMP_PLATFORMS.includes(sp) || explained.some((e) => Math.abs(Math.abs(e.amount) - g[1]) < 0.01 && (!e.sp || e.sp === sp))) continue;
-      gifts.push({ month: x.sf.month, date: g[0], amount: g[1], fund: g[2] || '', sp, contact: g[3] });
+      const gift = { month: x.sf.month, date: g[0], amount: g[1], fund: g[2] || '', sp, contact: g[3] };
+      gift.key = giftKey(gift);
+      const by = (x.sf.adjustments || []).find((a) => a.gift === gift.key) || (x.sf.giftChecks || {})[gift.key];
+      if (by) decided.push({ ...gift, decision: by }); else gifts.push(gift);
     }
   });
   const pairs = [];
@@ -260,7 +267,7 @@ export function suspectGifts(inputs, { min = DEFAULT_SF_TOLERANCE.giftMin, befor
   pairs.sort((a, b) => a.rank - b.rank || gifts[b.gi].amount - gifts[a.gi].amount || a.gap - b.gap);
   const found = new Set();
   for (const p of pairs) { const g = gifts[p.gi]; if (found.has(p.gi) || p.l.left < g.amount - 0.005) continue; p.l.left = round2(p.l.left - g.amount); found.add(p.gi); }
-  return { looked: gifts.length, missing: gifts.filter((_, i) => !found.has(i)).sort((a, b) => b.amount - a.amount) };
+  return { looked: gifts.length + decided.length, missing: gifts.filter((_, i) => !found.has(i)).sort((a, b) => b.amount - a.amount), decided };
 }
 
 // One month. sf: parseSalesforceSummary's month. giving: the GL register's p.giving (gl.js).

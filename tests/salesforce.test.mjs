@@ -232,3 +232,17 @@ test('Salesforce wire gifts the GL doesn’t have: two alike gifts, one GL line,
   assert.equal(res.looked, 5); // Stewardship pays in lumps: not looked for
   assert.deepEqual(res.missing.map((g) => [g.date, g.amount, g.contact]), [['2025-11-12', 100000, 'donorA']]);
 });
+
+test('a flagged gift someone has decided on moves to "looked at", and an explanation tied to it counts', async () => {
+  const { suspectGifts, giftKey } = await import('../app/js/sf/salesforce.js');
+  const W = (date, amount, fund, contact) => [date, amount, fund, contact, 'W'];
+  const a = { date: '2025-11-12', amount: 100000, contact: 'donorA' }, b = { date: '2025-11-20', amount: 6000, contact: 'donorB' };
+  const sf = { month: '2025-11', gifts: [W(a.date, a.amount, 'National Christian Foundation', a.contact), W(b.date, b.amount, 'Fidelity', b.contact)],
+    adjustments: [{ id: 'x', gift: giftKey(a), channel: 'Wire', sponsor: 'NCF', type: 'other-account', amount: 100000, note: 'stock, not sold yet', by: 'Alex' }],
+    giftChecks: { [giftKey(b)]: { status: 'found', note: 'GL0999', by: 'Alex' } } };
+  const res = suspectGifts([{ sf, giving: { wireLines: [] } }]);
+  assert.deepEqual(res.missing, []);
+  assert.deepEqual(res.decided.map((g) => [g.amount, g.decision.status || g.decision.type]), [[100000, 'other-account'], [6000, 'found']]);
+  const r = reconcileMonth({ sf: { ...sf, methods: { Wire: { amount: 106000 } } }, giving: { channels: { Wire: 6000 } } });
+  assert.equal(r.unexplained, 0); // the explanation counts; "found" adds nothing
+});
