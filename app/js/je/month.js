@@ -4,6 +4,7 @@
 
 import { stripeJe, STRIPE_JE } from './stripe.js';
 import { investmentJe } from './investments.js';
+import { paypalJe, PAYPAL_JE } from './paypal.js';
 import { isBalanced } from '../fa/je.js';
 import { round2, sum } from '../money.js';
 import { lastDayOfMonth } from '../fiscal.js';
@@ -11,12 +12,14 @@ import { lastDayOfMonth } from '../fiscal.js';
 export const IMPORT_COLUMNS = ['BatchNbr', 'Transaction Date', 'Document Description', 'Account', 'Subaccount',
   'Debit Amount', 'Credit Amount', 'Transaction Description'];
 
-// Batch numbers, in order. More are added as each process's JE is set up (2 is PayPal's).
+// Batch numbers, in order. More are added as each process's JE is set up.
 // `build(rec, ctx)`: ctx.recs is every month's record by month (investments look back), ctx.glBy
 // the GL by month.
 export const JE_BATCHES = [
   { batch: 1, id: 'stripe', label: 'Stripe', description: STRIPE_JE.description, needs: 'Attach the Stripe CSV.',
     build: (rec) => (rec.stripe ? stripeJe(rec.stripe) : null) },
+  { batch: 2, id: 'paypal', label: 'PayPal', description: PAYPAL_JE.description, needs: 'Attach the PayPal statement.',
+    build: (rec) => (rec.bankStatements?.paypal ? paypalJe(rec.bankStatements.paypal) : null) },
   { batch: 3, id: 'tschetter', label: 'Tschetter', description: 'Unrealized Gains - Tschetter Group', needs: 'Attach the statement, or type the ending value.',
     build: (rec, ctx) => investmentJe('tschetter', rec.month, ctx) },
   { batch: 4, id: 'delap', label: 'Delap', description: 'Unrealized Gains - Delap', needs: 'Type the ending value.',

@@ -144,6 +144,8 @@ export function parsePaypal(lines) {
     received: g('Payments received'), interest: 0,
     paymentsSent: g('Payments sent'), withdrawals: Math.abs(g('Withdrawals and Debits')),
     depositsCredits: g('Deposits and Credits'), fees: g('Fees'), transfers: g('Transfers'),
+    // A chargeback: the donor's bank took a gift back ("Chargeback -10.00").
+    chargeback: g('Chargeback'),
   };
   res.revenue = paypalRevenue(res);
   res.ties = paypalTies(res);
@@ -178,7 +180,7 @@ export function paypalRevenue(b) {
 }
 export function paypalTies(b) {
   if (b.transfers == null) return b.ties;
-  return round(b.beginning + (b.received ?? b.revenue) - Math.abs(b.paymentsSent) - b.withdrawals + b.depositsCredits + b.fees + b.transfers) === round(b.ending);
+  return round(b.beginning + (b.received ?? b.revenue) - Math.abs(b.paymentsSent) - b.withdrawals + b.depositsCredits + b.fees + b.transfers + (b.chargeback || 0)) === round(b.ending);
 }
 
 export function parseKeybank(lines) {

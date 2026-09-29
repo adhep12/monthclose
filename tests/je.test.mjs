@@ -140,6 +140,41 @@ test('Delap: gain only; money moved out is booked by its own entry, so it isn’
   assert.deepEqual(rows(je), [['1170', 20000, 0], ['8999', 0, 20000]]);
   assert.equal(je.lines[0].tranDescription, 'Unrealized Gains - Delap 8-31-2026');
   const all = monthJes(recs['2026-08'], { recs });
-  assert.deepEqual(all.map((x) => [x.batch, x.id, jeReady(x)]), [[1, 'stripe', false], [3, 'tschetter', false], [4, 'delap', true]]);
+  assert.deepEqual(all.map((x) => [x.batch, x.id, jeReady(x)]), [[1, 'stripe', false], [2, 'paypal', false], [3, 'tschetter', false], [4, 'delap', true]]);
 });
 const round = (n) => Math.round(n * 100) / 100;
+
+// ---- PayPal --------------------------------------------------------------------------------
+import { parsePaypal } from '../app/js/poc/banks.js';
+
+const paypalLines = (sent = '0.00', ending = '1,494.00') => [
+  'Merchant Account ID: X PayPal ID: finance@example.com 8/1/26 - 8/31/26', 'Activity Summary (8/1/26 - 8/31/26)', 'USD',
+  'Beginning Available Balance 1,000.00', 'Payments received 600.00', `Payments sent ${sent}`, 'Withdrawals and Debits 0.00',
+  'Deposits and Credits 0.00', 'Fees -30.00', 'Chargeback -10.00', `Ending Available Balance ${ending}`,
+  'Transaction History - USD', 'General Payment Some Software Co', '8/12/26 -66.00 0.00 -66.00',
+].map((text) => ({ text }));
+
+test('PayPal statement: the chargeback is read and the statement ties with it', () => {
+  const b = parsePaypal(paypalLines('-66.00', '1,494.00'));
+  assert.deepEqual([b.received, b.fees, b.paymentsSent, b.chargeback, b.ties], [600, -30, -66, -10, true]);
+});
+
+test('PayPal JE: giving, fees, net to 1012; payments sent to 8030; chargeback back out of giving', () => {
+  const b = parsePaypal(paypalLines('-66.00', '1,494.00'));
+  const je = monthJes({ month: '2026-08', bankStatements: { paypal: b } }).find((x) => x.id === 'paypal');
+  assert.equal(je.batch, 2);
+  assert.ok(jeReady(je));
+  assert.deepEqual(je.lines.map((l) => [l.account, l.debit, l.credit, l.tranDescription]), [
+    ['4012', 0, 600, 'Paypal Giving "Payments received Total"'],
+    ['8590', 30, 0, 'Paypal Giving "Fees Total"'],
+    ['1012', 570, 0, 'Paypal Giving less Fees'],
+    ['8030', 66, 0, 'Dispute Software paid with paypal'],
+    ['1012', 0, 66, 'Dispute Software paid with paypal'],
+    ['4012', 10, 0, 'Payment Refund'],
+    ['1012', 0, 10, 'Chargeback'],
+  ]);
+  assert.match(je.notes.join(' '), /2026-08-12 General Payment Some Software Co 66\.00/);
+  // A statement attached before chargebacks were read has to be attached again.
+  const { chargeback, ...old } = b;
+  assert.equal(jeReady(monthJes({ month: '2026-08', bankStatements: { paypal: old } }).find((x) => x.id === 'paypal')), false);
+});
