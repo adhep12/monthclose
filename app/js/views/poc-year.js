@@ -19,6 +19,7 @@ import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
 import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
+import { accountJeBlock, monthJeBlock } from './month-jes.js';
 
 const FY_KEY = 'monthclose:poc-fy';
 const SHOW_KEY = 'monthclose:poc-show';
@@ -583,6 +584,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
+          accountJeBlock(rec, id),
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
@@ -878,6 +880,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               decide(m, (r) => x.detach(r), `Detached ${x.label} statement ${x.s.fileName || ''}`, again, close);
             } }, 'Detach')) },
         ], attached) : h('p', { class: 'muted small' }, 'Nothing attached yet.'),
+
+        monthJeBlock(rec),
 
         h('h3', {}, 'Timing'),
         h('div', { class: 'form-grid' },

@@ -146,6 +146,18 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **YTD** covers the months the proof of cash counts (Cass deposits in); a month whose GL isn't finished is greyed. | |
 | **Next:** match the kept check and wire gifts one by one (Wire/DAF against GL payer lines, checks by deposit date). | |
 
+## Monthly JEs
+
+`app/js/je/` (`month.js`: batch numbers and the import file; one file per process), shown by
+`app/js/views/month-jes.js` in the month pop-up (every JE, one download) and each account's pop-up.
+The download is laid out like the Acumatica tab of the user's "Month Close Bank Recs" workbook:
+BatchNbr · Transaction Date (month end) · Document Description · Account · Subaccount · Debit ·
+Credit · Transaction Description. Each process has a fixed batch number (Stripe 1, PayPal 2, …).
+
+| JE | Rule | Evidence |
+| --- | --- | --- |
+| **1 Monthly Stripe Giving** | Every Stripe CSV figure booked with the sign Stripe prints (credit when it added to the balance): gross to 4015, fees to 8590 (013-000), disputes net of reversals, payouts Dr 1200, balance change to 1015. Same lines and descriptions as the workbook; zero lines left out. The CSV must add up (activity = Net Activity, balance rolls forward). | August 2026 = the posted batch to the cent; every month in the CSV back to 2015 balances. The workbook's dispute formulas are replaced by the netting (they errored with no disputes). |
+
 ## 3. FY2026 tie-out: where it stands
 
 Source: the user's export `Proof of Cash FY2026 2026-09-27.xlsx` compared with the tied-out workbook

@@ -31,6 +31,20 @@ function parseCsv(textIn) {
   return rows;
 }
 
+const A = 'Monthly Activity Summary';
+const CSV_FIGURES = {
+  cardGross: `${A}|Payments (cards)|Gross Amount`, cardFees: `${A}|Payments (cards)|Fees`,
+  cardRefunds: `${A}|Refunds (cards)|Gross Amount`, cardRefundFeesReturned: `${A}|Refunds (cards)|Fees Returned`,
+  disputes: `${A}|Disputes|Gross Amount`, disputeFees: `${A}|Disputes|Fees`,
+  disputeReversals: `${A}|Dispute Reversals|Gross Amount`, disputeReversalFeesReturned: `${A}|Dispute Reversals|Fees Returned`,
+  otherAdjustments: `${A}|Other Adjustments|Gross Amount`, otherAdjustmentFees: `${A}|Other Adjustments|Fees`,
+  otherGross: `${A}|Payments (other)|Gross Amount`, otherFees: `${A}|Payments (other)|Fees`,
+  otherRefunds: `${A}|Refunds (other)|Gross Amount`, otherRefundFeesReturned: `${A}|Refunds (other)|Fees Returned`,
+  netActivity: 'Balance Summary||Net Activity',
+  payouts: 'Payouts and Transfers Summary|Payouts and Transfers|Amount',
+  startBalance: 'Balance Summary||Start of Month Balance', endBalance: 'Balance Summary||End of Month Balance',
+};
+
 export function looksLikeStripeMonthly(textIn) {
   return /Monthly Activity Summary/.test(textIn) && /Payouts and Transfers Summary/.test(textIn);
 }
@@ -71,6 +85,8 @@ export function parseStripeMonthly(textIn) {
         payouts: get('Payouts and Transfers Summary|Payouts and Transfers|Amount', i),
         startBalance: get('Balance Summary||Start of Month Balance', i),
         endBalance: get('Balance Summary||End of Month Balance', i),
+        // Every figure as the CSV prints it, for the monthly JE (je/stripe.js).
+        csv: Object.fromEntries(Object.entries(CSV_FIGURES).map(([k, key]) => [k, get(key, i)])),
       };
       out.revenue = stripeRevenue(out);
       return out;
