@@ -1,7 +1,7 @@
 // The month's journal entries: a preview of each, and one Acumatica import file with all of them.
 
-import { h, table, statusPill, toast } from '../ui.js';
-import { monthJes, jeReady, importRows, IMPORT_COL_WIDTHS } from '../je/month.js';
+import { h, mount, table, statusPill, toast, panel, ask } from '../ui.js';
+import { monthJes, jeReady, importRows, IMPORT_COL_WIDTHS, JE_BATCHES } from '../je/month.js';
 import { downloadWorkbook } from '../xlsx-io.js';
 import { money } from '../money.js';
 import { monthName } from '../fiscal.js';
@@ -52,8 +52,58 @@ function sentTable(je, setSentAs) {
     ], je.sent));
 }
 
-export function jePreview(je, { setSentAs } = {}) {
+// Change a batch's accounts, subaccounts and descriptions. What's saved is the new default for
+// every month (config.jeDefaults), until reset.
+export function openJeDefaults(id, { jeDefaults = {}, save }) {
+  const b = JE_BATCHES.find((x) => x.id === id);
+  const cur = jeDefaults[id] || {};
+  return panel(`Edit JE lines: batch ${b.batch}, ${b.description}`, (body, close) => {
+    const doc = h('input', { type: 'text', size: 40, value: cur.description || b.description });
+    const rows = b.template.map((t) => {
+      const o = cur.lines?.[t.key] || {};
+      return { t, o,
+        account: h('input', { type: 'text', size: 7, value: o.account || t.account }),
+        sub: h('input', { type: 'text', size: 9, value: o.sub || t.sub }),
+        desc: h('input', { type: 'text', size: 44, value: o.desc || t.desc }) };
+    });
+    const onSave = async () => {
+      const lines = {};
+      for (const r of rows) {
+        const v = { account: r.account.value.trim(), sub: r.sub.value.trim(), desc: r.desc.value.trim() };
+        if (!/^\d+$/.test(v.account)) { toast(`“${v.account}” isn’t an account number.`, 'error'); return; }
+        if (!/^\d{3}-\d{3}$/.test(v.sub)) { toast(`“${v.sub}” isn’t a subaccount (like 000-000).`, 'error'); return; }
+        if (!v.desc) { toast('A line needs a transaction description.', 'error'); return; }
+        const changed = Object.fromEntries(Object.entries(v).filter(([k, x]) => x !== r.t[k]));
+        if (Object.keys(changed).length) lines[r.t.key] = changed;
+      }
+      const description = doc.value.trim() && doc.value.trim() !== b.description ? doc.value.trim() : undefined;
+      try { await save(id, description || Object.keys(lines).length ? { description, lines } : null); close(true); }
+      catch (err) { toast(err.message || 'Couldn’t save.', 'error'); }
+    };
+    mount(body,
+      h('p', { class: 'muted small' }, 'What you save here is the default for every month’s JE, for everyone using the app, until you change it again or reset it. Lines that are zero in a month are left out of that month’s entry.',
+        b.template.some((t) => /\{\w+\}/.test(t.desc)) ? ' In descriptions, {date} is the month end (4-30-2026) and {fees} adds “, fees Feb-Apr 2026” when fees are booked.' : ''),
+      h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Document description (the batch)'), doc)),
+      table([
+        { label: 'Built in', cell: (r) => h('span', { class: 'small muted wrap' }, `${r.t.account} ${r.t.sub} · ${r.t.desc}${r.t.note ? ` (${r.t.note})` : ''}`) },
+        { label: 'Account', cell: (r) => r.account },
+        { label: 'Subaccount', cell: (r) => r.sub },
+        { label: 'Transaction description', cell: (r) => r.desc },
+        { label: '', cell: (r) => h('button', { class: 'small-btn', onclick: () => { r.account.value = r.t.account; r.sub.value = r.t.sub; r.desc.value = r.t.desc; } }, 'Built in') },
+      ], rows),
+      h('div', { class: 'row', style: { marginTop: '.75rem' } },
+        h('button', { class: 'primary', onclick: onSave }, 'Save as the default'),
+        jeDefaults[id] ? h('button', { class: 'danger', onclick: async () => {
+          if (!(await ask('Reset to built in', `Put every line of batch ${b.batch} back to the built-in accounts and descriptions?`, { ok: 'Reset', danger: true }))) return;
+          try { await save(id, null); close(true); } catch (err) { toast(err.message || 'Couldn’t save.', 'error'); }
+        } }, 'Reset all to built in') : null));
+  }, { wide: true });
+}
+
+export function jePreview(je, { setSentAs, editDefaults } = {}) {
   return h('div', {},
+    editDefaults ? h('div', { class: 'row' }, h('span', { class: 'spacer' }),
+      h('button', { class: 'small-btn', onclick: () => editDefaults(je.id), title: 'Change accounts, subaccounts or descriptions; saved as the default for every month' }, 'Edit lines…')) : null,
     je.problems.length ? h('div', { class: 'notice warn' }, h('ul', {}, je.problems.map((p) => h('li', {}, p)))) : null,
     je.notes?.length ? h('div', { class: 'notice' }, h('ul', {}, je.notes.map((p) => h('li', {}, p)))) : null,
     working(je),
@@ -63,7 +113,7 @@ export function jePreview(je, { setSentAs } = {}) {
       { label: 'Subaccount', cell: (l) => l.sub },
       { label: 'Debit', num: true, cell: (l) => money(l.debit) },
       { label: 'Credit', num: true, cell: (l) => money(l.credit) },
-      { label: 'Transaction description', cell: (l) => l.tranDescription },
+      { label: 'Transaction description', cell: (l) => (l.edited ? h('span', { title: 'Edited default' }, l.tranDescription, ' *') : l.tranDescription) },
     ], je.lines, { foot: (c) => (c.label === 'Debit' ? money(je.debits) : c.label === 'Credit' ? money(je.credits) : c.label === 'Account' ? 'Total' : '') }) : null,
     je.lines.length && !je.balanced ? h('p', { class: 'error' }, 'This entry doesn’t balance.') : null);
 }
@@ -92,7 +142,7 @@ export function monthJeBlock(rec, ctx) {
       { label: 'Amount', num: true, cell: (je) => (je.lines.length ? money(je.debits) : '') },
       { label: 'Status', cell: jeStatus },
     ], jes),
-    jes.filter((je) => je.lines.length).map((je) => h('details', { class: 'small' }, h('summary', {}, `Batch ${je.batch}: ${je.description}`), jePreview(je))),
+    jes.filter((je) => je.lines.length).map((je) => h('details', { class: 'small' }, h('summary', {}, `Batch ${je.batch}: ${je.description}`), jePreview(je, { editDefaults: ctx?.editDefaults }))),
     h('div', { class: 'row', style: { marginTop: '.5rem' } },
       h('button', { class: 'primary', disabled: !ready.length, onclick: () => downloadJes(rec.month, jes) },
         ready.length ? `Download ${ready.length === 1 ? 'the JE' : `all ${ready.length} JEs`} for Acumatica` : 'No JEs ready yet')));

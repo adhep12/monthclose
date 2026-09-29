@@ -161,6 +161,12 @@ Credit · Transaction Description. Each process has a fixed batch number (Stripe
 | **3 Unrealized Gains - Tschetter Group** (`je/investments.js`) | One entry: 1171 = ending − the latest earlier ending the app has (a skipped month is picked up) − money moved (booked by its own entry); 8070 = fees since last booked; 8999 = both. Fees only from a statement: the Schwab PDF (`parseSchwab`: Account Summary, this period and calendar YTD) or a scanned one kept as evidence with *Expenses year to date* typed. Fees = YTD − the YTD on the last statement this calendar year; with none in the app, − what the GL booked to 8070 this calendar year. Screenshot months book the gain only (the next statement catches the fees up). The fee months go in the transaction description. A beginning value (statement, or typed from a screenshot) that isn't the last ending booked is flagged, not used. | April 2026 statement: YTD 12,844.00 − Jan 3,186.16 = 9,657.84 (Feb–Apr). The GL's April fee entry is 9,697.84: 40.00 more, not explained yet. March screenshot starts 5,164,013.51 but February's ends 5,154,602.05. |
 | **4 Unrealized Gains - Delap** | Same, no fees; typed ending (a screenshot can be kept). Fidelity → Cass transfers are the net withdrawals, as in proof of cash. | User's format (1170 / 8999, 8070 line zero). |
 
+**Editing the lines:** *Edit lines…* on any JE preview changes a batch's document description and
+each line's account, subaccount and transaction description. Saved to the shared settings
+(`config.jeDefaults[batch id]`: only what differs from built in, with who and when) as the default
+for every month, until reset. Line keys come from each builder's template (`STRIPE_TEMPLATE`,
+`PAYPAL_TEMPLATE`, `investmentTemplate`); descriptions keep `{date}` / `{fees}` placeholders.
+
 ## 3. FY2026 tie-out: where it stands
 
 Source: the user's export `Proof of Cash FY2026 2026-09-27.xlsx` compared with the tied-out workbook

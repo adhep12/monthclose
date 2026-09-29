@@ -22,10 +22,17 @@ export const INVESTMENT_JE = {
 };
 const GAIN = { account: '8999', sub: '000-000' };
 const FEES = { account: '8070', sub: '013-000' };
+// {date} is the month end (4-30-2026); {fees} ", fees Feb-Apr 2026" when fees are booked.
+export const investmentTemplate = (id) => {
+  const desc = `Unrealized Gains - ${INVESTMENT_JE[id].name} {date}{fees}`;
+  return [{ key: 'value', account: INVESTMENT_JE[id].account, sub: '000-000', desc }, { key: 'gain', ...GAIN, desc },
+    ...(INVESTMENT_JE[id].fees ? [{ key: 'fees', ...FEES, desc }] : [])];
+};
 const LOOKBACK = 24;
 const SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const short = (m) => `${SHORT[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
 export const monthSpan = (a, b) => (a === b ? short(a) : `${SHORT[Number(a.slice(5)) - 1]}-${short(b)}`);
+export const fillVars = (t, vars = {}) => String(t).replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
 const dateText = (m) => { const [y, mo, d] = lastDayOfMonth(m).split('-').map(Number); return `${mo}-${d}-${y}`; };
 
 // A month's year-to-date fees, from its Schwab statement or typed from a scanned one. Null when
@@ -98,12 +105,17 @@ export function investmentJe(id, month, { recs = {}, glBy = {} } = {}) {
   }
 
   const fees = fee && fee.fees > 0 ? fee.fees : 0;
-  const tran = `Unrealized Gains - ${cfg.name} ${dateText(month)}${fees ? `, fees ${monthSpan(fee.first, month)}` : ''}`;
+  const vars = { date: dateText(month), fees: fees ? `, fees ${monthSpan(fee.first, month)}` : '' };
+  const T = Object.fromEntries(investmentTemplate(id).map((t) => [t.key, t]));
   const lines = [];
-  const push = ({ account, sub }, debit) => { const v = round2(debit); if (v) lines.push({ account, sub, debit: v > 0 ? v : 0, credit: v < 0 ? -v : 0, tranDescription: tran }); };
-  push({ account: cfg.account, sub: '000-000' }, change);
-  push(GAIN, -(change + fees));
-  push(FEES, fees);
+  const push = (key, debit) => {
+    const { account, sub, desc } = T[key];
+    const v = round2(debit);
+    if (v) lines.push({ key, account, sub, debit: v > 0 ? v : 0, credit: v < 0 ? -v : 0, tranDescription: fillVars(desc, vars), vars });
+  };
+  push('value', change);
+  push('gain', -(change + fees));
+  if (fees) push('fees', fees);
 
   const gl = (glBy[month]?.investmentGl || []).filter((g) => g.account === id);
   if (gl.length) notes.push(`The GL already has ${gl.map((g) => `${g.batch} (${cfg.account} ${g.value.toFixed(2)}${g.fee ? `, fees ${g.fee.toFixed(2)}` : ''})`).join(', ')} this month.`);

@@ -201,3 +201,19 @@ test('PayPal JE: a payment sent that was a refund to a donor is booked with the 
   ]);
   assert.ok(jeReady(je));
 });
+
+test('Edited defaults: account, subaccount and description replace the built-in ones; placeholders still fill in', () => {
+  const jeDefaults = {
+    stripe: { description: 'Stripe Giving', lines: { payouts: { account: '1201' }, cardFees: { sub: '014-000', desc: 'Card fees' } } },
+    tschetter: { lines: { fees: { desc: 'Tschetter advisor fees{fees}' } } },
+  };
+  const [je] = monthJes({ month: '2026-08', stripe: months[0] }, { jeDefaults });
+  assert.equal(je.description, 'Stripe Giving');
+  assert.deepEqual([je.lines[0].account, je.lines[0].sub, je.lines[0].tranDescription, je.lines[0].edited], ['1201', '000-000', '9 Payouts & Transfers', true]);
+  const fees = je.lines.find((l) => l.key === 'cardFees');
+  assert.deepEqual([fees.account, fees.sub, fees.tranDescription], ['8590', '014-000', 'Card fees']);
+  assert.equal(importRows([je])[1][3].v, 1201);
+  const t = monthJes(fy()['2026-04'], { recs: fy(), jeDefaults }).find((x) => x.id === 'tschetter');
+  assert.deepEqual(t.lines.map((l) => l.tranDescription), ['Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026',
+    'Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026', 'Tschetter advisor fees, fees Feb-Apr 2026']);
+});

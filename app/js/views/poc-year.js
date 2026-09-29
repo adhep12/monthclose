@@ -19,7 +19,7 @@ import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
 import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
-import { accountJeBlock, monthJeBlock } from './month-jes.js';
+import { accountJeBlock, monthJeBlock, openJeDefaults } from './month-jes.js';
 
 const FY_KEY = 'monthclose:poc-fy';
 const SHOW_KEY = 'monthclose:poc-show';
@@ -228,6 +228,19 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const months = Array.from({ length: 12 }, (_, i) => addMonths(fyStart(fy), i));
   const cdFor = (m) => ({ ...monthSummary(cds, m), hasData: cds.some((x) => x.earned?.[m]) });
   const glFor = (m) => glFigures({ glActivity: glBy[m], soa: soaBy[m], month: m, config: cfg });
+  // What the JE blocks need: every month, the GL, the edited defaults and the editor. `after`
+  // redraws the pop-up the editor was opened from.
+  const jeCtx = (after, extra = {}) => ({ recs: byMonth, glBy, jeDefaults: cfg.jeDefaults || {}, ...extra,
+    editDefaults: (id) => openJeDefaults(id, { jeDefaults: cfg.jeDefaults || {}, save: async (bid, over) => {
+      // Read the settings fresh so this doesn't write an old copy over someone else's change.
+      const fresh = { ...cfg, ...((await loadPocConfig()) || {}) };
+      fresh.jeDefaults = { ...(fresh.jeDefaults || {}) };
+      if (over) fresh.jeDefaults[bid] = { ...over, by: user, at: nowIso() }; else delete fresh.jeDefaults[bid];
+      try { await savePocConfig(fresh); } catch (err) { throw new Error(explain(err, 'Couldn’t save.')); }
+      Object.assign(cfg, fresh);
+      toast(over ? 'Saved: the new default for every month.' : 'Back to the built-in lines.');
+      await after();
+    } }) });
   // Every deposit against the GL, all months at once (a batch one month uses, another can't).
   const depChecks = depositChecks({ recs: byMonth, glBy, config: cfg });
   const depFor = (m) => ({ deposits: depChecks[m] || null, priorDeposits: depChecks[addMonths(m, -1)] || null });
@@ -587,12 +600,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
-          accountJeBlock(rec, id, { recs: byMonth, glBy, setSentAs: async (x, as) => {
+          accountJeBlock(rec, id, jeCtx(() => draw(), { setSentAs: async (x, as) => {
             rec.paypalSentAs = { ...(rec.paypalSentAs || {}), [x.key]: { as, by: user, at: nowIso() } };
             logChange(rec, user, `PayPal payment sent ${x.date} ${x.desc} ${money(x.amount, { dash: false })}: booked as ${as === 'refund' ? 'a refund to a donor (4012)' : 'software (8030)'}`);
             try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
             draw();
-          } }),
+          } })),
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
@@ -889,7 +902,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             } }, 'Detach')) },
         ], attached) : h('p', { class: 'muted small' }, 'Nothing attached yet.'),
 
-        monthJeBlock(rec, { recs: byMonth, glBy }),
+        monthJeBlock(rec, jeCtx(async () => { reopenAfter = again; carryScroll(topPanelScroll()); const opened = nextDialog(); await rerender(); await opened; close(true); })),
 
         h('h3', {}, 'Timing'),
         h('div', { class: 'form-grid' },

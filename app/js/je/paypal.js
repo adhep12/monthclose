@@ -17,6 +17,16 @@ const PAYPAL = { account: '1012', sub: '000-000' };
 const SOFTWARE = { account: '8030', sub: '013-000' };
 
 export const PAYPAL_JE = { description: 'Paypal Giving' };
+export const PAYPAL_TEMPLATE = [
+  { key: 'received', ...GIVING, desc: 'Paypal Giving "Payments received Total"' },
+  { key: 'fees', ...FEES, desc: 'Paypal Giving "Fees Total"' },
+  { key: 'net', ...PAYPAL, desc: 'Paypal Giving less Fees' },
+  { key: 'software', ...SOFTWARE, desc: 'Dispute Software paid with paypal' },
+  { key: 'softwareCash', ...PAYPAL, desc: 'Dispute Software paid with paypal' },
+  { key: 'refund', ...GIVING, desc: 'Payment Refund' },
+  { key: 'refundCash', ...PAYPAL, desc: 'Chargeback' },
+];
+const T = Object.fromEntries(PAYPAL_TEMPLATE.map((t) => [t.key, t]));
 
 export const sentKey = (x) => `${x.date}|${x.amount}|${x.desc}`;
 export const sentAs = (x, chosen = {}) => chosen[sentKey(x)]?.as || (/refund/i.test(x.desc) ? 'refund' : 'software');
@@ -26,9 +36,10 @@ export const sentAs = (x, chosen = {}) => chosen[sentKey(x)]?.as || (/refund/i.t
 export function paypalJe(b, chosen = {}) {
   if (b.chargeback === undefined) return { lines: [], problems: ['The PayPal statement was attached before the app read its chargebacks. Attach it again.'], notes: [] };
   const lines = [], problems = [], notes = [];
-  const push = ({ account, sub }, debit, tranDescription) => {
+  const push = (key, debit) => {
+    const { account, sub, desc } = T[key];
     const v = round2(debit);
-    if (v) lines.push({ account, sub, debit: v > 0 ? v : 0, credit: v < 0 ? -v : 0, tranDescription });
+    if (v) lines.push({ key, account, sub, debit: v > 0 ? v : 0, credit: v < 0 ? -v : 0, tranDescription: desc });
   };
   const received = b.received ?? b.revenue ?? 0;
   const fees = -(b.fees || 0); // printed negative
@@ -37,13 +48,13 @@ export function paypalJe(b, chosen = {}) {
   const refunds = round2(items.filter((x) => x.as === 'refund').reduce((t, x) => t + x.amount, 0));
   const software = round2(sent - refunds);
   const chargeback = round2(-(b.chargeback || 0) + refunds);
-  push(GIVING, -received, 'Paypal Giving "Payments received Total"');
-  push(FEES, fees, 'Paypal Giving "Fees Total"');
-  push(PAYPAL, received - fees, 'Paypal Giving less Fees');
-  push(SOFTWARE, software, 'Dispute Software paid with paypal');
-  push(PAYPAL, -software, 'Dispute Software paid with paypal');
-  push(GIVING, chargeback, 'Payment Refund');
-  push(PAYPAL, -chargeback, 'Chargeback');
+  push('received', -received);
+  push('fees', fees);
+  push('net', received - fees);
+  push('software', software);
+  push('softwareCash', -software);
+  push('refund', chargeback);
+  push('refundCash', -chargeback);
 
   if (round2(items.reduce((t, x) => t + x.amount, 0)) !== round2(sent)) notes.push(`The statement’s payments sent (${sent.toFixed(2)}) aren’t all in its transaction history; what isn’t is booked as software.`);
   const other = [['Withdrawals and Debits', b.withdrawals], ['Deposits and Credits', b.depositsCredits], ['Transfers', b.transfers]].filter(([, v]) => round2(v || 0));

@@ -12,22 +12,25 @@ const REV = { account: '4015', sub: '000-000' };
 const FEES = { account: '8590', sub: '013-000' };
 const CHECKING = { account: '1015', sub: '000-000' };
 
-// [transaction description, account, credit (a negative is a debit) from the CSV month's figures]
+// [key, transaction description, account, credit (a negative is a debit) from the CSV month's figures].
+// The key names the line for its edited defaults (je/month.js).
 const LINES = [
-  ['9 Payouts & Transfers', CLEARING, (f) => -f.payouts],
-  ['1 Payments CC Gross Amount', REV, (f) => f.cardGross],
-  ['3 Refunds CC Gross Amount', REV, (f) => f.cardRefunds],
-  ['7 Payments ACH Gross Amount', REV, (f) => f.otherGross],
-  ['6 Other Adjustments Fees', FEES, (f) => f.otherAdjustments + f.otherAdjustmentFees],
-  ['2 Payment CC Fees', FEES, (f) => f.cardFees],
-  ['4 Dispute Gross Amount', REV, (f) => f.disputes + f.disputeReversals],
-  ['5 Dispute Fees', FEES, (f) => f.disputeFees + f.disputeReversalFeesReturned],
-  ['8 Payment Wire Fees', FEES, (f) => f.otherFees],
-  ['88 Wire Refunds Gross Amount', REV, (f) => f.otherRefunds],
-  ['99 Stripe Checking', CHECKING, (f) => f.startBalance - f.endBalance],
-  ['888 ACH Fee return', FEES, (f) => f.otherRefundFeesReturned],
-  ['888 ACH Fee return', FEES, (f) => f.cardRefundFeesReturned],
+  ['payouts', '9 Payouts & Transfers', CLEARING, (f) => -f.payouts],
+  ['cardGross', '1 Payments CC Gross Amount', REV, (f) => f.cardGross],
+  ['cardRefunds', '3 Refunds CC Gross Amount', REV, (f) => f.cardRefunds],
+  ['otherGross', '7 Payments ACH Gross Amount', REV, (f) => f.otherGross],
+  ['otherAdjustments', '6 Other Adjustments Fees', FEES, (f) => f.otherAdjustments + f.otherAdjustmentFees],
+  ['cardFees', '2 Payment CC Fees', FEES, (f) => f.cardFees],
+  ['disputes', '4 Dispute Gross Amount', REV, (f) => f.disputes + f.disputeReversals],
+  ['disputeFees', '5 Dispute Fees', FEES, (f) => f.disputeFees + f.disputeReversalFeesReturned],
+  ['otherFees', '8 Payment Wire Fees', FEES, (f) => f.otherFees],
+  ['otherRefunds', '88 Wire Refunds Gross Amount', REV, (f) => f.otherRefunds],
+  ['checking', '99 Stripe Checking', CHECKING, (f) => f.startBalance - f.endBalance],
+  ['otherRefundFeesReturned', '888 ACH Fee return', FEES, (f) => f.otherRefundFeesReturned],
+  ['cardRefundFeesReturned', '888 ACH Fee return', FEES, (f) => f.cardRefundFeesReturned],
 ];
+const NOTES = { otherRefundFeesReturned: 'fees returned on ACH refunds', cardRefundFeesReturned: 'fees returned on card refunds' };
+export const STRIPE_TEMPLATE = LINES.map(([key, desc, { account, sub }]) => ({ key, desc, account, sub, note: NOTES[key] }));
 const ACTIVITY = ['cardGross', 'cardFees', 'cardRefunds', 'cardRefundFeesReturned', 'disputes', 'disputeFees',
   'disputeReversals', 'disputeReversalFeesReturned', 'otherAdjustments', 'otherAdjustmentFees', 'otherGross',
   'otherFees', 'otherRefunds', 'otherRefundFeesReturned'];
@@ -40,9 +43,9 @@ export function stripeJe(m) {
   const f = m?.csv;
   if (!f) return { lines: [], problems: ['The Stripe CSV was attached before the app kept the figures the JE needs. Attach it again.'] };
   const lines = [];
-  for (const [tranDescription, { account, sub }, credit] of LINES) {
+  for (const [key, tranDescription, { account, sub }, credit] of LINES) {
     const v = round2(credit(f));
-    if (v) lines.push({ account, sub, debit: v < 0 ? -v : 0, credit: v > 0 ? v : 0, tranDescription });
+    if (v) lines.push({ key, account, sub, debit: v < 0 ? -v : 0, credit: v > 0 ? v : 0, tranDescription });
   }
   const problems = [];
   const activity = round2(ACTIVITY.reduce((s, k) => s + f[k], 0));

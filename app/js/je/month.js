@@ -2,9 +2,9 @@
 // laid out like the Acumatica tab of the "Month Close Bank Recs" workbook: one row per line,
 // BatchNbr keeping each entry's lines together. Each process has its own batch number.
 
-import { stripeJe, STRIPE_JE } from './stripe.js';
-import { investmentJe } from './investments.js';
-import { paypalJe, PAYPAL_JE } from './paypal.js';
+import { stripeJe, STRIPE_JE, STRIPE_TEMPLATE } from './stripe.js';
+import { investmentJe, investmentTemplate, fillVars } from './investments.js';
+import { paypalJe, PAYPAL_JE, PAYPAL_TEMPLATE } from './paypal.js';
 import { isBalanced } from '../fa/je.js';
 import { round2, sum } from '../money.js';
 import { lastDayOfMonth } from '../fiscal.js';
@@ -16,23 +16,36 @@ export const IMPORT_COLUMNS = ['BatchNbr', 'Transaction Date', 'Document Descrip
 // `build(rec, ctx)`: ctx.recs is every month's record by month (investments look back), ctx.glBy
 // the GL by month.
 export const JE_BATCHES = [
-  { batch: 1, id: 'stripe', label: 'Stripe', description: STRIPE_JE.description, needs: 'Attach the Stripe CSV.',
+  { batch: 1, id: 'stripe', label: 'Stripe', description: STRIPE_JE.description, needs: 'Attach the Stripe CSV.', template: STRIPE_TEMPLATE,
     build: (rec) => (rec.stripe ? stripeJe(rec.stripe) : null) },
-  { batch: 2, id: 'paypal', label: 'PayPal', description: PAYPAL_JE.description, needs: 'Attach the PayPal statement.',
+  { batch: 2, id: 'paypal', label: 'PayPal', description: PAYPAL_JE.description, needs: 'Attach the PayPal statement.', template: PAYPAL_TEMPLATE,
     build: (rec) => (rec.bankStatements?.paypal ? paypalJe(rec.bankStatements.paypal, rec.paypalSentAs) : null) },
-  { batch: 3, id: 'tschetter', label: 'Tschetter', description: 'Unrealized Gains - Tschetter Group', needs: 'Attach the statement, or type the ending value.',
+  { batch: 3, id: 'tschetter', label: 'Tschetter', description: 'Unrealized Gains - Tschetter Group', needs: 'Attach the statement, or type the ending value.', template: investmentTemplate('tschetter'),
     build: (rec, ctx) => investmentJe('tschetter', rec.month, ctx) },
-  { batch: 4, id: 'delap', label: 'Delap', description: 'Unrealized Gains - Delap', needs: 'Type the ending value.',
+  { batch: 4, id: 'delap', label: 'Delap', description: 'Unrealized Gains - Delap', needs: 'Type the ending value.', template: investmentTemplate('delap'),
     build: (rec, ctx) => investmentJe('delap', rec.month, ctx) },
 ];
 
+// Edited defaults (config.jeDefaults, saved from the JE pop-up), per batch id:
+//   { description, lines: { <line key>: { account, sub, desc } }, by, at } (only what differs from built in)
+// A line's edited description can use the same {placeholders} as its built-in one.
+export function applyDefaults(built, over) {
+  if (!built || !over?.lines) return built;
+  return { ...built, lines: built.lines.map((l) => {
+    const o = over.lines[l.key];
+    if (!o) return l;
+    return { ...l, account: o.account || l.account, sub: o.sub || l.sub, tranDescription: o.desc ? fillVars(o.desc, l.vars) : l.tranDescription, edited: true };
+  }) };
+}
+
 // Every JE the month has a file for: { batch, id, label, description, date, lines, problems, notes,
 // balanced }. A process with no file yet is listed with `missing`.
-export function monthJes(rec, { recs = {}, glBy = {} } = {}) {
+export function monthJes(rec, { recs = {}, glBy = {}, jeDefaults = {} } = {}) {
   const ctx = { recs: { ...recs, [rec.month]: rec }, glBy };
   return JE_BATCHES.map((b) => {
-    const built = b.build(rec || {}, ctx);
-    const base = { batch: b.batch, id: b.id, label: b.label, description: b.description, date: lastDayOfMonth(rec.month) };
+    const over = jeDefaults[b.id];
+    const built = applyDefaults(b.build(rec || {}, ctx), over);
+    const base = { batch: b.batch, id: b.id, label: b.label, description: over?.description || b.description, date: lastDayOfMonth(rec.month) };
     if (!built) return { ...base, missing: b.needs, lines: [], problems: [], notes: [] };
     return { ...base, notes: [], ...built, balanced: isBalanced(built.lines),
       debits: round2(sum(built.lines, (l) => l.debit)), credits: round2(sum(built.lines, (l) => l.credit)) };
