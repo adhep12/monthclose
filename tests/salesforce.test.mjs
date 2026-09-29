@@ -29,14 +29,14 @@ test('the Salesforce summary report reads by month and payment method', () => {
 
 test('Salesforce vs GL: refunds and disputes explain Stripe; a big line under the wrong payer is flagged', () => {
   const r = reconcileMonth({
-    sf: { month: '2026-02', methods: { Stripe: { amount: 1641299.31, count: 1 }, Patreon: { amount: 2285.08, count: 1 } } },
-    giving: { channels: { Stripe: 1620320.76, Patreon: 100478.47 }, stripe: { 'Refunds CC Gross Amount': -17501, 'Wire Refunds Gross Amount': -1700, 'Dispute Gross Amount': -35 },
-      big: { Patreon: [{ batch: 'GL017631', payer: 'Patreon', amount: 100478.47 }] } },
+    sf: { month: '2026-02', methods: { Stripe: { amount: 1641299.31, count: 1 }, Cash: { amount: 2285.08, count: 1 } } },
+    giving: { channels: { Stripe: 1620320.76, Cash: 100478.47 }, stripe: { 'Refunds CC Gross Amount': -17501, 'Wire Refunds Gross Amount': -1700, 'Dispute Gross Amount': -35 },
+      big: { Cash: [{ batch: 'GL017631', payer: 'Patreon', amount: 100478.47 }] } },
   });
   const stripe = r.rows.find((x) => x.channel === 'Stripe');
   assert.equal(stripe.explained, 19236);
   assert.equal(stripe.unexplained, 1742.55);
-  assert.ok(r.reasons.some((x) => x.flag && /Patreon/.test(x.what) && /GL017631/.test(x.why)));
+  assert.ok(r.reasons.some((x) => x.flag && /Cash/.test(x.what) && /GL017631/.test(x.why)));
 });
 
 test('month-end timing: what one month leaves in a channel and the next month cancels', () => {

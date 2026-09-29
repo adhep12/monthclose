@@ -172,6 +172,14 @@ export const SF_ADJ_TYPES = {
 // they don't tie to zero. What's held to a limit is the difference nothing explains: each month as a
 // share of GL giving, and year to date (where month-to-month noise mostly cancels). Any giving type
 // with more than `item` unexplained is listed to look at, whatever the share.
+// How much of what's moving is accounted for: everything explained (each reason counted at its size,
+// whichever way it goes) against what's left. Explanations run both ways (a platform owed money one
+// way, a sponsor's timing the other), so they can net to little while accounting for a lot — which
+// is why it isn't worked out on the net difference.
+export const explainedShareOf = (reasons, unexplained) => {
+  const gross = sum((reasons || []).filter((x) => !x.flag), (x) => Math.abs(x.amount));
+  return gross + Math.abs(unexplained) ? gross / (gross + Math.abs(unexplained)) : 1;
+};
 export const DEFAULT_SF_TOLERANCE = { monthPct: 0.01, ytdPct: 0.0025, item: 10000 };
 export function withinTolerance(r, tol = DEFAULT_SF_TOLERANCE) {
   const share = r?.glTotal ? Math.abs(r.unexplained) / Math.abs(r.glTotal) : null;
@@ -182,7 +190,7 @@ export function ytdTolerance(months, tol = DEFAULT_SF_TOLERANCE) {
   const diff = round2(sum(months, (r) => r.diff)), explained = round2(sum(months, (r) => r.explained));
   const share = gl ? Math.abs(un) / Math.abs(gl) : null;
   return { unexplained: un, glTotal: gl, diff, explained, share, ok: share != null && share <= tol.ytdPct,
-    pct: gl ? diff / gl : null, explainedShare: diff ? Math.max(0, Math.min(1, 1 - Math.abs(un) / Math.abs(diff))) : null };
+    pct: gl ? diff / gl : null, explainedShare: explainedShareOf(months.flatMap((r) => r.reasons || []), un) };
 }
 
 // ---- Who a gift came from -------------------------------------------------------------------
@@ -260,7 +268,8 @@ export function reconcileMonth({ sf, giving, found = {} }) {
   for (const x of found.releases || []) add(x.channel || 'Wire', -x.amount, `Released from a liability by the GL: ${x.desc}`, 'Part of this deposit’s revenue was a gift the GL had held back earlier; Salesforce recorded it when it was given.', x.source);
   // A GL channel far above what Salesforce has for it: likely a line booked to the wrong payer.
   for (const r of rows) {
-    if (r.gl > 5000 && r.sf >= 0 && r.gl > 5 * Math.max(r.sf, 1)) {
+    // (Not for a platform that pays in lumps: its payout is meant to be far above one month's gifts.)
+    if (r.gl > 5000 && r.sf >= 0 && r.gl > 5 * Math.max(r.sf, 1) && !LUMP_PLATFORMS.includes(r.channel)) {
       const lines = (giving?.big?.[r.channel] || []).slice(0, 3);
       add(r.channel, 0, `The GL has far more ${r.channel} than Salesforce`, `GL ${r.channel} ${r.gl.toFixed(2)} against Salesforce ${r.sf.toFixed(2)}. Largest GL lines: ${lines.map((l) => `${l.batch} ${l.payer} ${l.amount.toFixed(2)}`).join('; ') || '—'}. Check who the payer on those lines really is.`, 'GL lines', 'flag');
     }
@@ -273,7 +282,7 @@ export function reconcileMonth({ sf, giving, found = {} }) {
   const explained = round2(sum(reasons, (x) => x.amount));
   const unexplained = round2(diff - explained);
   return { month: sf?.month || null, sfTotal, glTotal, diff, pct: glTotal ? diff / glTotal : null, rows: Object.values(byChannel), reasons: reasons.filter((x) => x.amount || x.flag), explained, unexplained,
-    explainedShare: diff ? Math.max(0, Math.min(1, 1 - Math.abs(unexplained) / Math.abs(diff))) : 1, restricted: giving?.restricted || [] };
+    explainedShare: explainedShareOf(reasons, unexplained), restricted: giving?.restricted || [] };
 }
 
 // Every month at once: each month reconciled, then what's left in a channel one month that the next
@@ -355,7 +364,7 @@ export function reconcileYear(inputs) {
   });
   for (const m of out) {
     m.explained = round2(sum(m.reasons, (x) => x.amount)); m.unexplained = round2(m.diff - m.explained);
-    m.explainedShare = m.diff ? Math.max(0, Math.min(1, 1 - Math.abs(m.unexplained) / Math.abs(m.diff))) : 1;
+    m.explainedShare = explainedShareOf(m.reasons, m.unexplained);
   }
   return out;
 }
