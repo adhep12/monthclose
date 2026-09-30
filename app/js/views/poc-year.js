@@ -261,9 +261,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const r = hasData(rec) ? rec : { ...blank(m), ...(rec || {}), source: undefined };
     return { m, rec: hasData(rec) ? rec : null, c: computePoc(r, { prior: byMonth[addMonths(m, -1)], gl, cd: cdFor(m), ...depFor(m) }) };
   });
-  // YTD covers the completed months: every account the year uses has its figure (attached or
-  // typed), no Cass statement is missing, and the GL is in. A month still waiting on something
-  // would swamp the variance, so it's left out (and the summary says why).
+  // YTD covers the months that have ended: September counts from October 1st. A month in YTD that
+  // is still waiting on a statement or the GL is listed, since its difference will still move.
   const line = (c, id) => c.lines.find((l) => l.id === id);
   const hasFig = (l) => !!l && (l.rev != null || l.int != null);
   // Where a figure came from, in words. Figures typed in the app carry who entered them; the
@@ -277,15 +276,17 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     if (x.c.diffRev == null) out.push('the GL');
     return out;
   };
-  const done = cols.filter((x) => x.c && !waitingOn(x).length);
-  const notDone = cols.filter((x) => x.m <= currentMonth() && !done.includes(x)).map((x) => ({ m: x.m, why: waitingOn(x) }));
+  const done = cols.filter((x) => x.m < currentMonth());
+  const stillWaiting = done.map((x) => ({ m: x.m, why: waitingOn(x) })).filter((x) => x.why.length);
+  const openMonthNow = cols.find((x) => x.m === currentMonth());
   const pctText = (d, base) => (d == null || !base ? '' : `${((d / base) * 100).toFixed(2)}%`);
   // The YTD variance, in a line above each section: how big the difference is against the GL.
   const ytdBar = (parts, { ms = done.map((x) => x.m), note = null } = {}) => h('div', { class: 'ytd-bar' },
-    h('strong', {}, `YTD variance, ${ms.length ? `${short(ms[0])}–${short(ms[ms.length - 1])} (${ms.length} complete month${ms.length === 1 ? '' : 's'})` : 'no complete months yet'}`),
+    h('strong', {}, `YTD variance, ${ms.length ? `${short(ms[0])}–${short(ms[ms.length - 1])} (${ms.length} month${ms.length === 1 ? '' : 's'})` : 'no months ended yet'}`),
     ms.length ? parts.map(([k, d, base]) => h('span', { class: 'ytd-part' }, `${k} `, h('strong', { class: Math.abs(d || 0) >= 1 ? 'warn-text' : 'good-text' }, money(d, { dash: false })),
       base ? h('span', { class: 'muted' }, ` · ${pctText(d, base)} of GL`) : null)) : null,
-    notDone.length ? h('div', { class: 'small muted' }, `Not in YTD: ${notDone.map((x) => `${short(x.m)} (${x.why[0] === 'nothing attached' ? 'nothing attached' : `waiting on ${x.why.join(', ')}`})`).join('; ')}.`) : null,
+    stillWaiting.length ? h('div', { class: 'small warn-text' }, `In YTD but not finished, so the variance will move: ${stillWaiting.map((x) => `${short(x.m)} (${x.why[0] === 'nothing attached' ? 'nothing attached' : `waiting on ${x.why.join(', ')}`})`).join('; ')}.`) : null,
+    openMonthNow ? h('div', { class: 'small muted' }, `${monthName(openMonthNow.m)} counts from ${monthName(addMonths(openMonthNow.m, 1)).split(' ')[0]} 1st.`) : null,
     note ? h('div', { class: 'small muted' }, note) : null);
 
   // ---- Rows ----------------------------------------------------------------------------------
@@ -1406,7 +1407,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const sfYear = (() => {
     const ms = cols.map((x) => x.m).filter((m) => sfBy[m] || glBy[m]?.giving);
     const res = reconcileYear(ms.map((m) => ({ sf: sfBy[m] ? { ...sfBy[m], month: m } : { month: m, methods: {} }, giving: glBy[m]?.giving, found: sfFound(m) })));
-    // What's not explained, added up month by month through the complete months.
+    // What's not explained, added up month by month through the months that have ended.
     let run = 0;
     const doneMs = new Set(done.map((x) => x.m));
     res.forEach((r, i) => { if (sfBy[ms[i]] && doneMs.has(ms[i])) { run = round2(run + r.unexplained); r.running = run; } });
@@ -1431,8 +1432,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     // the GL in Jan–Feb) shows as a running total that rises, then comes back.
     { label: 'Not explained, running total', f: (r) => r.running ?? null, noYtd: true, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
   ];
-  // YTD over the months the proof of cash counts (Cass deposits in): a month whose GL isn't
-  // finished (September, mid-close) would swamp it.
+  // YTD over the months that have ended (as the proof of cash), with a Salesforce report and GL giving.
   const sfDoneSet = new Set(done.map((x) => x.m));
   // YTD shares, worked out from the YTD totals (not a sum of the months' percentages).
   const sfYtdShare = (key) => {
@@ -1450,7 +1450,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const doneSet = sfDoneSet;
     const both = sfYtdMonths();
     const needGl = ms.some((m) => sfBy[m] && glBy[m] && !glBy[m].giving);
-    const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'The GL isn’t complete for this month yet (no Cass deposits in the proof of cash) — not in YTD', onclick: () => openSfMonth(m) }, v);
+    const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'This month hasn’t ended yet — not in YTD', onclick: () => openSfMonth(m) }, v);
     const ytd = (f) => { const v = both.map((m) => f(sfYear[m])).filter((x) => x != null); return v.length ? round2(sum(v, (x) => x)) : null; };
     const rowsDef = sfRowsDef();
     return h('div', { class: 'sheet-block', style: { marginTop: '1.5rem' } },
@@ -1459,7 +1459,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         fileButton('Upload Salesforce reports…', '.xlsx,.xls', async (files) => { if (await uploadSalesforce(files)) rerender(); }, { multiple: true })),
       any ? (() => { const ms = sfYtdMonths(); const t = (f) => round2(sum(ms, (m) => f(sfYear[m]) || 0)); const gl = t((r) => r.glTotal);
         return ytdBar([['Difference', t((r) => r.diff), gl], ['Not explained', t((r) => r.unexplained), gl]],
-          { ms, note: ms.length !== done.length ? `Only complete months with a Salesforce report and the GL’s giving by channel count here: ${done.map((x) => x.m).filter((m) => !ms.includes(m)).map(short).join(', ')} ${done.length - ms.length === 1 ? 'is' : 'are'} complete but missing one.` : null }); })() : null,
+          { ms, note: ms.length !== done.length ? `Only months with a Salesforce report and the GL’s giving by channel count here: ${done.map((x) => x.m).filter((m) => !ms.includes(m)).map(short).join(', ')} ${done.length - ms.length === 1 ? 'is' : 'are'} missing one.` : null }); })() : null,
       h('p', { class: 'muted small' }, 'Salesforce’s gifts by close date and payment method against the GL’s giving in the same channels. Some difference is expected — refunds, month-end timing, grants the GL recognizes when pledged, gifts held back — and each reason the app can put a number on is counted as explained. Click a month for the detail.'),
       !any ? h('p', { class: 'muted' }, 'Upload Salesforce opportunity reports to start: the gift-level report (Amount, Close Date, Payment Method) or the summary by close date and payment method. Several at once is fine — each replaces only the months its date filter covers.')
         : h('div', { class: 'table-wrap sheet' }, h('table', {},
@@ -1480,7 +1480,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const share = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: '0.0%' });
     const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · Salesforce opportunities by close date against GL giving (4010, 4012, 4015, 4017, 4018)`;
     const summary = [[`FY${fy} Salesforce vs GL — giving`], [stamp],
-      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months with the GL complete)` : 'no complete months yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
+      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months ended, with a Salesforce report and GL giving)` : 'no months ended yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
       ['', 'YTD', ...ms.map((m) => monthName(m))]];
     for (const d of sfRowsDef()) {
       if (d.section) { summary.push([d.section.toUpperCase()]); continue; }
@@ -1855,7 +1855,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const pct = (d, g) => (d == null || !g ? null : { v: Math.round((d / g) * 1e6) / 1e6, z: '0.00%' });
     const at = (f, c) => (f && c ? f(c) ?? null : null);
     const sheetRows = [
-      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} complete months: every account's figure in, and the GL)` : 'no complete months yet'}`], [],
+      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} months ended)` : 'no months ended yet'}`], [],
       ['', 'YTD Revenue', 'YTD Interest', ...months.flatMap((m) => [`${short(m)} Revenue`, `${short(m)} Interest`])],
     ];
     for (const r of all) {
