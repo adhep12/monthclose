@@ -279,7 +279,6 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   };
   const done = cols.filter((x) => x.m < currentMonth());
   const stillWaiting = done.map((x) => ({ m: x.m, why: waitingOn(x) })).filter((x) => x.why.length);
-  const openMonthNow = cols.find((x) => x.m === currentMonth());
   const pctText = (d, base) => (d == null || !base ? '' : `${((d / base) * 100).toFixed(2)}%`);
   // The YTD variance, in a line above each section: how big the difference is against the GL.
   const ytdBar = (parts, { ms = done.map((x) => x.m), note = null } = {}) => h('div', { class: 'ytd-bar' },
@@ -287,7 +286,6 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     ms.length ? parts.map(([k, d, base]) => h('span', { class: 'ytd-part' }, `${k} `, h('strong', { class: Math.abs(d || 0) >= 1 ? 'warn-text' : 'good-text' }, money(d, { dash: false })),
       base ? h('span', { class: 'muted' }, ` · ${pctText(d, base)} of GL`) : null)) : null,
     stillWaiting.length ? h('div', { class: 'small warn-text' }, `In YTD but not finished, so the variance will move: ${stillWaiting.map((x) => `${short(x.m)} (${x.why[0] === 'nothing attached' ? 'nothing attached' : `waiting on ${x.why.join(', ')}`})`).join('; ')}.`) : null,
-    openMonthNow ? h('div', { class: 'small muted' }, `${monthName(openMonthNow.m)} counts from ${monthName(addMonths(openMonthNow.m, 1)).split(' ')[0]} 1st.`) : null,
     note ? h('div', { class: 'small muted' }, note) : null);
 
   // ---- Rows ----------------------------------------------------------------------------------
@@ -347,7 +345,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // For printing: every adjustment line shown, whether or not it's opened up on screen.
   const printRows = screenRows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Total Adjustments (all accounts)' }, ...adjRows()] : [r]));
 
-  const ytd = (f) => (f ? round2(sum(done, (x) => f(x.c) || 0)) : null);
+  // A month that has ended with nothing in it (no statements, no GL) has no figures: it adds nothing.
+  const ytd = (f) => (f ? round2(sum(done, (x) => (x.c ? f(x.c) || 0 : 0))) : null);
   const pctOf = (d, g) => (d == null || !g ? '' : `${((d / g) * 100).toFixed(2)}%`);
   const dot = (kind, text) => h('span', { class: `dot ${kind}`, title: text, 'aria-label': text });
   const statusOf = (rec) => (rec?.signoff?.reviewed ? dot('good', 'Reviewed') : rec?.signoff?.prepared ? dot('info', 'Prepared') : rec?.source?.kind === 'import' && !rec.updatedAt ? dot('neutral', 'From the workbook') : rec ? dot('warn', 'In progress') : null);
@@ -383,7 +382,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const rows = expand && !adjOpen ? printRows : screenRows;
     const span = (showRev ? 1 : 0) + (showInt ? 1 : 0);
     const nCols = 1 + span * (months.length + 1);
-    const hasAny = (r) => done.length === 0 || r.strong || r.account || r.toggle || r.gl || [r.rev && showRev && [ytd(r.rev), ...done.map((x) => r.rev(x.c))], r.int && showInt && [ytd(r.int), ...done.map((x) => r.int(x.c))]]
+    const hasAny = (r) => done.length === 0 || r.strong || r.account || r.toggle || r.gl || [r.rev && showRev && [ytd(r.rev), ...done.map((x) => (x.c ? r.rev(x.c) : null))], r.int && showInt && [ytd(r.int), ...done.map((x) => (x.c ? r.int(x.c) : null))]]
       .flat().some((v) => v != null && v !== false && Math.abs(v) >= 0.005);
     const body = [];
     for (const r of rows) {
@@ -1423,10 +1422,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const ms = cols.map((x) => x.m).filter((m) => sfBy[m]);
     const tol = { ...DEFAULT_SF_TOLERANCE, ...(cfg.sfTolerance || {}) };
     const res = suspectGifts(ms.map((m) => ({ sf: { ...sfBy[m], month: m }, giving: glBy[m]?.giving, found: sfFound(m) })), { min: tol.giftMin });
-    const by = {}, decided = {};
+    const by = {}, decided = {}, matched = {}, skipped = {};
     for (const g of res.missing) (by[g.month] ||= []).push(g);
     for (const g of res.decided) (decided[g.month] ||= []).push(g);
-    return { by, decided, looked: res.looked };
+    for (const g of res.matched) (matched[g.month] ||= []).push(g);
+    for (const g of res.skipped) (skipped[g.month] ||= []).push(g);
+    return { by, decided, matched, skipped, looked: res.looked };
   })();
   const pct = (v) => (v == null ? '' : `${(v * 100).toFixed(1)}%`);
   const pct2 = (v) => (v == null ? '' : `${(v * 100).toFixed(2)}%`);
@@ -1548,9 +1549,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         { name: 'By channel', rows: byChannel, cols: [16, 12, 16, 12, 16, 16, 16, 16, 22] },
         { name: 'Reasons', rows: reasons, cols: [16, 10, 50, 80, 50, 20, 16] },
         { name: 'Running totals', rows: toDate, cols: [16, 44, 16, 16, 16, 16, 16], freeze: { ySplit: 1 } },
-        { name: 'Gifts to look at', rows: [[`Salesforce wire gifts of ${money(sfTol.giftMin, { dash: false })} or more the GL doesn't seem to have (no line from the same sponsor, a processor, or the same amount, 3 days before to 45 days after). ${sfSuspects.looked} looked for.`], [],
+        { name: 'Gifts to look at', rows: [[`Salesforce wire gifts of ${money(sfTol.giftMin, { dash: false })} or more the GL doesn't seem to have (no line from the same sponsor or a processor, 3 days before to 45 days after; a line of the same amount under another name is shown as a possible match). ${sfSuspects.looked} looked for.`], [],
           ['Month', 'Close date', 'Donor-advised fund', 'Primary contact (Salesforce 18-character ID)', 'Amount', 'Status', 'Decided by', 'When', 'Note'],
-          ...Object.entries(sfSuspects.by).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount, 'To look at'])),
+          ...Object.entries(sfSuspects.by).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount, g.maybe ? `To look at - possible match: ${g.maybe.date} ${g.maybe.payer} ${g.maybe.amount}${g.maybe.batch ? ` (${g.maybe.batch})` : ''}` : 'To look at'])),
           ...Object.entries(sfSuspects.decided).sort().flatMap(([mm, gs]) => gs.map((g) => [monthName(mm), g.date, g.fund, g.contact, g.amount,
             g.decision.status === 'found' ? 'In the GL' : SF_ADJ_TYPES[g.decision.type] || 'Explained', g.decision.by || '', g.decision.at ? when(g.decision.at) : '', g.decision.note || '']))], cols: [16, 12, 44, 30, 14, 40, 18, 20, 60] },
         { name: 'Restricted gifts', rows: restricted, cols: [16, 12, 12, 16, 30, 40, 10, 14] },
@@ -1703,7 +1704,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   }
   function giftsSection(m, close) {
     const open = sfSuspects.by[m] || [], done_ = sfSuspects.decided[m] || [];
-    if (!open.length && !done_.length) return null;
+    const matched = sfSuspects.matched[m] || [], skipped = sfSuspects.skipped[m] || [];
+    if (!open.length && !done_.length && !matched.length && !skipped.length) return null;
+    const lineText = (l) => `${l.date} ${l.payer || '(no name)'} ${money(l.amount, { dash: false })}${l.batch ? ` (${l.batch})` : ''}`;
     const cols_ = [
       { label: 'Close date', cell: (g) => g.date },
       { label: 'Donor-advised fund', cell: (g) => g.fund || '(none)' },
@@ -1712,8 +1715,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     ];
     return h('div', { class: 'adj-section' },
       reviewHead('Salesforce gifts the GL doesn’t seem to have', { count: open.length + done_.length, todo: open.length }),
-      h('p', { class: 'muted small' }, `Wire gifts of ${money(sfTol.giftMin, { dash: false })} or more with no GL line from the same sponsor (or a payment processor, or the same amount under another name) from 3 days before to 45 days after. Look each up and say what it is: an explanation counts toward “Explained”; “it’s in the GL” just takes it off the list.`),
+      h('p', { class: 'muted small' }, `Wire gifts of ${money(sfTol.giftMin, { dash: false })} or more with no GL line from the same sponsor or a payment processor from 3 days before to 45 days after. A line of the same amount under another name is shown as a possible match, not taken as the gift. Look each up and say what it is: an explanation counts toward “Explained”; “it’s in the GL” just takes it off the list.`),
       open.length ? table([...cols_,
+        { label: 'Possible match', cell: (g) => (g.maybe ? h('span', { class: 'small wrap' }, `Same amount, another name: ${lineText(g.maybe)}. Check it’s this gift.`) : h('span', { class: 'small muted' }, 'Nothing in the GL')) },
         { label: 'Status', cell: () => statusCell({ state: 'todo' }) },
         { label: '', cell: (g) => actionsCell({ change: changeSelect(GIFT_CHOICES, null, (v) => decideGift(m, g, v, close), 'Say what it is…') }) },
       ], open) : null,
@@ -1721,7 +1725,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         table([...cols_,
           { label: 'Status', cell: (g) => statusCell({ state: g.decision.status === 'found' ? 'confirmed' : 'changed', text: g.decision.status === 'found' ? '✓ In the GL' : SF_ADJ_TYPES[g.decision.type] || 'Explained', by: g.decision.by, at: g.decision.at, note: g.decision.note }) },
           { label: '', cell: (g) => actionsCell({ more: [h('button', { class: 'small-btn', onclick: () => undoGift(m, g, close) }, 'Undo')] }) },
-        ], done_)) : null);
+        ], done_)) : null,
+      matched.length || skipped.length ? h('details', { class: 'small', 'data-key': 'gifts-found' },
+        h('summary', {}, `How the other wire gifts were found (${matched.length + skipped.length})`),
+        table([...cols_,
+          { label: 'Found as', cell: (g) => h('span', { class: 'small wrap' }, g.line ? `${g.how}: ${lineText(g.line)}` : `Not looked for: ${g.why}`) },
+        ], [...matched, ...skipped].sort((a, b) => b.amount - a.amount))) : null);
   }
   async function openSfTolerance() {
     await panel('Salesforce vs GL — tolerance', (body, close) => {

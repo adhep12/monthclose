@@ -1,7 +1,9 @@
 // Checks app/ against the bp-vibes deploy rules (see CLAUDE.md) and zips it to dist/monthclose.zip.
 //   node scripts/package.mjs          check + zip
 //   node scripts/package.mjs --check  check only
-import { readdirSync, statSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+// In the zip, css/, js/ and vendor/ sit in a folder named for the build (b202609300130/) and
+// index.html points there, so a new deploy never runs with a browser's cached copy of the last one.
+import { readdirSync, statSync, mkdirSync, rmSync, existsSync, cpSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, extname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -35,5 +37,18 @@ const out = new URL('../dist/', import.meta.url).pathname;
 mkdirSync(out, { recursive: true });
 const zip = join(out, 'monthclose.zip');
 if (existsSync(zip)) rmSync(zip);
-execFileSync('zip', ['-qr', zip, '.'], { cwd: ROOT });
-console.log(`✓ wrote ${relative(process.cwd(), zip)} — upload it on the app's Deploy card in HAL`);
+const build = `b${new Date().toISOString().replace(/\D/g, '').slice(0, 12)}`;
+const stage = join(out, 'stage');
+rmSync(stage, { recursive: true, force: true });
+mkdirSync(join(stage, build), { recursive: true });
+for (const name of readdirSync(ROOT)) {
+  const inBuild = statSync(join(ROOT, name)).isDirectory();
+  cpSync(join(ROOT, name), inBuild ? join(stage, build, name) : join(stage, name), { recursive: true });
+}
+const html = readFileSync(join(stage, 'index.html'), 'utf8');
+const pointed = html.replace(/(href|src)="(css|js|vendor)\//g, `$1="${build}/$2/`);
+if (!pointed.includes(`${build}/js/app.js`)) { console.error('✗ index.html no longer loads js/app.js; update scripts/package.mjs'); process.exit(1); }
+writeFileSync(join(stage, 'index.html'), pointed);
+execFileSync('zip', ['-qr', zip, '.'], { cwd: stage });
+rmSync(stage, { recursive: true, force: true });
+console.log(`✓ wrote ${relative(process.cwd(), zip)} (build ${build}) — upload it on the app's Deploy card in HAL`);

@@ -229,8 +229,20 @@ test('Salesforce wire gifts the GL doesn’t have: two alike gifts, one GL line,
     { sf: { month: '2025-12', gifts: [W('2025-12-11', 100000, 'National Christian Foundation', 'donorA'), W('2025-12-12', 7000, 'National Christian Foundation'), W('2025-12-20', 8000, 'GiveClear Foundation'), W('2025-12-22', 12000, 'Stewardship')] },
       giving: { wireLines: [['2025-12-15', 110000, 'NCF', 'GL017377'], ['2025-12-28', 8000, 'Chariot', 'GL2']] } },
   ]);
-  assert.equal(res.looked, 5); // Stewardship pays in lumps: not looked for
+  assert.equal(res.looked, 6);
+  assert.deepEqual(res.skipped.map((g) => [g.fund, g.why]), [['Stewardship', 'a platform that pays in lumps (its balance is tracked instead)']]);
   assert.deepEqual(res.missing.map((g) => [g.date, g.amount, g.contact]), [['2025-11-12', 100000, 'donorA']]);
+  assert.deepEqual(res.matched.map((g) => [g.date, g.how, g.line.batch]).sort(), [['2025-11-20', 'same sponsor', 'GL1'], ['2025-12-11', 'same sponsor', 'GL017377'], ['2025-12-12', 'same sponsor', 'GL017377'], ['2025-12-20', 'a payment processor', 'GL2']]);
+});
+
+test('the same amount under another name is a possible match, not the gift', async () => {
+  const { suspectGifts } = await import('../app/js/sf/salesforce.js');
+  const res = suspectGifts([
+    { sf: { month: '2025-11', gifts: [['2025-11-12', 100000, 'National Christian Foundation', 'donorA', 'W']] }, giving: { wireLines: [] } },
+    { sf: { month: '2025-12', gifts: [] }, giving: { wireLines: [['2025-12-18', 100000, 'Indian Localization', 'GL017385']] } },
+  ]);
+  assert.deepEqual(res.missing.map((g) => [g.date, g.maybe?.batch]), [['2025-11-12', 'GL017385']]);
+  assert.deepEqual(res.matched, []);
 });
 
 test('a flagged gift someone has decided on moves to "looked at", and an explanation tied to it counts', async () => {
