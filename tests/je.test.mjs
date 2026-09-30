@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseStripeMonthly } from '../app/js/poc/stripe.js';
 import { stripeJe } from '../app/js/je/stripe.js';
-import { monthJes, jeReady, importRows, IMPORT_COLUMNS } from '../app/js/je/month.js';
+import { monthJes, jeReady, importRows, importCsv, IMPORT_COLUMNS } from '../app/js/je/month.js';
 
 // The Stripe monthly statement CSV's layout, two months (made-up figures).
 const csv = (a, b) => [
@@ -140,7 +140,7 @@ test('Delap: gain only; money moved out is booked by its own entry, so it isn’
   assert.deepEqual(rows(je), [['1170', 20000, 0], ['8999', 0, 20000]]);
   assert.equal(je.lines[0].tranDescription, 'Unrealized Gains - Delap 8-31-2026');
   const all = monthJes(recs['2026-08'], { recs });
-  assert.deepEqual(all.map((x) => [x.batch, x.id, jeReady(x)]), [[1, 'stripe', false], [2, 'paypal', false], [3, 'tschetter', false], [4, 'delap', true]]);
+  assert.deepEqual(all.map((x) => [x.batch, x.id, jeReady(x)]), [[1, 'stripe', false], [2, 'paypal', false], [3, 'tschetter', false], [4, 'delap', true], [5, 'cd', false]]);
 });
 const round = (n) => Math.round(n * 100) / 100;
 
@@ -216,4 +216,26 @@ test('Edited defaults: account, subaccount and description replace the built-in 
   const t = monthJes(fy()['2026-04'], { recs: fy(), jeDefaults }).find((x) => x.id === 'tschetter');
   assert.deepEqual(t.lines.map((l) => l.tranDescription), ['Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026',
     'Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026', 'Tschetter advisor fees, fees Feb-Apr 2026']);
+});
+
+test('CD interest: batch 5, one pair per CD from the CD schedule; edits apply to every CD', () => {
+  const cds = [{ last4: '3987', earned: { '2026-08': { amount: 18299.54 } } }, { last4: '9874', earned: { '2026-08': { amount: 18313.23 } } }, { last4: '7416', earned: {} }];
+  const je = monthJes({ month: '2026-08' }, { cds }).find((x) => x.id === 'cd');
+  assert.equal(je.batch, 5);
+  assert.ok(jeReady(je));
+  assert.deepEqual(je.lines.map((l) => [l.account, l.debit, l.credit, l.tranDescription]), [
+    ['1150', 18299.54, 0, 'Interest Earned - 3987'], ['4050', 0, 18299.54, 'Interest Earned - 3987'],
+    ['1150', 18313.23, 0, 'Interest Earned - 9874'], ['4050', 0, 18313.23, 'Interest Earned - 9874'],
+  ]);
+  const edited = monthJes({ month: '2026-08' }, { cds, jeDefaults: { cd: { lines: { income: { account: '4051', desc: 'CD interest {cd}' } } } } }).find((x) => x.id === 'cd');
+  assert.deepEqual(edited.lines.filter((l) => l.key === 'income').map((l) => [l.account, l.tranDescription]), [['4051', 'CD interest 3987'], ['4051', 'CD interest 9874']]);
+  assert.equal(monthJes({ month: '2026-07' }, { cds }).find((x) => x.id === 'cd').missing, 'Attach the CDARS statements or the IntraFi export.');
+});
+
+test('CSV: the same columns and rows, dates m/d/yyyy, text with commas or quotes quoted', () => {
+  const [je] = monthJes({ month: '2026-08', stripe: months[0] });
+  const rows = importCsv([{ ...je, description: 'Stripe, "monthly"' }]).trim().split('\r\n');
+  assert.equal(rows[0], IMPORT_COLUMNS.join(','));
+  assert.equal(rows[1], '1,8/31/2026,"Stripe, ""monthly""",1200,000-000,150000.00,,9 Payouts & Transfers');
+  assert.equal(rows.length, 1 + je.lines.length);
 });

@@ -5,9 +5,15 @@
 import { stripeJe, STRIPE_JE, STRIPE_TEMPLATE } from './stripe.js';
 import { investmentJe, investmentTemplate, fillVars } from './investments.js';
 import { paypalJe, PAYPAL_JE, PAYPAL_TEMPLATE } from './paypal.js';
+import { cdInterestJE } from '../cd/schedule.js';
 import { isBalanced } from '../fa/je.js';
 import { round2, sum } from '../money.js';
 import { lastDayOfMonth } from '../fiscal.js';
+
+const CD_TEMPLATE = [
+  { key: 'cd', account: '1150', sub: '000-000', desc: 'Interest Earned - {cd}', note: 'each CD' },
+  { key: 'income', account: '4050', sub: '000-000', desc: 'Interest Earned - {cd}', note: 'each CD' },
+];
 
 export const IMPORT_COLUMNS = ['BatchNbr', 'Transaction Date', 'Document Description', 'Account', 'Subaccount',
   'Debit Amount', 'Credit Amount', 'Transaction Description'];
@@ -24,7 +30,19 @@ export const JE_BATCHES = [
     build: (rec, ctx) => investmentJe('tschetter', rec.month, ctx) },
   { batch: 4, id: 'delap', label: 'Delap', description: 'Unrealized Gains - Delap', needs: 'Type the ending value.', template: investmentTemplate('delap'),
     build: (rec, ctx) => investmentJe('delap', rec.month, ctx) },
+  { batch: 5, id: 'cd', label: 'CD interest', description: 'CD Interest', needs: 'Attach the CDARS statements or the IntraFi export.', template: CD_TEMPLATE,
+    build: (rec, ctx) => cdJe(ctx.cds || [], rec.month) },
 ];
+
+// The CD schedule's interest for the month, one line pair per CD (as the CD schedule's own
+// download): Dr 1150 / Cr 4050 "Interest Earned - 1234".
+function cdJe(cds, month) {
+  const lines = cdInterestJE(cds, month).map((l, i) => {
+    const vars = { cd: l.tranDescription.replace(/^Interest Earned - /, '') };
+    return { key: i % 2 ? 'income' : 'cd', account: l.account, sub: l.sub, debit: l.debit, credit: l.credit, tranDescription: l.tranDescription, vars };
+  });
+  return lines.length ? { lines, problems: [] } : null;
+}
 
 // Edited defaults (config.jeDefaults, saved from the JE pop-up), per batch id:
 //   { description, lines: { <line key>: { account, sub, desc } }, by, at } (only what differs from built in)
@@ -40,8 +58,8 @@ export function applyDefaults(built, over) {
 
 // Every JE the month has a file for: { batch, id, label, description, date, lines, problems, notes,
 // balanced }. A process with no file yet is listed with `missing`.
-export function monthJes(rec, { recs = {}, glBy = {}, jeDefaults = {} } = {}) {
-  const ctx = { recs: { ...recs, [rec.month]: rec }, glBy };
+export function monthJes(rec, { recs = {}, glBy = {}, jeDefaults = {}, cds = [] } = {}) {
+  const ctx = { recs: { ...recs, [rec.month]: rec }, glBy, cds };
   return JE_BATCHES.map((b) => {
     const over = jeDefaults[b.id];
     const built = applyDefaults(b.build(rec || {}, ctx), over);
@@ -70,5 +88,15 @@ export function importRows(jes) {
     }
   }
   return rows;
+}
+// The same rows as CSV: dates m/d/yyyy, amounts without separators, an empty side blank.
+export function importCsv(jes) {
+  const q = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const us = (iso) => { const [y, m, d] = iso.split('-').map(Number); return `${m}/${d}/${y}`; };
+  const out = [IMPORT_COLUMNS.map(q).join(',')];
+  for (const je of jes) for (const l of je.lines) {
+    out.push([je.batch, us(je.date), je.description, l.account, l.sub, l.debit ? l.debit.toFixed(2) : '', l.credit ? l.credit.toFixed(2) : '', l.tranDescription].map(q).join(','));
+  }
+  return `${out.join('\r\n')}\r\n`;
 }
 export const IMPORT_COL_WIDTHS = [9, 16, 24, 9, 11, 14, 14, 30];

@@ -230,7 +230,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const glFor = (m) => glFigures({ glActivity: glBy[m], soa: soaBy[m], month: m, config: cfg });
   // What the JE blocks need: every month, the GL, the edited defaults and the editor. `after`
   // redraws the pop-up the editor was opened from.
-  const jeCtx = (after, extra = {}) => ({ recs: byMonth, glBy, jeDefaults: cfg.jeDefaults || {}, ...extra,
+  const jeCtx = (after, extra = {}) => ({ recs: byMonth, glBy, cds, jeDefaults: cfg.jeDefaults || {}, ...extra,
     editDefaults: (id) => openJeDefaults(id, { jeDefaults: cfg.jeDefaults || {}, save: async (bid, over) => {
       // Read the settings fresh so this doesn't write an old copy over someone else's change.
       const fresh = { ...cfg, ...((await loadPocConfig()) || {}) };

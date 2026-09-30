@@ -1,16 +1,21 @@
 // The month's journal entries: a preview of each, and one Acumatica import file with all of them.
 
 import { h, mount, table, statusPill, toast, panel, ask } from '../ui.js';
-import { monthJes, jeReady, importRows, IMPORT_COL_WIDTHS, JE_BATCHES } from '../je/month.js';
+import { monthJes, jeReady, importRows, importCsv, IMPORT_COL_WIDTHS, JE_BATCHES } from '../je/month.js';
+import { noLongDashes } from '../xlsx-io.js';
 import { downloadWorkbook } from '../xlsx-io.js';
 import { money } from '../money.js';
 import { monthName } from '../fiscal.js';
 
-export async function downloadJes(m, jes) {
+export async function downloadJes(m, jes, { csv = false } = {}) {
   const ready = jes.filter(jeReady);
   if (!ready.length) { toast('No journal entries are ready for this month yet.', 'error'); return; }
-  const name = ready.length === 1 ? `${ready[0].label} JE` : 'JEs';
-  await downloadWorkbook(`${name} - ${monthName(m)}.xlsx`, [{ name: 'Acumatica', rows: importRows(ready), cols: IMPORT_COL_WIDTHS }]);
+  const name = `${ready.length === 1 ? `${ready[0].label} JE` : 'JEs'} - ${monthName(m)}`;
+  if (!csv) { await downloadWorkbook(`${name}.xlsx`, [{ name: 'Acumatica', rows: importRows(ready), cols: IMPORT_COL_WIDTHS }]); return; }
+  const text = importCsv(ready.map((je) => ({ ...je, description: noLongDashes(je.description), lines: je.lines.map((l) => ({ ...l, tranDescription: noLongDashes(l.tranDescription) })) })));
+  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/csv' })), download: `${name}.csv` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
 function jeStatus(je) {
@@ -82,7 +87,7 @@ export function openJeDefaults(id, { jeDefaults = {}, save }) {
     };
     mount(body,
       h('p', { class: 'muted small' }, 'What you save here is the default for every month’s JE, for everyone using the app, until you change it again or reset it. Lines that are zero in a month are left out of that month’s entry.',
-        b.template.some((t) => /\{\w+\}/.test(t.desc)) ? ' In descriptions, {date} is the month end (4-30-2026) and {fees} adds “, fees Feb-Apr 2026” when fees are booked.' : ''),
+        b.template.some((t) => /\{\w+\}/.test(t.desc)) ? ' In descriptions, {date} is the month end (4-30-2026), {fees} adds “, fees Feb-Apr 2026” when fees are booked, and {cd} is the CD’s last four digits.' : ''),
       h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Document description (the batch)'), doc)),
       table([
         { label: 'Built in', cell: (r) => h('span', { class: 'small muted wrap' }, `${r.t.account} ${r.t.sub} · ${r.t.desc}${r.t.note ? ` (${r.t.note})` : ''}`) },
@@ -125,7 +130,8 @@ export function accountJeBlock(rec, id, ctx) {
   return h('div', {},
     h('h3', {}, `Journal entry: batch ${je.batch}, ${je.description}`),
     h('div', { class: 'row' }, jeStatus(je), h('span', { class: 'small muted' }, ` dated ${je.date}`), h('span', { class: 'spacer' }),
-      h('button', { class: 'small-btn', disabled: !jeReady(je), onclick: () => downloadJes(rec.month, [je]) }, 'Download for Acumatica')),
+      h('button', { class: 'small-btn', disabled: !jeReady(je), onclick: () => downloadJes(rec.month, [je]) }, 'Download for Acumatica'),
+      h('button', { class: 'small-btn', disabled: !jeReady(je), onclick: () => downloadJes(rec.month, [je], { csv: true }) }, 'CSV')),
     jePreview(je, ctx));
 }
 
@@ -145,5 +151,6 @@ export function monthJeBlock(rec, ctx) {
     jes.filter((je) => je.lines.length).map((je) => h('details', { class: 'small' }, h('summary', {}, `Batch ${je.batch}: ${je.description}`), jePreview(je, { editDefaults: ctx?.editDefaults }))),
     h('div', { class: 'row', style: { marginTop: '.5rem' } },
       h('button', { class: 'primary', disabled: !ready.length, onclick: () => downloadJes(rec.month, jes) },
-        ready.length ? `Download ${ready.length === 1 ? 'the JE' : `all ${ready.length} JEs`} for Acumatica` : 'No JEs ready yet')));
+        ready.length ? `Download ${ready.length === 1 ? 'the JE' : `all ${ready.length} JEs`} for Acumatica` : 'No JEs ready yet'),
+      h('button', { disabled: !ready.length, onclick: () => downloadJes(rec.month, jes, { csv: true }) }, 'As CSV')));
 }
