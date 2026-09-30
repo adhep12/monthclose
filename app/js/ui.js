@@ -119,7 +119,10 @@ function openDialog(build) {
       overlay.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', onNav);
       const rest = document.querySelectorAll('.overlay');
       if (rest.length) rest[rest.length - 1].classList.remove('stacked');
-      prev?.focus?.(); resolve(value);
+      // Back to where focus was, without scrolling to it: an element in the sheet's pinned first
+      // column would otherwise pull the sheet back to October.
+      if (prev?.isConnected) prev.focus?.({ preventScroll: true });
+      resolve(value);
     };
     const onKey = (e) => { if (e.key === 'Escape') close(null); };
     // A link inside the dialog that goes to another page ("Open all of October") closes it.

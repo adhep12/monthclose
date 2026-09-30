@@ -168,9 +168,17 @@ function whatLanded(c, items) {
   return (x) => (PLUMBING.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
 }
 
-// Where the sheet was scrolled (sideways and down), per fiscal year. Kept for the whole visit so
-// attaching a statement, or going to a month and back, returns you to the same spot.
-const scrollMemory = {};
+// Where the sheet was scrolled (sideways and down), per fiscal year, so attaching a statement or
+// going to a month and back returns you to the same spot. Kept for this browser tab too, so a
+// reload (the platform signing you in again after a save or an upload) comes back there as well.
+const SCROLL_KEY = 'monthclose:poc-scroll';
+const scrollMemory = (() => { try { return JSON.parse(sessionStorage.getItem(SCROLL_KEY) || '{}'); } catch { return {}; } })();
+let scrollSaveQueued = false;
+const keepScroll = () => {
+  if (scrollSaveQueued) return;
+  scrollSaveQueued = true;
+  setTimeout(() => { scrollSaveQueued = false; try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify(scrollMemory)); } catch { /* private mode: memory only */ } }, 250);
+};
 // After a decision made in a pop-up is saved, the sheet redraws and the same pop-up opens again
 // with the new numbers.
 let reopenAfter = null;
@@ -1988,6 +1996,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
 
   const remember = () => {
     scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.screen-only .sheet')].map((el) => el.scrollLeft) };
+    keepScroll();
   };
 
   mount(main,
