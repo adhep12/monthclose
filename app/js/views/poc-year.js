@@ -279,7 +279,6 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   };
   const done = cols.filter((x) => x.m < currentMonth());
   const stillWaiting = done.map((x) => ({ m: x.m, why: waitingOn(x) })).filter((x) => x.why.length);
-  const openMonthNow = cols.find((x) => x.m === currentMonth());
   const pctText = (d, base) => (d == null || !base ? '' : `${((d / base) * 100).toFixed(2)}%`);
   // The YTD variance, in a line above each section: how big the difference is against the GL.
   const ytdBar = (parts, { ms = done.map((x) => x.m), note = null } = {}) => h('div', { class: 'ytd-bar' },
@@ -287,7 +286,6 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     ms.length ? parts.map(([k, d, base]) => h('span', { class: 'ytd-part' }, `${k} `, h('strong', { class: Math.abs(d || 0) >= 1 ? 'warn-text' : 'good-text' }, money(d, { dash: false })),
       base ? h('span', { class: 'muted' }, ` · ${pctText(d, base)} of GL`) : null)) : null,
     stillWaiting.length ? h('div', { class: 'small warn-text' }, `In YTD but not finished, so the variance will move: ${stillWaiting.map((x) => `${short(x.m)} (${x.why[0] === 'nothing attached' ? 'nothing attached' : `waiting on ${x.why.join(', ')}`})`).join('; ')}.`) : null,
-    openMonthNow ? h('div', { class: 'small muted' }, `${monthName(openMonthNow.m)} counts from ${monthName(addMonths(openMonthNow.m, 1)).split(' ')[0]} 1st.`) : null,
     note ? h('div', { class: 'small muted' }, note) : null);
 
   // ---- Rows ----------------------------------------------------------------------------------
