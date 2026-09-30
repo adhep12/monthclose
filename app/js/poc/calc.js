@@ -402,6 +402,8 @@ export function autoFigures(rec, cd = null, prior = null, deposits = null) {
   const st = rec.statements || {};
   const auto = {};
   for (const [id, b] of Object.entries(rec.bankStatements || {})) {
+    // An investment statement gives the ending value (in rec.bank); its gain is worked out below.
+    if (BANK_SOURCES.find((s) => s.id === id)?.method === 'balance') continue;
     const t = id === 'wise' && b.items?.length ? wiseTotals(wiseItems(rec))
       : id === 'paypal' ? { revenue: paypalRevenue(b), interest: b.interest } : { revenue: b.revenue, interest: b.interest };
     auto[id] = { rev: t.revenue, int: t.interest, ending: b.ending, from: `${b.fileName || 'statement'}`, by: b.attachedBy, at: b.attachedAt };

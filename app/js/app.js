@@ -55,8 +55,11 @@ async function softRender() {
     next.removeAttribute('style');
     shown.main.replaceWith(next);
     shown.main = next;
-    next.querySelectorAll('.sheet').forEach((el, i) => { if (x[i] != null) el.scrollLeft = x[i]; });
+    const put = () => { next.querySelectorAll('.sheet').forEach((el, i) => { if (x[i] != null && el.scrollLeft !== x[i]) el.scrollLeft = x[i]; }); };
+    put();
     window.scrollTo(0, y);
+    // Once more after layout settles (the frame can reflow as the swap lands).
+    requestAnimationFrame(() => { put(); window.scrollTo(0, y); });
   } catch (err) {
     next.remove();
     console.error(err);

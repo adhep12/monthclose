@@ -17,7 +17,7 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   workbook. FY2026 runs from October 2025 to September 2026.
   - Rows show each account's revenue and interest, then Cass adjustments (expandable), timing
     adjustments, GL, the difference, and the % difference.
-  - YTD covers the months whose Cass Operating deposits are in.
+  - YTD covers the months that have **ended** (September counts from October 1st). A line above the sheet gives the YTD revenue and interest difference and % of GL, and lists months in YTD still waiting on a statement or the GL (their difference will move). Salesforce vs GL has the same line (its YTD: ended months with a Salesforce report and GL giving), and its YTD % rows are filled in.
   - Drop a statement on an account's cell to attach it; the number updates in place.
   - Click a cell for detail, typed figures, confirmation, and detach.
   - On ICS, CDARS, Delap and Tschetter cells, "−" undoes an attachment or typed entry.
@@ -43,7 +43,8 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - notes, sign-off, and an activity log
 - **CD schedule (`#/cds`)**: CDARS statements, the IntraFi export, the rolling workbook import,
   the GL 1150 tie-out, and the interest JE download.
-- **Workbook import (`#/poc/import`)** reads the old workbook. For months already in the app, the
+- **Toolbar:** *Export* (Excel workbook or Print / PDF), *Download for Acumatica* (pick a month, default the latest with anything attached; warns which JEs can't be made yet and why), *Upload GL register*, *Payer names*.
+- **Workbook import (`#/poc/import`)**, no longer on the toolbar (open the address directly), reads the old workbook. For months already in the app, the
   default mode merges only deposits in transit and hand adjustments (see §4).
 
 Fixed assets and depreciation were removed from the UI. The engine is still in `app/js/fa/` and
@@ -145,6 +146,34 @@ Every rule below lives in `app/js/poc/calc.js` unless another file is named.
 | **Flagged:** a GL channel far above Salesforce's (5×, over $5,000), with its largest lines. | Feb: GL017631 "Patreon" 100,478.47 vs Salesforce Patreon 2,285.08. |
 | **YTD** covers the months the proof of cash counts (Cass deposits in); a month whose GL isn't finished is greyed. | |
 | **Next:** match the kept check and wire gifts one by one (Wire/DAF against GL payer lines, checks by deposit date). | |
+
+## Monthly JEs
+
+`app/js/je/` (`month.js`: batch numbers and the import file; one file per process), shown by
+`app/js/views/month-jes.js` in the month pop-up (every JE, one download) and each account's pop-up.
+The download is laid out like the Acumatica tab of the user's "Month Close Bank Recs" workbook:
+BatchNbr · Transaction Date (month end) · Document Description · Account · Subaccount · Debit ·
+Credit · Transaction Description. Each process has a fixed batch number (Stripe 1, PayPal 2, …).
+
+| JE | Rule | Evidence |
+| --- | --- | --- |
+| **1 Monthly Stripe Giving** | Every Stripe CSV figure booked with the sign Stripe prints (credit when it added to the balance): gross to 4015, fees to 8590 (013-000), disputes net of reversals, payouts Dr 1200, balance change to 1015. Same lines and descriptions as the workbook; zero lines left out. The CSV must add up (activity = Net Activity, balance rolls forward). | August 2026 = the posted batch to the cent; every month in the CSV back to 2015 balances. The workbook's dispute formulas are replaced by the netting (they errored with no disputes). |
+| **2 Paypal Giving** (`je/paypal.js`) | From the statement's Activity Summary: Cr 4012 payments received; Dr 8590 fees; Dr 1012 received less fees; payments sent Dr 8030 / Cr 1012 (software), each listed in a note; chargebacks Dr 4012 "Payment Refund" / Cr 1012 "Chargeback". Withdrawals, deposits and transfers aren't in the entry (noted). The reader now reads "Chargeback" and the tie check includes it. | August 2026 = the posted batch to the cent. Before the fix August showed "doesn't tie" by the 10.00 chargeback. A payment sent is software (8030) or a refund to a donor (with the chargebacks: Dr 4012 "Payment Refund" / Cr 1012 "Chargeback"), chosen per payment in the PayPal pop-up (`rec.paypalSentAs`; wording with "refund" starts as one). Feb 2026 (15,337 refund) = the posted batch. Withdrawals, deposits and transfers are booked by the entry on the other side (user). "Payment Refund Fee" (8030) is always zero so far, not built. |
+| **3 Unrealized Gains - Tschetter Group** (`je/investments.js`) | One entry: 1171 = ending − the latest earlier ending the app has (a skipped month is picked up) − money moved (booked by its own entry); 8070 = fees since last booked; 8999 = both. Fees only from a statement: the Schwab PDF (`parseSchwab`: Account Summary, this period and calendar YTD) or a scanned one kept as evidence with *Expenses year to date* typed. Fees = YTD − the YTD on the last statement this calendar year; with none in the app, − what the GL booked to 8070 this calendar year. Screenshot months book the gain only (the next statement catches the fees up). The fee months go in the transaction description. A beginning value (statement, or typed from a screenshot) that isn't the last ending booked is flagged, not used. | April 2026 statement: YTD 12,844.00 − Jan 3,186.16 = 9,657.84 (Feb–Apr). The GL's April fee entry is 9,697.84: 40.00 more, not explained yet. March screenshot starts 5,164,013.51 but February's ends 5,154,602.05. |
+| **4 Unrealized Gains - Delap** | Same, no fees; typed ending (a screenshot can be kept). Fidelity → Cass transfers are the net withdrawals, as in proof of cash. | User's format (1170 / 8999, 8070 line zero). |
+
+| JE | Rule | Evidence |
+| --- | --- | --- |
+| **5 CD Interest** | The CD schedule's interest for the month (`cdInterestJE`, the same as its own download): Dr 1150 / Cr 4050 "Interest Earned - 1234" per CD. Line edits apply to every CD; `{cd}` is the last four digits. | |
+
+**Downloads:** the month pop-up's *Journal entries* section downloads every ready JE in one file, Excel
+(an "Acumatica" sheet) or CSV (same columns, dates m/d/yyyy); each account pop-up downloads its own.
+
+**Editing the lines:** *Edit lines…* on any JE preview changes a batch's document description and
+each line's account, subaccount and transaction description. Saved to the shared settings
+(`config.jeDefaults[batch id]`: only what differs from built in, with who and when) as the default
+for every month, until reset. Line keys come from each builder's template (`STRIPE_TEMPLATE`,
+`PAYPAL_TEMPLATE`, `investmentTemplate`); descriptions keep `{date}` / `{fees}` placeholders.
 
 ## 3. FY2026 tie-out: where it stands
 

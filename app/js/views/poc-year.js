@@ -19,13 +19,15 @@ import { explain, fileUrl } from '../store.js';
 import { mergeChanges } from '../merge.js';
 import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
+import { accountJeBlock, monthJeBlock, openJeDefaults } from './month-jes.js';
+import { monthJes, jeReady } from '../je/month.js';
 
 const FY_KEY = 'monthclose:poc-fy';
 const SHOW_KEY = 'monthclose:poc-show';
 const ADJ_OPEN_KEY = 'monthclose:poc-adj-open';
 // Accounts whose empty cells turn into an undo "−" once something is attached or typed.
 const UNDOABLE = ['ics', 'cd', 'delap', 'tschetter'];
-const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits', 'fees'];
+const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits', 'fees', 'beginning', 'feesYtd'];
 // Row order of the workbook's "Per Bank Statement" block.
 const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp'];
 const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
@@ -166,9 +168,17 @@ function whatLanded(c, items) {
   return (x) => (PLUMBING.test(x.desc || '') && (x.note || x.a.note) ? x.note || x.a.note : x.desc);
 }
 
-// Where the sheet was scrolled (sideways and down), per fiscal year. Kept for the whole visit so
-// attaching a statement, or going to a month and back, returns you to the same spot.
-const scrollMemory = {};
+// Where the sheet was scrolled (sideways and down), per fiscal year, so attaching a statement or
+// going to a month and back returns you to the same spot. Kept for this browser tab too, so a
+// reload (the platform signing you in again after a save or an upload) comes back there as well.
+const SCROLL_KEY = 'monthclose:poc-scroll';
+const scrollMemory = (() => { try { return JSON.parse(sessionStorage.getItem(SCROLL_KEY) || '{}'); } catch { return {}; } })();
+let scrollSaveQueued = false;
+const keepScroll = () => {
+  if (scrollSaveQueued) return;
+  scrollSaveQueued = true;
+  setTimeout(() => { scrollSaveQueued = false; try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify(scrollMemory)); } catch { /* private mode: memory only */ } }, 250);
+};
 // After a decision made in a pop-up is saved, the sheet redraws and the same pop-up opens again
 // with the new numbers.
 let reopenAfter = null;
@@ -227,6 +237,19 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const months = Array.from({ length: 12 }, (_, i) => addMonths(fyStart(fy), i));
   const cdFor = (m) => ({ ...monthSummary(cds, m), hasData: cds.some((x) => x.earned?.[m]) });
   const glFor = (m) => glFigures({ glActivity: glBy[m], soa: soaBy[m], month: m, config: cfg });
+  // What the JE blocks need: every month, the GL, the edited defaults and the editor. `after`
+  // redraws the pop-up the editor was opened from.
+  const jeCtx = (after, extra = {}) => ({ recs: byMonth, glBy, cds, jeDefaults: cfg.jeDefaults || {}, ...extra,
+    editDefaults: (id) => openJeDefaults(id, { jeDefaults: cfg.jeDefaults || {}, save: async (bid, over) => {
+      // Read the settings fresh so this doesn't write an old copy over someone else's change.
+      const fresh = { ...cfg, ...((await loadPocConfig()) || {}) };
+      fresh.jeDefaults = { ...(fresh.jeDefaults || {}) };
+      if (over) fresh.jeDefaults[bid] = { ...over, by: user, at: nowIso() }; else delete fresh.jeDefaults[bid];
+      try { await savePocConfig(fresh); } catch (err) { throw new Error(explain(err, 'Couldn’t save.')); }
+      Object.assign(cfg, fresh);
+      toast(over ? 'Saved: the new default for every month.' : 'Back to the built-in lines.');
+      await after();
+    } }) });
   // Every deposit against the GL, all months at once (a batch one month uses, another can't).
   const depChecks = depositChecks({ recs: byMonth, glBy, config: cfg });
   const depFor = (m) => ({ deposits: depChecks[m] || null, priorDeposits: depChecks[addMonths(m, -1)] || null });
@@ -238,13 +261,33 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const r = hasData(rec) ? rec : { ...blank(m), ...(rec || {}), source: undefined };
     return { m, rec: hasData(rec) ? rec : null, c: computePoc(r, { prior: byMonth[addMonths(m, -1)], gl, cd: cdFor(m), ...depFor(m) }) };
   });
-  // YTD covers the months whose Cass Operating deposits are in — the main account, so a month
-  // with only a stray figure or two entered doesn't pull its whole GL into the totals yet.
+  // YTD covers the months that have ended: September counts from October 1st. A month in YTD that
+  // is still waiting on a statement or the GL is listed, since its difference will still move.
   const line = (c, id) => c.lines.find((l) => l.id === id);
+  const hasFig = (l) => !!l && (l.rev != null || l.int != null);
   // Where a figure came from, in words. Figures typed in the app carry who entered them; the
   // workbook import's figures don't.
   const sourceOf = (l) => (l.from === 'typed' ? (l.enteredBy ? 'Typed' : 'Workbook import') : l.from || 'Workbook import');
-  const done = cols.filter((x) => x.c && line(x.c, 'cassOp').rev != null);
+  const usedAccounts = SHEET_ORDER.filter((id) => cols.some((x) => x.rec && hasFig(line(x.c, id))));
+  const waitingOn = (x) => {
+    if (!x.rec) return ['nothing attached'];
+    const out = usedAccounts.filter((id) => !hasFig(line(x.c, id))).map(label);
+    if ((x.c.warnings || []).some((w) => ['operating', 'incoming', 'outgoing'].includes(w.kind))) out.push('a Cass statement');
+    if (x.c.diffRev == null) out.push('the GL');
+    return out;
+  };
+  const done = cols.filter((x) => x.m < currentMonth());
+  const stillWaiting = done.map((x) => ({ m: x.m, why: waitingOn(x) })).filter((x) => x.why.length);
+  const openMonthNow = cols.find((x) => x.m === currentMonth());
+  const pctText = (d, base) => (d == null || !base ? '' : `${((d / base) * 100).toFixed(2)}%`);
+  // The YTD variance, in a line above each section: how big the difference is against the GL.
+  const ytdBar = (parts, { ms = done.map((x) => x.m), note = null } = {}) => h('div', { class: 'ytd-bar' },
+    h('strong', {}, `YTD variance, ${ms.length ? `${short(ms[0])}–${short(ms[ms.length - 1])} (${ms.length} month${ms.length === 1 ? '' : 's'})` : 'no months ended yet'}`),
+    ms.length ? parts.map(([k, d, base]) => h('span', { class: 'ytd-part' }, `${k} `, h('strong', { class: Math.abs(d || 0) >= 1 ? 'warn-text' : 'good-text' }, money(d, { dash: false })),
+      base ? h('span', { class: 'muted' }, ` · ${pctText(d, base)} of GL`) : null)) : null,
+    stillWaiting.length ? h('div', { class: 'small warn-text' }, `In YTD but not finished, so the variance will move: ${stillWaiting.map((x) => `${short(x.m)} (${x.why[0] === 'nothing attached' ? 'nothing attached' : `waiting on ${x.why.join(', ')}`})`).join('; ')}.`) : null,
+    openMonthNow ? h('div', { class: 'small muted' }, `${monthName(openMonthNow.m)} counts from ${monthName(addMonths(openMonthNow.m, 1)).split(' ')[0]} 1st.`) : null,
+    note ? h('div', { class: 'small muted' }, note) : null);
 
   // ---- Rows ----------------------------------------------------------------------------------
   const bankRows = SHEET_ORDER.map((id) => {
@@ -525,7 +568,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             { label: 'File', cell: (x) => h('span', { class: 'break' }, x.s.fileName || '') },
             { label: 'Attached', cell: (x) => `${x.s.attachedBy || ''} · ${when(x.s.attachedAt)}` },
             { label: '', cell: (x) => h('div', { class: 'row' },
-              x.ok === false ? statusPill('Doesn’t tie', 'bad') : statusPill('Ties', 'good'),
+              x.ok === false ? statusPill('Doesn’t tie', 'bad') : x.evidence ? statusPill('Kept as evidence', 'neutral') : statusPill('Ties', 'good'),
               x.s.fileKey ? h('button', { class: 'small-btn', onclick: async () => { const u = await fileUrl('statements', x.s.fileKey).catch(() => null); if (u) window.open(u, '_blank', 'noopener'); } }, 'View') : null,
               h('button', { class: 'small-btn danger', onclick: async () => {
                 if (!(await ask('Detach statement', `Detach ${x.s.fileName || x.label}? Its figures come out of ${monthName(m)}.`, { ok: 'Detach', danger: true }))) return;
@@ -551,6 +594,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
                   field('Fees taken out', inp('fees'), c.deposits?.fees?.[id] && b.fees == null
                     ? `Left blank: the GL booked ${money(c.deposits.fees[id].amount, { dash: false })} in fees this month (${c.deposits.fees[id].batches.map((x) => x.batch).join(', ')}, Dr 8070), so that’s added back.`
                     : 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
+                  field('Beginning value (optional)', inp('beginning'), 'From the statement or screenshot. Only a check: the JE books the change from the last ending booked, and flags a beginning that differs.'),
+                  id === 'tschetter' ? field('Expenses year to date', rec.bankStatements?.tschetter ? h('span', {}, money(rec.bankStatements.tschetter.feesYtd, { dash: false }), h('span', { class: 'muted small' }, ' (from the statement)')) : inp('feesYtd'),
+                    'From a statement only (January to December). Filled in, the JE books the fees since they were last booked; left blank (screenshots), only the gain.') : null,
                   field('Revenue', inp('rev')),
                   h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Gain / interest'), h('strong', {}, money(l.int ?? balanceMethodInterest(b, prior?.bank?.[id]), { dash: false }))))]
                 : h('div', { class: 'form-grid' }, field('Revenue (deposits)', inp('rev')), field('Interest', inp('int')), field('Ending balance', inp('ending'))),
@@ -583,6 +629,12 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
+          accountJeBlock(rec, id, jeCtx(() => draw(), { setSentAs: async (x, as) => {
+            rec.paypalSentAs = { ...(rec.paypalSentAs || {}), [x.key]: { as, by: user, at: nowIso() } };
+            logChange(rec, user, `PayPal payment sent ${x.date} ${x.desc} ${money(x.amount, { dash: false })}: booked as ${as === 'refund' ? 'a refund to a donor (4012)' : 'software (8030)'}`);
+            try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); }
+            draw();
+          } })),
           id === 'cd' ? h('p', { class: 'small' }, `CD schedule: ${money(cdFor(m).accrued)} earned in ${monthName(m)}, ${money(cdFor(m).realized)} paid at maturity. `, h('a', { href: '#/cds' }, 'Open the CD schedule')) : null,
 
           h('p', { style: { marginTop: '1.25rem' } }, h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `${monthName(m)}: statements, notes, sign-off →`)));
@@ -878,6 +930,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
               decide(m, (r) => x.detach(r), `Detached ${x.label} statement ${x.s.fileName || ''}`, again, close);
             } }, 'Detach')) },
         ], attached) : h('p', { class: 'muted small' }, 'Nothing attached yet.'),
+
+        monthJeBlock(rec, jeCtx(async () => { reopenAfter = again; carryScroll(topPanelScroll()); const opened = nextDialog(); await rerender(); await opened; close(true); })),
 
         h('h3', {}, 'Timing'),
         h('div', { class: 'form-grid' },
@@ -1353,7 +1407,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const sfYear = (() => {
     const ms = cols.map((x) => x.m).filter((m) => sfBy[m] || glBy[m]?.giving);
     const res = reconcileYear(ms.map((m) => ({ sf: sfBy[m] ? { ...sfBy[m], month: m } : { month: m, methods: {} }, giving: glBy[m]?.giving, found: sfFound(m) })));
-    // What's not explained, added up month by month through the complete months.
+    // What's not explained, added up month by month through the months that have ended.
     let run = 0;
     const doneMs = new Set(done.map((x) => x.m));
     res.forEach((r, i) => { if (sfBy[ms[i]] && doneMs.has(ms[i])) { run = round2(run + r.unexplained); r.running = run; } });
@@ -1365,10 +1419,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     { label: 'Salesforce (by close date)', f: (r) => r.sfTotal, strong: true },
     { label: 'GL giving (4010, 4012, 4015, 4017, 4018)', f: (r) => r.glTotal, strong: true },
     { label: 'Difference (Salesforce − GL)', f: (r) => r.diff, strong: true },
-    { label: '% of GL', f: (r) => r.pct, fmt: pct, noYtd: true, share: true },
+    { label: '% of GL', f: (r) => r.pct, fmt: pct, noYtd: true, share: true, ytdShare: 'gl' },
     { label: 'Explained', f: (r) => r.explained, cls: 'good-text' },
     { label: 'Not explained', f: (r) => r.unexplained, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
-    { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true },
+    { label: '% of the difference explained', f: (r) => (r.diff ? r.explainedShare : null), fmt: pct, noYtd: true, share: true, ytdShare: 'explained' },
     { section: 'Not explained, by channel' },
     ...SF_CHANNELS.map((ch) => ({ label: ch, indent: true, f: (r) => r.rows.find((x) => x.channel === ch)?.unexplained ?? null, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') })),
     // DAF grants paid by check are "Check" in Salesforce and 4018 ("Wire") in the GL, so the two
@@ -1378,9 +1432,17 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     // the GL in Jan–Feb) shows as a running total that rises, then comes back.
     { label: 'Not explained, running total', f: (r) => r.running ?? null, noYtd: true, cls: (v) => (Math.abs(v) >= 1000 ? 'warn-text' : '') },
   ];
-  // YTD over the months the proof of cash counts (Cass deposits in): a month whose GL isn't
-  // finished (September, mid-close) would swamp it.
+  // YTD over the months that have ended (as the proof of cash), with a Salesforce report and GL giving.
   const sfDoneSet = new Set(done.map((x) => x.m));
+  // YTD shares, worked out from the YTD totals (not a sum of the months' percentages).
+  const sfYtdShare = (key) => {
+    const ms = sfYtdMonths();
+    if (!ms.length) return null;
+    const t = (f) => sum(ms, (m) => f(sfYear[m]) || 0);
+    const diff = t((r) => r.diff), gl = t((r) => r.glTotal);
+    if (key === 'gl') return gl ? diff / gl : null;
+    return diff ? t((r) => r.explained) / diff : null;
+  };
   const sfYtdMonths = () => cols.map((x) => x.m).filter((m) => sfBy[m] && glBy[m]?.giving && sfDoneSet.has(m));
   function sfSection() {
     const ms = cols.map((x) => x.m);
@@ -1388,13 +1450,16 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const doneSet = sfDoneSet;
     const both = sfYtdMonths();
     const needGl = ms.some((m) => sfBy[m] && glBy[m] && !glBy[m].giving);
-    const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'The GL isn’t complete for this month yet (no Cass deposits in the proof of cash) — not in YTD', onclick: () => openSfMonth(m) }, v);
+    const cell = (m, v, cls = '') => h('td', { class: `num clickable-cell ${cls}${doneSet.has(m) ? '' : ' muted'}`, title: doneSet.has(m) ? 'Open the month' : 'This month hasn’t ended yet — not in YTD', onclick: () => openSfMonth(m) }, v);
     const ytd = (f) => { const v = both.map((m) => f(sfYear[m])).filter((x) => x != null); return v.length ? round2(sum(v, (x) => x)) : null; };
     const rowsDef = sfRowsDef();
     return h('div', { class: 'sheet-block', style: { marginTop: '1.5rem' } },
       h('div', { class: 'row' }, h('h2', {}, 'Salesforce vs GL — giving'), h('span', { class: 'spacer' }),
         any ? h('button', { class: 'btn', onclick: exportSalesforce, title: 'Download Salesforce vs GL — the months, each channel, every reason with its source, restricted gifts and the largest GL lines — as an Excel workbook' }, 'Export Excel') : null,
         fileButton('Upload Salesforce reports…', '.xlsx,.xls', async (files) => { if (await uploadSalesforce(files)) rerender(); }, { multiple: true })),
+      any ? (() => { const ms = sfYtdMonths(); const t = (f) => round2(sum(ms, (m) => f(sfYear[m]) || 0)); const gl = t((r) => r.glTotal);
+        return ytdBar([['Difference', t((r) => r.diff), gl], ['Not explained', t((r) => r.unexplained), gl]],
+          { ms, note: ms.length !== done.length ? `Only months with a Salesforce report and the GL’s giving by channel count here: ${done.map((x) => x.m).filter((m) => !ms.includes(m)).map(short).join(', ')} ${done.length - ms.length === 1 ? 'is' : 'are'} missing one.` : null }); })() : null,
       h('p', { class: 'muted small' }, 'Salesforce’s gifts by close date and payment method against the GL’s giving in the same channels. Some difference is expected — refunds, month-end timing, grants the GL recognizes when pledged, gifts held back — and each reason the app can put a number on is counted as explained. Click a month for the detail.'),
       !any ? h('p', { class: 'muted' }, 'Upload Salesforce opportunity reports to start: the gift-level report (Amount, Close Date, Payment Method) or the summary by close date and payment method. Several at once is fine — each replaces only the months its date filter covers.')
         : h('div', { class: 'table-wrap sheet' }, h('table', {},
@@ -1402,7 +1467,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
             ms.map((m) => h('th', { class: 'num month' }, h('a', { href: '#/poc', onclick: (e) => { e.preventDefault(); openSfMonth(m); } }, short(m)))))),
           h('tbody', {}, rowsDef.map((d) => (d.section ? h('tr', { class: 'section' }, h('td', { class: 'label-col', colspan: ms.length + 2 }, d.section))
             : h('tr', { class: d.strong ? 'strong' : '' }, h('td', { class: `label-col${d.indent ? ' indent' : ''}` }, d.label),
-              h('td', { class: 'num ytd' }, d.noYtd ? '' : money(ytd(d.f))),
+              h('td', { class: 'num ytd' }, d.ytdShare ? pct(sfYtdShare(d.ytdShare)) : d.noYtd ? '' : money(ytd(d.f))),
               ms.map((m) => { const r = sfYear[m]; if (!r || !sfBy[m]) return h('td', { class: 'num muted' }, sfBy[m] ? '' : '');
                 const v = d.f(r); const cls = typeof d.cls === 'function' ? (v == null ? '' : d.cls(v)) : d.cls || '';
                 return cell(m, v == null ? '' : (d.fmt ? d.fmt(v) : money(v)), cls); }))))))),
@@ -1415,7 +1480,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const share = (v) => (v == null ? null : { v: Math.round(v * 1e6) / 1e6, z: '0.0%' });
     const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · Salesforce opportunities by close date against GL giving (4010, 4012, 4015, 4017, 4018)`;
     const summary = [[`FY${fy} Salesforce vs GL — giving`], [stamp],
-      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months with the GL complete)` : 'no complete months yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
+      [`YTD = ${ytdMs.length ? `${short(ytdMs[0])}–${short(ytdMs[ytdMs.length - 1])} (${ytdMs.length} months ended, with a Salesforce report and GL giving)` : 'no months ended yet'}. Months not in YTD: ${ms.filter((m) => !ytdMs.includes(m)).map(short).join(', ') || 'none'}.`], [],
       ['', 'YTD', ...ms.map((m) => monthName(m))]];
     for (const d of sfRowsDef()) {
       if (d.section) { summary.push([d.section.toUpperCase()]); continue; }
@@ -1790,7 +1855,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const pct = (d, g) => (d == null || !g ? null : { v: Math.round((d / g) * 1e6) / 1e6, z: '0.00%' });
     const at = (f, c) => (f && c ? f(c) ?? null : null);
     const sheetRows = [
-      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} months with Cass Operating deposits in)` : 'no months yet'}`], [],
+      [`FY${fy} Proof of Cash — October ${fy - 1} to September ${fy}`], [stamp], [`YTD = ${done.length ? `${range} (${done.length} months ended)` : 'no months ended yet'}`], [],
       ['', 'YTD Revenue', 'YTD Interest', ...months.flatMap((m) => [`${short(m)} Revenue`, `${short(m)} Interest`])],
     ];
     for (const r of all) {
@@ -1924,8 +1989,45 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     setTimeout(() => window.print(), 50);
   }
 
+  // Export: the sheet as Excel, or printed / saved as PDF.
+  function openExport() {
+    return panel('Export', (body, close) => mount(body,
+      h('p', { class: 'muted small' }, `FY${fy} proof of cash.`),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', onclick: () => { close(true); exportExcel(); }, title: 'The sheet, adjustment detail, sources and checks, for an auditor' }, 'Excel workbook'),
+        h('button', { onclick: () => { close(true); printPdf(); }, title: 'Print, or choose “Save as PDF” in the print dialog' }, 'Print / PDF'))));
+  }
+
+  // Download for Acumatica: pick the month, see which of its JEs can be made, download them.
+  // Starts on the latest month with anything attached (up to this month).
+  const hasAttachments = (m) => {
+    const r = byMonth[m];
+    return !!(r && (r.stripe || Object.keys(r.bankStatements || {}).length || Object.keys(r.statements || {}).length
+      || r.bank?.tschetter?.ending != null || r.bank?.delap?.ending != null)) || cds.some((c) => c.earned?.[m]);
+  };
+  function openJeExport(start = null) {
+    const now = currentMonth();
+    const m = start || [...months].reverse().find((x) => x <= now && hasAttachments(x)) || months.filter((x) => x < now).pop() || months[0];
+    return panel('Download for Acumatica', (body, close) => {
+      const rec = byMonth[m] || blank(m);
+      const again = async () => { close(true); await openJeExport(m); };
+      const jes = monthJes(rec, jeCtx(again));
+      const short = jes.filter((je) => !jeReady(je));
+      mount(body,
+        h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Period'),
+          h('select', { onchange: (e) => { close(true); openJeExport(e.target.value); } },
+            months.map((x) => h('option', { value: x, selected: x === m }, `${monthName(x)}${hasAttachments(x) ? '' : ' (nothing attached)'}`))))),
+        short.length ? h('div', { class: 'notice warn' },
+          h('strong', {}, short.length === jes.length ? `None of ${monthName(m)}’s journal entries can be made yet.` : `${short.length} of ${jes.length} journal entries for ${monthName(m)} can’t be made yet. The download has only the ready ones.`),
+          h('ul', {}, short.map((je) => h('li', {}, `Batch ${je.batch}, ${je.label}: ${je.missing || je.problems[0] || (je.lines.length ? 'doesn’t balance' : 'nothing to book this month')}`))),
+          h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `Open ${monthName(m)} to attach them →`)) : h('div', { class: 'notice' }, `All ${jes.length} journal entries for ${monthName(m)} are ready.`),
+        monthJeBlock(rec, jeCtx(again)));
+    }, { wide: true });
+  }
+
   const remember = () => {
     scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.screen-only .sheet')].map((el) => el.scrollLeft) };
+    keepScroll();
   };
 
   mount(main,
@@ -1934,10 +2036,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Drop a statement on an account’s cell to attach it (the number updates in place); click a cell to see its detail or type figures; click a month to open all of it. `,
           'Dots: green reviewed, blue prepared, amber in progress, grey from the workbook. ✓ confirmed, ! changed since confirmed.')),
       h('div', { class: 'actions' },
-        h('button', { class: 'btn', onclick: exportExcel, title: 'Download the sheet, adjustment detail, sources and checks as an Excel workbook' }, 'Export Excel'),
-        h('button', { class: 'btn', onclick: printPdf, title: 'Print, or choose “Save as PDF” in the print dialog' }, 'Print / PDF'),
+        h('button', { class: 'btn', onclick: openExport, title: 'The sheet as an Excel workbook, or printed / saved as PDF' }, 'Export'),
+        h('button', { class: 'btn', onclick: () => openJeExport(), title: 'A month’s journal entries, in one file for Acumatica’s import' }, 'Download for Acumatica'),
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),
-        h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'),
         h('button', { class: 'btn', onclick: openAliases, title: 'The names the app treats as the same payer on a statement and in the GL' }, 'Payer names'))),
     h('div', { class: 'row tabs' },
       years.map((y) => h('button', { class: y === fy ? 'tab active' : 'tab', onclick: () => pickFy(y), title: `October ${y - 1} – September ${y}` }, `FY${y}`, h('span', { class: 'tab-sub' }, ` Oct ${String(y - 1).slice(2)}–Sep ${String(y).slice(2)}`))),
@@ -1945,7 +2046,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       h('span', { class: 'spacer' }),
       h('div', { class: 'seg' }, [['stacked', 'Revenue above interest'], ['side', 'Side by side (workbook)']].map(([v, l]) =>
         h('button', { class: v === show ? 'active' : '', onclick: () => { store.set(SHOW_KEY, v); rerender(); } }, l)))),
-    h('div', { class: 'screen-only' }, show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')]),
+    h('div', { class: 'screen-only' },
+      ytdBar([['Revenue', ytd((c) => c.diffRev), ytd((c) => c.glRev)], ['Interest', ytd((c) => c.diffInt), ytd((c) => c.glInt)]]),
+      show === 'side' ? sheet(true, true) : [sheet(true, false, 'Revenue'), sheet(false, true, 'Interest')]),
     h('div', { class: 'screen-only' }, sfSection()),
     // What prints: both halves stacked, whichever view is on screen.
     h('div', { class: 'print-only' },
@@ -1997,6 +2100,7 @@ function attachedFor(rec, id) {
   if (id === 'ics' && rec.ics) out.push({ label: 'ICS', s: rec.ics, ok: rec.ics.ties !== false, detach: () => { delete rec.ics; } });
   const b = rec.bankStatements?.[id];
   if (b) out.push({ label: BANK_SOURCES.find((s) => s.id === id)?.label || id, s: b, ok: statementTies(rec, id), detach: () => { delete rec.bankStatements[id]; } });
+  (rec.bankFiles?.[id] || []).forEach((f, i) => out.push({ label: f.scanned ? 'Scanned statement' : 'Screenshot', s: f, evidence: true, detach: () => { rec.bankFiles[id].splice(i, 1); } }));
   return out;
 }
 

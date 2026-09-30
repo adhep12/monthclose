@@ -315,3 +315,7 @@ main.content { margin: 0 auto; }
 .todo-item > summary .todo-detail { margin: .2rem 0 0 1.1rem; font-weight: 400; }
 .todo-item[open] > summary { border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--muted) 6%, transparent); }
 .todo-body { padding: .6rem .75rem; }
+
+/* YTD variance above each section */
+.ytd-bar { display: flex; flex-wrap: wrap; gap: .35rem 1.25rem; align-items: baseline; padding: .55rem .8rem; margin: .75rem 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.ytd-bar > .small { flex-basis: 100%; }
