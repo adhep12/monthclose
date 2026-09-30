@@ -20,6 +20,7 @@ import { mergeChanges } from '../merge.js';
 import { parseSalesforceReport, reconcileYear, CHANNELS as SF_CHANNELS } from '../sf/salesforce.js';
 import { stripeCheckBox, stripeFlagText } from './stripe-check.js';
 import { accountJeBlock, monthJeBlock, openJeDefaults } from './month-jes.js';
+import { monthJes, jeReady } from '../je/month.js';
 
 const FY_KEY = 'monthclose:poc-fy';
 const SHOW_KEY = 'monthclose:poc-show';
@@ -1949,6 +1950,42 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     setTimeout(() => window.print(), 50);
   }
 
+  // Export: the sheet as Excel, or printed / saved as PDF.
+  function openExport() {
+    return panel('Export', (body, close) => mount(body,
+      h('p', { class: 'muted small' }, `FY${fy} proof of cash.`),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', onclick: () => { close(true); exportExcel(); }, title: 'The sheet, adjustment detail, sources and checks, for an auditor' }, 'Excel workbook'),
+        h('button', { onclick: () => { close(true); printPdf(); }, title: 'Print, or choose “Save as PDF” in the print dialog' }, 'Print / PDF'))));
+  }
+
+  // Download for Acumatica: pick the month, see which of its JEs can be made, download them.
+  // Starts on the latest month with anything attached (up to this month).
+  const hasAttachments = (m) => {
+    const r = byMonth[m];
+    return !!(r && (r.stripe || Object.keys(r.bankStatements || {}).length || Object.keys(r.statements || {}).length
+      || r.bank?.tschetter?.ending != null || r.bank?.delap?.ending != null)) || cds.some((c) => c.earned?.[m]);
+  };
+  function openJeExport(start = null) {
+    const now = currentMonth();
+    const m = start || [...months].reverse().find((x) => x <= now && hasAttachments(x)) || months.filter((x) => x < now).pop() || months[0];
+    return panel('Download for Acumatica', (body, close) => {
+      const rec = byMonth[m] || blank(m);
+      const again = async () => { close(true); await openJeExport(m); };
+      const jes = monthJes(rec, jeCtx(again));
+      const short = jes.filter((je) => !jeReady(je));
+      mount(body,
+        h('div', { class: 'form-grid' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Period'),
+          h('select', { onchange: (e) => { close(true); openJeExport(e.target.value); } },
+            months.map((x) => h('option', { value: x, selected: x === m }, `${monthName(x)}${hasAttachments(x) ? '' : ' (nothing attached)'}`))))),
+        short.length ? h('div', { class: 'notice warn' },
+          h('strong', {}, short.length === jes.length ? `None of ${monthName(m)}’s journal entries can be made yet.` : `${short.length} of ${jes.length} journal entries for ${monthName(m)} can’t be made yet. The download has only the ready ones.`),
+          h('ul', {}, short.map((je) => h('li', {}, `Batch ${je.batch}, ${je.label}: ${je.missing || je.problems[0] || (je.lines.length ? 'doesn’t balance' : 'nothing to book this month')}`))),
+          h('button', { class: 'small-btn', onclick: () => { close(true); openMonth(m); } }, `Open ${monthName(m)} to attach them →`)) : h('div', { class: 'notice' }, `All ${jes.length} journal entries for ${monthName(m)} are ready.`),
+        monthJeBlock(rec, jeCtx(again)));
+    }, { wide: true });
+  }
+
   const remember = () => {
     scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.screen-only .sheet')].map((el) => el.scrollLeft) };
   };
@@ -1959,10 +1996,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         h('p', { class: 'muted' }, `October ${fy - 1} – September ${fy}. Drop a statement on an account’s cell to attach it (the number updates in place); click a cell to see its detail or type figures; click a month to open all of it. `,
           'Dots: green reviewed, blue prepared, amber in progress, grey from the workbook. ✓ confirmed, ! changed since confirmed.')),
       h('div', { class: 'actions' },
-        h('button', { class: 'btn', onclick: exportExcel, title: 'Download the sheet, adjustment detail, sources and checks as an Excel workbook' }, 'Export Excel'),
-        h('button', { class: 'btn', onclick: printPdf, title: 'Print, or choose “Save as PDF” in the print dialog' }, 'Print / PDF'),
+        h('button', { class: 'btn', onclick: openExport, title: 'The sheet as an Excel workbook, or printed / saved as PDF' }, 'Export'),
+        h('button', { class: 'btn', onclick: () => openJeExport(), title: 'A month’s journal entries, in one file for Acumatica’s import' }, 'Download for Acumatica'),
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),
-        h('a', { class: 'btn', href: '#/poc/import' }, 'Import workbook'),
         h('button', { class: 'btn', onclick: openAliases, title: 'The names the app treats as the same payer on a statement and in the GL' }, 'Payer names'))),
     h('div', { class: 'row tabs' },
       years.map((y) => h('button', { class: y === fy ? 'tab active' : 'tab', onclick: () => pickFy(y), title: `October ${y - 1} – September ${y}` }, `FY${y}`, h('span', { class: 'tab-sub' }, ` Oct ${String(y - 1).slice(2)}–Sep ${String(y).slice(2)}`))),

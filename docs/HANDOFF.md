@@ -43,7 +43,8 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - notes, sign-off, and an activity log
 - **CD schedule (`#/cds`)**: CDARS statements, the IntraFi export, the rolling workbook import,
   the GL 1150 tie-out, and the interest JE download.
-- **Workbook import (`#/poc/import`)** reads the old workbook. For months already in the app, the
+- **Toolbar:** *Export* (Excel workbook or Print / PDF), *Download for Acumatica* (pick a month, default the latest with anything attached; warns which JEs can't be made yet and why), *Upload GL register*, *Payer names*.
+- **Workbook import (`#/poc/import`)**, no longer on the toolbar (open the address directly), reads the old workbook. For months already in the app, the
   default mode merges only deposits in transit and hand adjustments (see §4).
 
 Fixed assets and depreciation were removed from the UI. The engine is still in `app/js/fa/` and
