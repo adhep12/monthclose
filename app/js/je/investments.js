@@ -7,10 +7,12 @@
 // value but not the fees. "Since it was last booked":
 // - Value: this month's ending less the latest earlier ending the app has (a skipped month is
 //   picked up), less money moved in or out (booked by its own entry, e.g. Fidelity → Cass).
-// - Fees: only a Schwab statement books them. Its expenses are calendar year to date, so the fees
-//   to book are that figure less the year to date on the last statement whose fees were booked
-//   this calendar year. With none in the app, less what the GL booked to 8070 this calendar year.
-//   A screenshot month books no fees; the next statement catches them up.
+// - Fees: only a Schwab statement books them. The advisor bills monthly, but statements come late
+//   and a month is often booked before its statement arrives. The statement's expenses are
+//   calendar year to date, so the fees to book are that figure less what the GL has booked to
+//   8070 in Tschetter entries earlier this calendar year. A screenshot month books no fees; the
+//   next statement catches them up, and so does any month booked short. A month whose GL isn't
+//   in the app can't be counted, so it's flagged and the JE still built.
 
 import { round2 } from '../money.js';
 import { addMonths, lastDayOfMonth } from '../fiscal.js';
@@ -46,19 +48,22 @@ function netDepositsOf(rec, id) {
   return id === 'delap' ? -(fidelityTransfers(rec).total || 0) : 0;
 }
 
-// Fees still to book at `month`, given its statement's year to date.
-export function feesSince(id, month, ytd, { recs = {}, glBy = {} } = {}) {
+// Fees still to book at `month`: its statement's year to date less what the GL booked to 8070
+// in this account's entries from January to last month. `missing` lists the months in that span
+// with no GL in the app; their fees, if any, aren't counted.
+export function feesSince(id, month, ytd, { glBy = {} } = {}) {
   const year = month.slice(0, 4);
-  for (let m = addMonths(month, -1); m.startsWith(year); m = addMonths(m, -1)) {
-    const y = feesYtdOf(recs[m], id);
-    if (y != null) return { fees: round2(ytd - y), first: addMonths(m, 1), basis: `year to date ${ytd.toFixed(2)} less ${y.toFixed(2)} on the ${short(m)} statement` };
-  }
   let booked = 0, last = null;
+  const missing = [];
   for (let m = `${year}-01`; m < month; m = addMonths(m, 1)) {
-    for (const g of glBy[m]?.investmentGl || []) if (g.account === id && g.fee) { booked += g.fee; last = m; }
+    if (!Array.isArray(glBy[m]?.investmentGl)) { missing.push(m); continue; }
+    for (const g of glBy[m].investmentGl) if (g.account === id && g.fee) { booked += g.fee; last = m; }
   }
-  if (last) return { fees: round2(ytd - booked), first: addMonths(last, 1), basis: `year to date ${ytd.toFixed(2)} less ${round2(booked).toFixed(2)} the GL booked to 8070 in ${year} through ${short(last)}` };
-  return { fees: round2(ytd), first: `${year}-01`, basis: `year to date ${ytd.toFixed(2)}, nothing booked yet in ${year}` };
+  booked = round2(booked);
+  const basis = last
+    ? `year to date ${ytd.toFixed(2)} less ${booked.toFixed(2)} the GL booked to 8070 in ${year} through ${short(last)}`
+    : `year to date ${ytd.toFixed(2)}, nothing booked to 8070 yet in ${year}`;
+  return { fees: round2(ytd - booked), booked, first: last ? addMonths(last, 1) : `${year}-01`, basis, missing };
 }
 
 // Returns null when the month has no ending value yet, else
@@ -94,8 +99,9 @@ export function investmentJe(id, month, { recs = {}, glBy = {} } = {}) {
   let fee = null;
   const ytd = cfg.fees ? feesYtdOf(rec, id) : null;
   if (ytd != null) {
-    fee = feesSince(id, month, ytd, { recs, glBy });
+    fee = feesSince(id, month, ytd, { glBy });
     if (fee.fees < 0) problems.push(`Fees come out negative (${fee.basis}). Check the year-to-date expenses.`);
+    if (fee.missing.length) notes.push(`No GL in the app for ${fee.missing.map(short).join(', ')}: any fees booked to 8070 then aren’t counted, so the fees here may be too high. Load that GL to check.`);
     // A statement from last calendar year that wasn't December leaves that year's last months out.
     for (let m = addMonths(`${month.slice(0, 4)}-01`, -1), k = 0; k < 12; m = addMonths(m, -1), k++) {
       if (feesYtdOf(recs[m], id) == null) continue;
