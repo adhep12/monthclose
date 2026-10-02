@@ -99,12 +99,20 @@ const fy = () => ({
 });
 const rows = (je) => je.lines.map((l) => [l.account, l.debit, l.credit]);
 
-test('Tschetter: a statement books the change since last booked and the fees since the last statement', () => {
-  const je = investmentJe('tschetter', '2026-04', { recs: fy() });
+// The GL for Jan-Mar: Jan's statement booked its fees, Feb and Mar were screenshots (gain only).
+const glFy = () => ({
+  '2026-01': { investmentGl: [{ account: 'tschetter', batch: 'GL1', value: 0, gain: 3186.16, fee: 3186.16 }] },
+  '2026-02': { investmentGl: [{ account: 'tschetter', batch: 'GL2', value: 19986.45, gain: 19986.45, fee: 0 }] },
+  '2026-03': { investmentGl: [] },
+});
+
+test('Tschetter: a statement books the change since last booked and its year-to-date fees less what the GL booked', () => {
+  const je = investmentJe('tschetter', '2026-04', { recs: fy(), glBy: glFy() });
   assert.deepEqual(je.problems, []);
+  assert.deepEqual(je.notes, []);
   assert.deepEqual(rows(je), [['1171', 3648.58, 0], ['8999', 0, 13306.42], ['8070', 9657.84, 0]]);
   assert.equal(je.lines[0].tranDescription, 'Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026');
-  assert.match(je.working.feeBasis, /12844\.00 less 3186\.16 on the Jan 2026 statement/);
+  assert.match(je.working.feeBasis, /12844\.00 less 3186\.16 the GL booked to 8070 in 2026 through Jan 2026/);
 });
 
 test('Tschetter: screenshot months book the gain only, from the last ending booked, and flag a beginning that differs', () => {
@@ -114,14 +122,39 @@ test('Tschetter: screenshot months book the gain only, from the last ending book
   assert.match(je.notes.join(' '), /starts at 5164013\.51, not the 5154602\.05 last booked/);
 });
 
-test('Tschetter: fees already booked come from the GL when the earlier statement isn’t in the app', () => {
-  const recs = fy(); delete recs['2026-01'].bank.tschetter.feesYtd;
-  const glBy = { '2026-01': { investmentGl: [{ account: 'tschetter', batch: 'GL1', value: 0, gain: 3186.16, fee: 3186.16 }] } };
-  const je = investmentJe('tschetter', '2026-04', { recs, glBy });
-  assert.equal(je.working.fees, 9657.84);
+test('Tschetter: an earlier statement doesn’t count as booked; only the GL does, so a month booked short is caught up', () => {
+  // Jan's statement is in the app, but the GL booked only part of its fees.
+  const glBy = glFy(); glBy['2026-01'].investmentGl[0].fee = 3000;
+  const je = investmentJe('tschetter', '2026-04', { recs: fy(), glBy });
+  assert.equal(je.working.fees, 9844);
   assert.equal(je.working.feeMonths, 'Feb-Apr 2026');
   // Nothing booked this year at all: the whole year to date.
-  assert.equal(investmentJe('tschetter', '2026-04', { recs }).working.feeMonths, 'Jan-Apr 2026');
+  const none = { '2026-01': { investmentGl: [] }, '2026-02': { investmentGl: [] }, '2026-03': { investmentGl: [] } };
+  const all = investmentJe('tschetter', '2026-04', { recs: fy(), glBy: none });
+  assert.equal(all.working.fees, 12844);
+  assert.equal(all.working.feeMonths, 'Jan-Apr 2026');
+  // This month's own GL entry isn't counted: rebuilding after posting gives the same JE.
+  const posted = glFy(); posted['2026-04'] = { investmentGl: [{ account: 'tschetter', batch: 'GL4', value: 3648.58, gain: 13306.42, fee: 9657.84 }] };
+  assert.equal(investmentJe('tschetter', '2026-04', { recs: fy(), glBy: posted }).working.fees, 9657.84);
+});
+
+test('Tschetter: fees follow the calendar year like the statement, across the October fiscal year start', () => {
+  // Nov 2026 is in fiscal 2027; the statement's year to date still runs from January 2026.
+  const recs = { '2026-10': { month: '2026-10', ...tsch({ ending: 100 }) }, '2026-11': { month: '2026-11', ...tsch({ ending: 100, feesYtd: 36000 }) } };
+  const glBy = {};
+  for (let m = 1; m <= 10; m++) glBy[`2026-${String(m).padStart(2, '0')}`] = { investmentGl: m === 9 ? [{ account: 'tschetter', batch: 'GL9', value: 0, gain: 0, fee: 29154.39 }] : m === 10 ? [{ account: 'tschetter', batch: 'GL10', value: 0, gain: 0, fee: 3300 }] : [] };
+  glBy['2025-12'] = { investmentGl: [{ account: 'tschetter', batch: 'GLD', value: 0, gain: 0, fee: 5000 }] }; // last calendar year: not counted
+  const je = investmentJe('tschetter', '2026-11', { recs, glBy });
+  assert.equal(je.working.fees, round(36000 - 29154.39 - 3300));
+  assert.equal(je.working.feeMonths, 'Nov 2026');
+});
+
+test('Tschetter: a month with no GL in the app is flagged, and the JE is still built', () => {
+  const glBy = glFy(); delete glBy['2026-02']; delete glBy['2026-03'];
+  const je = investmentJe('tschetter', '2026-04', { recs: fy(), glBy });
+  assert.deepEqual(je.problems, []);
+  assert.equal(je.working.fees, 9657.84);
+  assert.match(je.notes.join(' '), /No GL in the app for Feb 2026, Mar 2026: any fees booked to 8070 then aren’t counted/);
 });
 
 test('Tschetter: a month with no value is picked up by the next; a statement from last year short of December is flagged', () => {
@@ -213,7 +246,7 @@ test('Edited defaults: account, subaccount and description replace the built-in 
   const fees = je.lines.find((l) => l.key === 'cardFees');
   assert.deepEqual([fees.account, fees.sub, fees.tranDescription], ['8590', '014-000', 'Card fees']);
   assert.equal(importRows([je])[1][3].v, 1201);
-  const t = monthJes(fy()['2026-04'], { recs: fy(), jeDefaults }).find((x) => x.id === 'tschetter');
+  const t = monthJes(fy()['2026-04'], { recs: fy(), glBy: glFy(), jeDefaults }).find((x) => x.id === 'tschetter');
   assert.deepEqual(t.lines.map((l) => l.tranDescription), ['Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026',
     'Unrealized Gains - Tschetter Group 4-30-2026, fees Feb-Apr 2026', 'Tschetter advisor fees, fees Feb-Apr 2026']);
 });

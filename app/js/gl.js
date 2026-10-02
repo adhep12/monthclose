@@ -178,7 +178,8 @@ function stripeReclasses(batches) {
 
 // Management fees taken out of an investment account. The GL books the month's gain from the
 // statement's change in value, grossed up by the fee (Cr 8999), with the fee as an expense
-// (Dr 8070) — so the fee is added back to the change in value. Tschetter bills quarterly.
+// (Dr 8070) — so the fee is added back to the change in value. Tschetter bills monthly, but its
+// fees are booked only when a statement arrives (je/investments.js).
 export const INVESTMENT_GL = { 1170: 'delap', 1171: 'tschetter' };
 function investmentFees(batches) {
   const out = [];
