@@ -138,6 +138,17 @@ test('Tschetter: an earlier statement doesn’t count as booked; only the GL doe
   assert.equal(investmentJe('tschetter', '2026-04', { recs: fy(), glBy: posted }).working.fees, 9657.84);
 });
 
+test('Tschetter: fees follow the calendar year like the statement, across the October fiscal year start', () => {
+  // Nov 2026 is in fiscal 2027; the statement's year to date still runs from January 2026.
+  const recs = { '2026-10': { month: '2026-10', ...tsch({ ending: 100 }) }, '2026-11': { month: '2026-11', ...tsch({ ending: 100, feesYtd: 36000 }) } };
+  const glBy = {};
+  for (let m = 1; m <= 10; m++) glBy[`2026-${String(m).padStart(2, '0')}`] = { investmentGl: m === 9 ? [{ account: 'tschetter', batch: 'GL9', value: 0, gain: 0, fee: 29154.39 }] : m === 10 ? [{ account: 'tschetter', batch: 'GL10', value: 0, gain: 0, fee: 3300 }] : [] };
+  glBy['2025-12'] = { investmentGl: [{ account: 'tschetter', batch: 'GLD', value: 0, gain: 0, fee: 5000 }] }; // last calendar year: not counted
+  const je = investmentJe('tschetter', '2026-11', { recs, glBy });
+  assert.equal(je.working.fees, round(36000 - 29154.39 - 3300));
+  assert.equal(je.working.feeMonths, 'Nov 2026');
+});
+
 test('Tschetter: a month with no GL in the app is flagged, and the JE is still built', () => {
   const glBy = glFy(); delete glBy['2026-02']; delete glBy['2026-03'];
   const je = investmentJe('tschetter', '2026-04', { recs: fy(), glBy });

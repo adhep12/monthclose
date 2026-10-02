@@ -10,7 +10,8 @@
 // - Fees: only a Schwab statement books them. The advisor bills monthly, but statements come late
 //   and a month is often booked before its statement arrives. The statement's expenses are
 //   calendar year to date, so the fees to book are that figure less what the GL has booked to
-//   8070 in Tschetter entries earlier this calendar year. A screenshot month books no fees; the
+//   8070 in Tschetter entries earlier this calendar year (not fiscal: the GL is read into calendar
+//   months, so the two line up). A screenshot month books no fees; the
 //   next statement catches them up, and so does any month booked short. A month whose GL isn't
 //   in the app can't be counted, so it's flagged and the JE still built.
 
