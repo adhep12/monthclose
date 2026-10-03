@@ -68,8 +68,19 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
     in `governance-docs`, files in `governance-files`. Open: board meeting frequency and the COI
     filer list (the page expects everyone who has ever filed to file again each year).
   - Statements are stored as `{Account}_{YYYY-MM}` on upload (`app/js/naming.js`), tagged
-    `{ category: 'statement', account, period }` with the original name kept, for the audit
-    binder export (not built yet).
+    `{ category: 'statement', account, period }` with the original name kept. Uploaded TBs and AP
+    agings are kept as received in `source-files` (`TrialBalance_YYYY-MM`, `APAging_YYYY-MM`).
+  - **Audit binder (`#/binder`)**: three optional filters (category — with schedules split by
+    topic: cash, AP, investments, restricted, fixed assets —, account, period: FY, month or all)
+    and one zip named for them (`BP_CassOperating_FY26.zip`, `BP_FullAuditBinder_FY26.zip`).
+    Stored files go in as they are (statements attached under the bank's name are renamed in the
+    zip); schedules (proof of cash workbook, cash tie-out, AP tie-out, CD schedule, restricted
+    roll-forward), each month's JEs and TBs with no stored file are made at download
+    (`app/js/binder/make.js`). Every zip has `Index.csv` and `README.txt`; a file that couldn't be
+    fetched is listed there with the reason instead of failing the download. The zip is written
+    by `app/js/zip.js` (stored, no compression). Not checked on the platform yet: fetching a
+    stored file from its `files.url()` link inside the app — if the platform refuses it, Index.csv
+    will say so for every stored file. Fixed assets have no schedules (module parked).
 
 Fixed assets and depreciation were removed from the UI. The engine is still in `app/js/fa/` and
 its tests still run.
@@ -100,6 +111,7 @@ its tests still run.
 | Restricted funds | `app/js/views/restricted.js`, `app/js/restricted/funds.js` (grant activity kept by `app/js/gl.js`) |
 | Governance documents | `app/js/views/governance.js`, `app/js/governance/docs.js` |
 | Stored file names | `app/js/naming.js` |
+| Audit binder | `app/js/views/binder.js`, `app/js/binder/items.js` (what's in it, filters, names), `app/js/binder/make.js` (schedules made at download), `app/js/zip.js` |
 
 ## 2. The rules, and why
 
@@ -343,7 +355,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (118 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (123 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

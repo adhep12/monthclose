@@ -21,7 +21,7 @@ export default async function (main, { user, rerender }) {
   const nowFy = fiscalYear(currentMonth());
   const fy = Number(pref(FY_KEY)) || nowFy;
   const type = pref(TYPE_KEY) || '';
-  const years = [...new Set([nowFy, fy, ...docs.map(docFy).filter(Boolean)])].sort((a, b) => b - a);
+  const years = [...new Set([nowFy, nowFy - 1, nowFy - 2, fy, ...docs.map(docFy).filter(Boolean)])].sort((a, b) => b - a);
   const s = governanceStatus(docs, fy, today());
   const set = (k, v) => { pref(k, v); rerender(); };
 

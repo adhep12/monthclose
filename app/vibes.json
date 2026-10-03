@@ -42,6 +42,9 @@
     },
     "governance-files": {
       "access": "shared"
+    },
+    "source-files": {
+      "access": "shared"
     }
   }
 }

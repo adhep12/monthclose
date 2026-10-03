@@ -12,6 +12,7 @@
 //   restricted-funds  restricted funds typed in (not the language funds, which come from the GL), key = fund id
 //   governance-docs   board minutes, COI disclosures, signatory lists, CC compilations; key = doc id
 //   governance-files  (files) the documents themselves
+//   source-files    (files) uploaded trial balances and AP agings as received, for the audit binder
 
 import * as store from './store.js';
 import { DEFAULT_FA_CONFIG } from './fa/je.js';
@@ -183,6 +184,8 @@ export async function saveSfGiving(rec) {
 }
 
 // ---- Balance sheet checks: AP aging, cash ---------------------------------------------------
+
+export const SOURCE_FILES = 'source-files';
 
 export const DEFAULT_BS_CONFIG = {
   pettyCash: 300,            // 1025 never moves

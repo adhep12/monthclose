@@ -14,6 +14,7 @@ const routes = [
   [/^#\/balance-sheet$/, () => import('./views/balance-sheet.js')],
   [/^#\/restricted$/, () => import('./views/restricted.js')],
   [/^#\/governance$/, () => import('./views/governance.js')],
+  [/^#\/binder$/, () => import('./views/binder.js')],
 ];
 
 const TABS = [
@@ -22,6 +23,7 @@ const TABS = [
   ['#/balance-sheet', 'Balance sheet', (hash) => hash.startsWith('#/balance-sheet')],
   ['#/restricted', 'Restricted funds', (hash) => hash.startsWith('#/restricted')],
   ['#/governance', 'Governance', (hash) => hash.startsWith('#/governance')],
+  ['#/binder', 'Audit binder', (hash) => hash.startsWith('#/binder')],
 ];
 
 let user = null;

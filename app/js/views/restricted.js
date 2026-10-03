@@ -4,7 +4,7 @@
 
 import { h, mount, table, toast, fileButton, panel, ask, field, select } from '../ui.js';
 import { listGlActivity, loadRestrictedConfig, saveRestrictedConfig, listRestrictedFunds, saveRestrictedFund, deleteRestrictedFund, loadConfig } from '../data.js';
-import { runFunds, span, totals, restrictedJe, openingNotes, grantActivity, GENERAL } from '../restricted/funds.js';
+import { runFunds, span, totals, restrictedJe, openingNotes, grantActivity, rollForwardSheets, GENERAL } from '../restricted/funds.js';
 import { uploadGlRegister } from '../gl-upload.js';
 import { downloadJes } from './month-jes.js';
 import { jeTable } from './je-table.js';
@@ -58,20 +58,7 @@ export default async function (main, { user, rerender }) {
   const je = { batch: JE_BATCH, id: 'restricted', label: 'Restricted net assets', description: JE_DESCRIPTION, date: lastDayOfMonth(month), lines: jeLines, problems: [], notes: [], balanced: isBalanced(jeLines) };
 
   async function exportExcel() {
-    const months = result.months.filter((m) => m >= from && m <= month);
-    const rows = [['Fund', 'Kind', 'Grant codes', 'Month', 'Opening', 'Gifts', 'Released', 'Ending']];
-    for (const f of result.funds) for (const m of months) {
-      const r = f.rows[m];
-      if (r.open || r.add || r.rel || r.end) rows.push([f.name, f.kind, f.codes.join(' '), short(m), r.open, r.add, r.rel, r.end]);
-    }
-    const sum = [['Fund', 'Kind', 'Grant codes', `Opening ${short(from)}`, 'Gifts', 'Released', `Ending ${short(month)}`]];
-    for (const f of funds) { const s = span(f, from, month); sum.push([f.name, f.kind, f.codes.join(' '), s.open, s.add, s.rel, s.end]); }
-    sum.push(['Total', '', '', t.open, t.add, t.rel, t.end], [], [`Schedule runs from ${short(start)}, the first month with a GL register; every fund starts at zero there.`],
-      ...notes.map((n) => [n.text]), ...(gaps.length ? [[`No GL for ${gaps.map(short).join(', ')}: those months count as no activity.`]] : []),
-      ['Language funds: Translation Support (4017) gifts by grant code, released by spending (expense accounts) on the same language’s codes. Gifts with no language are general localization, released by translation spending the language’s own fund didn’t cover.']);
-    await downloadWorkbook(`Restricted funds ${short(from)} to ${short(month)}.xlsx`, [
-      { name: 'Summary', rows: sum, cols: [26, 10, 22, 16, 14, 14, 16] },
-      { name: 'By month', rows, cols: [26, 10, 22, 10, 14, 14, 14, 14] }]);
+    await downloadWorkbook(`Restricted funds ${short(from)} to ${short(month)}.xlsx`, rollForwardSheets(result, from, month));
   }
 
   mount(main,

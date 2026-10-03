@@ -2,7 +2,7 @@
 // cash has, petty cash, the clearing account) and Accounts Payable against the AP aging report.
 
 import { h, mount, table, toast, fileButton, statusPill } from '../ui.js';
-import { loadTrialBalance, saveTrialBalance, loadPocMonth, loadCds, listApAging, saveApAging, loadBsConfig } from '../data.js';
+import { loadTrialBalance, saveTrialBalance, loadPocMonth, loadCds, listApAging, saveApAging, loadBsConfig, SOURCE_FILES } from '../data.js';
 import { parseTrialBalance, parseTrialBalanceText, looksLikeTrialBalance } from '../tb.js';
 import { parseApAging, apTieOut, AP_ACCOUNT, BUCKETS } from '../bs/ap-aging.js';
 import { cashTieOut, PETTY_CASH, CLEARING } from '../bs/cash.js';
@@ -10,7 +10,8 @@ import { autoFigures, BANK_SOURCES } from '../poc/calc.js';
 import { monthSummary } from '../cd/schedule.js';
 import { readWorkbook } from '../xlsx-io.js';
 import { pdfLines } from '../pdf-text.js';
-import { explain } from '../store.js';
+import { explain, uploadFile, filesAvailable } from '../store.js';
+import { storedName, renamed } from '../naming.js';
 import { nowIso, when } from '../audit.js';
 import { money } from '../money.js';
 import { monthName, addMonths, currentMonth } from '../fiscal.js';
@@ -27,7 +28,7 @@ async function balancesAt(month) {
 }
 
 // Statement ending balances proof of cash has for the month, by its account id.
-function statementEndings(rec, cds, month) {
+export function statementEndings(rec, cds, month) {
   if (!rec && !cds.length) return {};
   const cd = { ...monthSummary(cds, month), hasData: cds.some((x) => x.earned?.[month]) };
   const auto = rec ? autoFigures(rec, cd) : cd.hasData ? autoFigures({}, cd) : {};
@@ -37,6 +38,15 @@ function statementEndings(rec, cds, month) {
     if (v != null) out[s.id] = v;
   }
   return out;
+}
+
+// The uploaded report itself, kept for the audit binder as {Report}_{YYYY-MM}. If it can't be
+// stored (local preview, a storage error) its figures are still saved.
+async function keepSource(file, report, month) {
+  const fileName = storedName(report, month, file.name);
+  let fileKey = null;
+  if (filesAvailable()) { try { fileKey = (await uploadFile(SOURCE_FILES, renamed(file, fileName)))?.key || null; } catch { /* figures still saved */ } }
+  return { fileName, originalName: file.name, fileKey };
 }
 
 export async function readTrialBalance(file) {
@@ -62,7 +72,7 @@ export default async function (main, { user, rerender }) {
   async function onTrialBalance(file) {
     try {
       const t = await readTrialBalance(file);
-      await saveTrialBalance({ ...t, fileName: file.name, uploadedBy: user, uploadedAt: nowIso() });
+      await saveTrialBalance({ ...t, ...(await keepSource(file, 'TrialBalance', t.month)), uploadedBy: user, uploadedAt: nowIso() });
       toast(`Trial balance for ${monthName(t.month)} saved.`);
       pickMonth(t.month);
     } catch (err) { toast(explain(err, `${file.name}:`), 'error'); }
@@ -71,7 +81,7 @@ export default async function (main, { user, rerender }) {
     try {
       const { XLSX, wb } = await readWorkbook(file);
       const a = parseApAging(XLSX, wb);
-      await saveApAging({ ...a, fileName: file.name, uploadedBy: user, uploadedAt: nowIso() });
+      await saveApAging({ ...a, ...(await keepSource(file, 'APAging', a.month)), uploadedBy: user, uploadedAt: nowIso() });
       toast(`AP aging for ${monthName(a.month)} saved.`);
       pickMonth(a.month);
     } catch (err) { toast(explain(err, `${file.name}:`), 'error'); }

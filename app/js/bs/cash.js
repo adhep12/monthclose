@@ -34,3 +34,13 @@ export function cashTieOut(balances, endings = {}, cfg = { pettyCash: 300, clear
     flags: rows.filter((r) => r.flag),
   };
 }
+
+// Every account's balance at the end of `month` from the trial balances on hand (by month): that
+// month's ending balances, or the next month's beginning ones. Null when neither is there.
+export function balancesFrom(tbBy, month, next) {
+  const tb = tbBy[month];
+  if (tb) return { tb, balances: Object.fromEntries(Object.entries(tb.accounts).map(([a, x]) => [a, { description: x.description, end: x.end }])) };
+  const n = tbBy[next];
+  if (n) return { tb: n, balances: Object.fromEntries(Object.entries(n.accounts).map(([a, x]) => [a, { description: x.description, end: x.begin }])) };
+  return { tb: null, balances: null };
+}

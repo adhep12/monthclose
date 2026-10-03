@@ -189,3 +189,40 @@ export function openingNotes(result) {
   }
   return notes;
 }
+
+const shortMonth = (m) => { const [y, mo] = m.split('-').map(Number); return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][mo - 1]} ${y}`; };
+
+// The roll-forward as a workbook (sheets for downloadWorkbook / workbookBytes): a summary by fund
+// for `from`–`to`, then every fund month by month, with how it's worked out.
+export function rollForwardSheets(result, from, to) {
+  const months = result.months.filter((m) => m >= from && m <= to);
+  const live = result.funds.filter((f) => { const s = span(f, from, to); return s.open || s.add || s.rel || s.end; });
+  const t = totals(live, from, to);
+  const byMonth = [['Fund', 'Kind', 'Grant codes', 'Month', 'Opening', 'Gifts', 'Released', 'Ending']];
+  for (const f of result.funds) for (const m of months) {
+    const r = f.rows[m];
+    if (r.open || r.add || r.rel || r.end) byMonth.push([f.name, f.kind, f.codes.join(' '), shortMonth(m), r.open, r.add, r.rel, r.end]);
+  }
+  const start = result.months[0];
+  const gaps = result.gaps.filter((m) => m >= from && m <= to);
+  const sum_ = [['Fund', 'Kind', 'Grant codes', `Opening ${shortMonth(from)}`, 'Gifts', 'Released', `Ending ${shortMonth(to)}`]];
+  for (const f of live) { const x = span(f, from, to); sum_.push([f.name, f.kind, f.codes.join(' '), x.open, x.add, x.rel, x.end]); }
+  sum_.push(['Total', '', '', t.open, t.add, t.rel, t.end], [], [`Schedule runs from ${shortMonth(start)}, the first month with a GL register; every fund starts at zero there.`],
+    ...openingNotes(result).map((n) => [n.text]), ...(gaps.length ? [[`No GL for ${gaps.map(shortMonth).join(', ')}: those months count as no activity.`]] : []),
+    ['Language funds: Translation Support (4017) gifts by grant code, released by spending (expense accounts) on the same language’s codes. Gifts with no language are general localization, released by translation spending the language’s own fund didn’t cover.']);
+  return [
+    { name: 'Summary', rows: sum_, cols: [26, 10, 22, 16, 14, 14, 16] },
+    { name: 'By month', rows: byMonth, cols: [26, 10, 22, 10, 14, 14, 14, 14] },
+  ];
+}
+
+// The GL months loaded, as the schedule needs them: grant activity by month, the months loaded
+// before grants were kept, and the schedule run from the first month to `end`.
+export function fundsFromGl(gls, others = [], end = null) {
+  const activity = {}, stale = [];
+  for (const g of gls) { const a = grantActivity(g); if (a) activity[g.month] = a; else stale.push(g.month); }
+  const loaded = Object.keys(activity).sort();
+  if (!loaded.length) return { activity, stale, loaded, result: null };
+  const last = end && end > loaded[loaded.length - 1] ? end : loaded[loaded.length - 1];
+  return { activity, stale, loaded, result: runFunds({ activity, others, start: loaded[0], end: last }) };
+}
