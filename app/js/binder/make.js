@@ -9,6 +9,9 @@ import { monthSummary, fyMonths } from '../cd/schedule.js';
 import { rollForwardSheets, restrictedJe } from '../restricted/funds.js';
 import { monthJes, jeReady, importRows, IMPORT_COL_WIDTHS } from '../je/month.js';
 import { isBalanced } from '../fa/je.js';
+import { tieOut, stripeReclass, monthInputs, inventoryJes } from '../inventory/tieout.js';
+import { faSheets, firstKnownMonth } from '../fa/rollforward.js';
+import { faJes, adBalances } from '../views/assets.js';
 import { addMonths, lastDayOfMonth, monthName } from '../fiscal.js';
 
 const short = (m) => monthName(m, { short: true });
@@ -75,6 +78,28 @@ export const MAKERS = {
     return workbookBytes([{ name: 'Acumatica', rows: importRows(ready), cols: IMPORT_COL_WIDTHS }]);
   },
 
+  async inventory(item, ctx, months) {
+    const tie = [['Month', 'Item', 'Account', 'Warehouse units', 'Portland units', 'Units', 'Cost per unit', 'Ending value', 'GL before', 'Adjustment', 'Departments', 'Perks']];
+    const dept = [['Month', 'Department', 'Item', 'Quantity', 'Cost', 'Account', 'Subaccount', 'Note']];
+    const sales = [['Month', 'Sales account', 'Product sales', 'Discounts', 'Reclassed from Stripe Donations']];
+    for (const m of months) {
+      const rec = ctx.invBy[m];
+      if (!rec) continue;
+      const t = tieOut(inventoryMonth(m, ctx), ctx.invCfg);
+      for (const it of t.items) tie.push([short(m), it.name, it.account, it.warehouse, it.pdx, it.units, it.unitCost == null ? null : { v: it.unitCost, z: '0.0000' }, it.value, it.prior, it.diff, it.allocated, it.perks]);
+      for (const d of rec.distribution || []) dept.push([short(m), d.dept, d.item, d.qty, d.cost, d.account || 'none', d.sub, d.info]);
+      for (const g of stripeReclass(rec.sales || {}, ctx.invCfg).groups.filter((x) => x.amount)) sales.push([short(m), `${g.account} ${g.label}`, g.sales, g.discounts || null, g.amount]);
+    }
+    return workbookBytes([{ name: 'Tie-out', rows: tie, cols: [10, 30, 8, 12, 12, 10, 12, 14, 14, 13, 13, 13] }, { name: 'Departments', rows: dept, cols: [10, 30, 50, 9, 12, 9, 11, 30] }, { name: 'Stripe reclass', rows: sales, cols: [10, 30, 14, 12, 16] },
+      { name: 'About', rows: [['Units: the warehouse export’s “Available Primary” plus the Portland count. Value: first in, first out, from the purchases set up in the app (or average, per item).'], ['Adjustment: ending value less the GL before adjusting; departments’ share from the Merch Distribution Sheet, the rest to Patron Care perks (020-320).'], ['Stripe reclass: merch sold through the website (Salesforce product sales), out of Stripe Donations into the merch sales accounts; discounts come off poster collection book sales.']], cols: [130] }]);
+  },
+
+  async fa(item, ctx, months) {
+    const known = firstKnownMonth(ctx.assets);
+    const from = known && known > months[0] ? known : months[0];
+    return workbookBytes(faSheets(ctx.assets, from, months[months.length - 1], ctx.faCfg));
+  },
+
   async tb(item, ctx) {
     const tb = ctx.tbBy[item.month];
     const rows = [[`Trial Balance Summary, period ${tb.period} (${monthName(tb.month)})`], [`From ${tb.fileName || 'an upload'}${tb.runAt ? `, run ${tb.runAt}` : ''}`], [],
@@ -84,10 +109,26 @@ export const MAKERS = {
   },
 };
 
-// The month's JEs that are ready (proof of cash's, and the restricted funds reclass).
+function inventoryMonth(m, ctx) {
+  const { balances } = balancesFrom(ctx.tbBy, addMonths(m, -1), m);
+  const rec = ctx.invBy[m] || { month: m };
+  const lastPdx = Object.values(ctx.invBy).filter((r) => r.month < m && r.pdx).sort((a, b) => a.month.localeCompare(b.month)).pop();
+  return monthInputs({ ...rec, pdx: rec.pdx || lastPdx?.pdx || {} }, balances, ctx.invCfg);
+}
+
+// The month's JEs that are ready: proof of cash's, the restricted funds reclass, inventory, and
+// fixed assets.
 export function monthJesFor(m, ctx) {
   const rec = ctx.recBy[m] || { month: m };
   const jes = monthJes(rec, { recs: ctx.recBy, glBy: ctx.glBy, cds: ctx.cds, jeDefaults: ctx.jeDefaults }).filter(jeReady);
+  if (ctx.invBy?.[m]) {
+    const r = ctx.invBy[m];
+    const inv = inventoryJes(tieOut(inventoryMonth(m, ctx), ctx.invCfg), stripeReclass(r.sales || {}, ctx.invCfg), lastDayOfMonth(m), ctx.invCfg)
+      .map((je) => ({ ...je, balanced: isBalanced(je.lines) }));
+    jes.push(...inv.filter(jeReady));
+  }
+  const known = ctx.assets?.length ? firstKnownMonth(ctx.assets) : null;
+  if (known && m >= known) jes.push(...faJes(ctx.assets, m, ctx.faCfg, adBalances(ctx.tbBy, addMonths(m, -1), ctx.faCfg)).filter(jeReady));
   if (ctx.gl.result?.months.includes(m)) {
     const lines = restrictedJe(ctx.gl.result, m, ctx.restrictedCfg, ctx.names);
     const je = { batch: 6, id: 'restricted', label: 'Restricted net assets', description: 'Restricted Net Assets', date: lastDayOfMonth(m), lines, problems: [], balanced: isBalanced(lines) };

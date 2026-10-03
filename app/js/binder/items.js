@@ -23,6 +23,7 @@ export const TOPICS = [
   ['ap', 'Accounts payable'],
   ['investments', 'Investments (CD schedule)'],
   ['restricted', 'Restricted funds'],
+  ['inventory', 'Inventory'],
   ['assets', 'Fixed assets'],
 ];
 const FOLDERS = { statement: '01 Statements', schedule: '02 Schedules', governance: '03 Governance', je: '04 Journal entries', tb: '05 Trial balances' };
@@ -85,7 +86,7 @@ export function trialBalanceItems(tbs = []) {
 
 // Schedules and JEs made at download time, one per fiscal year (or per month, for JEs), for the
 // fiscal years and months the app has anything for.
-export function madeItems({ pocFys = [], cashMonths = [], apMonths = [], agings = [], cdFys = [], restrictedFys = [], jeMonths = [] }) {
+export function madeItems({ pocFys = [], cashMonths = [], apMonths = [], agings = [], cdFys = [], restrictedFys = [], jeMonths = [], inventoryMonths = [], inventoryFiles = [], faMonths = [] }) {
   const out = [];
   for (const fy of pocFys) out.push({ category: 'schedule', topic: 'cash', fy, months: fyMonths(fy), make: 'poc', folder: `${FOLDERS.schedule}/Proof of cash`, name: `ProofOfCash_FY${fy}.xlsx`, label: `Proof of cash FY${fy}` });
   for (const fy of [...new Set(cashMonths.map(fiscalYear))]) out.push({ category: 'schedule', topic: 'cash', fy, months: cashMonths.filter((m) => fiscalYear(m) === fy), make: 'cash', folder: `${FOLDERS.schedule}/Cash tie-out`, name: `CashTieOut_FY${fy}.xlsx`, label: `Cash tie-out FY${fy}` });
@@ -93,6 +94,9 @@ export function madeItems({ pocFys = [], cashMonths = [], apMonths = [], agings 
   for (const a of agings.filter((x) => x.fileKey)) out.push({ category: 'schedule', topic: 'ap', fy: fiscalYear(a.month), months: [a.month], file: { col: 'source-files', key: a.fileKey }, folder: `${FOLDERS.schedule}/Accounts payable`, name: a.fileName, label: `AP aging report · ${a.month}` });
   for (const fy of cdFys) out.push({ category: 'schedule', topic: 'investments', fy, months: fyMonths(fy), make: 'cds', folder: `${FOLDERS.schedule}/CD schedule`, name: `CDSchedule_FY${fy}.xlsx`, label: `CD schedule FY${fy}` });
   for (const fy of restrictedFys) out.push({ category: 'schedule', topic: 'restricted', fy, months: fyMonths(fy), make: 'restricted', folder: `${FOLDERS.schedule}/Restricted funds`, name: `RestrictedFunds_FY${fy}.xlsx`, label: `Restricted funds roll-forward FY${fy}` });
+  for (const fy of [...new Set(inventoryMonths.map(fiscalYear))]) out.push({ category: 'schedule', topic: 'inventory', fy, months: inventoryMonths.filter((m) => fiscalYear(m) === fy), make: 'inventory', folder: `${FOLDERS.schedule}/Inventory`, name: `InventoryTieOut_FY${fy}.xlsx`, label: `Inventory tie-out FY${fy}` });
+  for (const f of inventoryFiles) out.push({ category: 'schedule', topic: 'inventory', fy: fiscalYear(f.month), months: [f.month], file: { col: 'source-files', key: f.fileKey }, folder: `${FOLDERS.schedule}/Inventory`, name: f.fileName, label: `Warehouse count · ${f.month}` });
+  for (const fy of [...new Set(faMonths.map(fiscalYear))]) out.push({ category: 'schedule', topic: 'assets', fy, months: faMonths.filter((m) => fiscalYear(m) === fy), make: 'fa', folder: `${FOLDERS.schedule}/Fixed assets`, name: `FixedAssets_FY${fy}.xlsx`, label: `Fixed asset roll-forward and listing FY${fy}` });
   for (const m of jeMonths) out.push({ category: 'je', fy: fiscalYear(m), months: [m], make: 'jes', month: m, folder: FOLDERS.je, name: `JEs_${m}.xlsx`, label: `Journal entries · ${m}` });
   return out;
 }

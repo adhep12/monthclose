@@ -57,6 +57,7 @@ export function parseGlRegister(XLSX, wb) {
     p.stripeReclass = stripeReclasses(p.batches);
     p.investmentFees = investmentFees(p.batches);
     p.investmentGl = investmentGl(p.batches);
+    p.largeMerch = largeMerch(p.batches);
     p.giving = givingByChannel(p.givingLines || []);
     p.grants = roundGrants(p.grants || { gifts: {}, spend: {} });
     delete p.givingLines;
@@ -72,6 +73,18 @@ export function parseGlRegister(XLSX, wb) {
   };
   return { periods: Object.values(periods).sort((x, y) => x.month.localeCompare(y.month)), lines,
     runAt: header('Date:'), fromPeriod: header('From Period:'), toPeriod: header('To Period:') };
+}
+
+// Merch and inventory lines of $10,000 or more (accounts 9000–9099, 1500–1509): a merch order
+// of $15,000 or more is inventory, not an expense, so the inventory page lists them.
+const LARGE_MERCH = 10000;
+function largeMerch(batches) {
+  const out = [];
+  for (const b of batches) for (const l of b.lines) {
+    const n = Number(l.a);
+    if (((n >= 9000 && n <= 9099) || (n >= 1500 && n <= 1509)) && Math.abs(l.amt) >= LARGE_MERCH) out.push({ batch: b.batch, date: b.date, account: l.a, desc: (l.d || b.desc).slice(0, 80), amount: l.amt });
+  }
+  return out;
 }
 
 // Restricted giving and what it pays for, by grant (the second part of the subaccount: 005-627 is

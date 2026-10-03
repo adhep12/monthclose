@@ -3,7 +3,8 @@
 // statements, schedules, governance documents, JEs and trial balances the other pages keep.
 
 import { h, mount, table, toast, select, statusPill } from '../ui.js';
-import { loadPocMonths, loadCds, listGovernanceDocs, loadTrialBalances, listApAging, listGlActivity, listRestrictedFunds, loadPocConfig, loadRestrictedConfig, loadBsConfig, loadConfig } from '../data.js';
+import { loadPocMonths, loadCds, listGovernanceDocs, loadTrialBalances, listApAging, listGlActivity, listRestrictedFunds, loadPocConfig, loadRestrictedConfig, loadBsConfig, loadConfig, listInventoryMonths, loadInventoryConfig, loadAssets } from '../data.js';
+import { firstKnownMonth } from '../fa/rollforward.js';
 import { CATEGORIES, TOPICS, statementItems, governanceItems, trialBalanceItems, madeItems, filterItems, zipName, indexCsv } from '../binder/items.js';
 import { MAKERS, monthJesFor } from '../binder/make.js';
 import { fundsFromGl } from '../restricted/funds.js';
@@ -18,19 +19,25 @@ const keep = (f) => { try { localStorage.setItem(KEY, JSON.stringify(f)); } catc
 const short = (m) => monthName(m, { short: true });
 
 export default async function (main, { user, rerender }) {
-  const [recs, cds, docs, tbs, agings, gls, others, pocCfg, restrictedCfg, bsCfg, faCfg] = await Promise.all([
+  const [recs, cds, docs, tbs, agings, gls, others, pocCfg, restrictedCfg, bsCfg, faCfg, invs, invCfg, assets] = await Promise.all([
     loadPocMonths(), loadCds(), listGovernanceDocs(), loadTrialBalances(), listApAging(), listGlActivity(), listRestrictedFunds(),
-    loadPocConfig(), loadRestrictedConfig(), loadBsConfig(), loadConfig()]);
+    loadPocConfig(), loadRestrictedConfig(), loadBsConfig(), loadConfig(), listInventoryMonths(), loadInventoryConfig(), loadAssets({ fresh: true })]);
   const recBy = Object.fromEntries(recs.map((r) => [r.month, r]));
   const glBy = Object.fromEntries(gls.map((g) => [g.month, g]));
   const tbBy = Object.fromEntries(tbs.map((t) => [t.month, t]));
   const agingBy = Object.fromEntries(agings.map((a) => [a.month, a]));
   const gl = fundsFromGl(gls, others);
-  const ctx = { user, recBy, cds, tbBy, agingBy, bsCfg, gl, glBy, jeDefaults: pocCfg.jeDefaults || {}, restrictedCfg, names: faCfg.accountNames || {} };
+  const invBy = Object.fromEntries(invs.map((r) => [r.month, r]));
+  const ctx = { user, recBy, cds, tbBy, agingBy, bsCfg, gl, glBy, jeDefaults: pocCfg.jeDefaults || {}, restrictedCfg, names: faCfg.accountNames || {}, invBy, invCfg, assets, faCfg };
+  // Fixed assets: the months the app depreciates (from the listing's month on, through last month).
+  const faStart = assets.length ? firstKnownMonth(assets) : null;
+  const faMonths = [];
+  for (let m = faStart; m && m <= addMonths(currentMonth(), -1); m = addMonths(m, 1)) faMonths.push(m);
+  if (faStart && !faMonths.length) faMonths.push(addMonths(faStart, -1));
 
   const hasPoc = (r) => r && !r.source?.ditOnly && (Object.keys(r.statements || {}).length || r.stripe || r.ics || Object.keys(r.bankStatements || {}).length || Object.keys(r.bank || {}).length);
   const cashMonths = [...new Set(tbs.flatMap((t) => [t.month, addMonths(t.month, -1)]))].sort();
-  const jeMonths = [...new Set([...recs.map((r) => r.month), ...(gl.result?.months || [])])].sort().filter((m) => monthJesFor(m, ctx).length);
+  const jeMonths = [...new Set([...recs.map((r) => r.month), ...(gl.result?.months || []), ...invs.map((r) => r.month), ...faMonths])].sort().filter((m) => monthJesFor(m, ctx).length);
   const items = [
     ...statementItems(recs, cds),
     ...madeItems({
@@ -39,6 +46,9 @@ export default async function (main, { user, rerender }) {
       cdFys: [...new Set(cds.flatMap((c) => Object.keys(c.earned || {})).map(fiscalYear))].sort(),
       restrictedFys: [...new Set((gl.result?.months || []).map(fiscalYear))].sort(),
       jeMonths,
+      inventoryMonths: invs.filter((r) => r.warehouse || r.distribution || r.sales).map((r) => r.month).sort(),
+      inventoryFiles: invs.filter((r) => r.warehouse?.fileKey).map((r) => ({ month: r.month, fileKey: r.warehouse.fileKey, fileName: r.warehouse.fileName })),
+      faMonths,
     }),
     ...governanceItems(docs),
     ...trialBalanceItems(tbs),
@@ -75,7 +85,7 @@ export default async function (main, { user, rerender }) {
           row.note = 'As stored';
         } else {
           bytes = await MAKERS[it.make](it, ctx, row.months);
-          row.note = it.make === 'poc' || it.make === 'cds' ? 'Made at download; the whole fiscal year' : 'Made at download';
+          row.note = it.make === 'poc' || it.make === 'cds' ? 'Made at download; the whole fiscal year' : it.make === 'fa' && faStart && faStart > row.months[0] ? `Made at download; the roll-forward runs from ${faStart}, when the listing was imported` : 'Made at download';
         }
         z.add(`${it.folder}/${it.name}`, bytes);
         row.included = true;
@@ -107,7 +117,7 @@ export default async function (main, { user, rerender }) {
       h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Period'), select(periodOptions, f.period, { onchange: (e) => set('period', e.target.value) }))),
     h('div', { class: 'row', style: { margin: '1rem 0' } }, btn,
       h('span', { class: 'muted' }, shown.length ? CATEGORIES.filter(([k]) => count(k)).map(([k, l]) => `${count(k)} ${l.toLowerCase()}`).join(' · ') : 'Nothing matches.')),
-    assetsAsked ? h('div', { class: 'notice' }, 'Fixed asset schedules aren’t in the app yet: the fixed asset module is parked, so there’s nothing to include.') : null,
+    assetsAsked && !assets.length ? h('div', { class: 'notice' }, 'No fixed assets in the app yet: import the Fixed Asset Listing on the Fixed assets tab.') : null,
     h('p', { class: 'muted small' }, 'Statements, governance documents and uploaded reports go in as stored. Schedules and JE files are made when you download, from the figures as they are now. Index.csv in the zip lists every file with its category, account and period, and anything that couldn’t be included.'),
     table([
       { label: 'Folder', cell: (i) => i.folder.replace(/^\d+ /, '') },

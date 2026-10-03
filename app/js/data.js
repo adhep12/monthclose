@@ -13,11 +13,14 @@
 //   governance-docs   board minutes, COI disclosures, signatory lists, CC compilations; key = doc id
 //   governance-files  (files) the documents themselves
 //   source-files    (files) uploaded trial balances and AP agings as received, for the audit binder
+//   inventory-months  the monthly inventory tie-out's inputs (warehouse units, Portland count,
+//                   departments' merch, product sales), key = 'YYYY-MM'
 
 import * as store from './store.js';
 import { DEFAULT_FA_CONFIG } from './fa/je.js';
 import { DEFAULT_POC_CONFIG } from './poc/calc.js';
 import { DEFAULT_RESTRICTED_CONFIG } from './restricted/funds.js';
+import { DEFAULT_INVENTORY_CONFIG } from './inventory/tieout.js';
 
 let assetsCache = null;
 let configCache = null;
@@ -57,7 +60,9 @@ function mergeConfig(saved) {
   return {
     ...d, ...saved,
     expense: { ...d.expense, ...saved.expense },
-    disposal: { ...d.disposal, ...saved.disposal },
+    // Saved before the disposal accounts were set up (a trial balance upload saved the defaults of
+    // the time: no gain/loss account), it takes today's.
+    disposal: saved.disposal?.gainLossAccount ? { ...d.disposal, ...saved.disposal } : d.disposal,
     accountNames: { ...d.accountNames, ...saved.accountNames },
     groups: saved.groups?.length ? saved.groups : d.groups,
   };
@@ -94,10 +99,13 @@ export async function loadTrialBalance(month) {
 
 export async function saveTrialBalance(tb) {
   await store.upsert('trial-balances', tb.month, tb);
-  // Keep the account names the JE export uses in step with the latest TB.
-  const cfg = await loadConfig();
+  // Keep the account names the JE export uses in step with the latest TB — only the names, so
+  // the rest of the settings keep whatever was saved (or the built-in defaults).
+  const saved = (await store.get('settings', 'fa-config')) || {};
   const names = Object.fromEntries(Object.entries(tb.accounts).map(([a, x]) => [a, x.description]));
-  await saveConfig({ ...cfg, accountNames: { ...cfg.accountNames, ...names } });
+  const next = { ...saved, accountNames: { ...(saved.accountNames || {}), ...names } };
+  await store.upsert('settings', 'fa-config', next);
+  configCache = mergeConfig(next);
 }
 
 export async function removeTrialBalance(month) {
@@ -240,4 +248,26 @@ export async function saveGovernanceDoc(doc) {
 
 export async function deleteGovernanceDoc(id) {
   await store.remove('governance-docs', id);
+}
+
+// ---- Inventory -------------------------------------------------------------------------------
+
+export async function loadInventoryConfig() {
+  const saved = await store.get('settings', 'inventory-config');
+  const d = structuredClone(DEFAULT_INVENTORY_CONFIG);
+  if (!saved) return d;
+  // Items keep their built-in fields; what was saved (costs, method) wins.
+  return { ...d, ...saved, items: d.items.map((it) => ({ ...it, ...(saved.items || []).find((x) => x.id === it.id) })) };
+}
+
+export async function saveInventoryConfig(cfg) {
+  await store.upsert('settings', 'inventory-config', cfg);
+}
+
+export async function listInventoryMonths() {
+  return store.listAll('inventory-months');
+}
+
+export async function saveInventoryMonth(rec) {
+  await store.upsert('inventory-months', rec.month, rec);
 }

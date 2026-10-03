@@ -70,6 +70,24 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - Statements are stored as `{Account}_{YYYY-MM}` on upload (`app/js/naming.js`), tagged
     `{ category: 'statement', account, period }` with the original name kept. Uploaded TBs and AP
     agings are kept as received in `source-files` (`TrialBalance_YYYY-MM`, `APAging_YYYY-MM`).
+  - **Inventory (`#/inventory`)**: the "Monthly Inventory Tie Out" workbook. Per month: upload
+    the Extensiv InventoryGridExport (units by SKU, "Available Primary"), the Merch Distribution
+    Sheet ("Johanna Input" + "Reference" tabs; all months in it) and the Salesforce Product Sales By
+    Product & Month report (all months); type the Portland count (carries forward). Items: CTB
+    5100 → 1500/9000, PCB 4001 → 1505/9004, mugs 8000-TM-WHT → 1506/9005; costs are purchases
+    (units, total) valued FIFO or average (Costs…). GL before adjusting from last month's TB.
+    Batch 7 adjusting JE (inventory, perks 020-320, departments from the distribution sheet,
+    non-inventory merch out of 009-000); batch 8 reclass of Stripe merch purchases out of 4015
+    ("(HQ STOCK)" rows count; discounts off poster books). Lists GL merch lines ≥ $15,000 (kept
+    by gl.js as `largeMerch`). Reproduces Sept 2026 to the cent except mugs: the workbook valued
+    mugs as units × 16.63 plus 5,016 × (17.32 − 16.63) and left Portland mugs out; FIFO gives
+    53,885.79 for 3,112 units (open decision).
+  - **Fixed assets (`#/assets`)**: imports the Fixed Asset Listing (`fa/import.js`, newest "FA
+    Listing FYxx" sheet; assets named "Delete" can be marked disposed at the cutover, booked
+    already). Tie-out by account to the TB, batch 9 depreciation JE (true-up to last month's TB),
+    batch 10 disposals JE in the FYE layout (proceeds out of 8049 010-000, gain/loss 8990). FY26
+    listing ties to the Sept 2026 TB except 1552 CIP (48,381.49 in the listing, nothing in the GL)
+    and a cent on 1555/1570. Roll-forward in `fa/rollforward.js`.
   - **Audit binder (`#/binder`)**: three optional filters (category — with schedules split by
     topic: cash, AP, investments, restricted, fixed assets —, account, period: FY, month or all)
     and one zip named for them (`BP_CassOperating_FY26.zip`, `BP_FullAuditBinder_FY26.zip`).
@@ -80,10 +98,9 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
     fetched is listed there with the reason instead of failing the download. The zip is written
     by `app/js/zip.js` (stored, no compression). Not checked on the platform yet: fetching a
     stored file from its `files.url()` link inside the app — if the platform refuses it, Index.csv
-    will say so for every stored file. Fixed assets have no schedules (module parked).
+    will say so for every stored file. Inventory and fixed asset schedules and JEs are included.
 
-Fixed assets and depreciation were removed from the UI. The engine is still in `app/js/fa/` and
-its tests still run.
+Fixed assets are back as their own tab (above), on the engine in `app/js/fa/`.
 
 ### Where things live
 
@@ -111,6 +128,8 @@ its tests still run.
 | Restricted funds | `app/js/views/restricted.js`, `app/js/restricted/funds.js` (grant activity kept by `app/js/gl.js`) |
 | Governance documents | `app/js/views/governance.js`, `app/js/governance/docs.js` |
 | Stored file names | `app/js/naming.js` |
+| Inventory | `app/js/views/inventory.js`, `app/js/inventory/parse.js` (the three reports), `app/js/inventory/tieout.js` (valuation, JEs) |
+| Fixed assets | `app/js/views/assets.js`, `app/js/fa/` (engine, import, JEs, roll-forward) |
 | Audit binder | `app/js/views/binder.js`, `app/js/binder/items.js` (what's in it, filters, names), `app/js/binder/make.js` (schedules made at download), `app/js/zip.js` |
 
 ## 2. The rules, and why
@@ -355,7 +374,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (123 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (131 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

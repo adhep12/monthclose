@@ -45,6 +45,9 @@
     },
     "source-files": {
       "access": "shared"
+    },
+    "inventory-months": {
+      "access": "shared"
     }
   }
 }
