@@ -22,7 +22,7 @@ export const DEFAULT_INVENTORY_CONFIG = {
   items: [
     { id: 'ctb', name: 'Coffee table books (How to Read)', short: 'CTB', skus: ['5100'], account: '1500', expense: '9000', perksText: 'Coffee Table Book - Perks', method: 'fifo', layers: [{ units: 10090, total: 135169.73, note: '135,169.73 / 10,090' }] },
     { id: 'pcb', name: 'Poster collection books', short: 'PCB', skus: ['4001'], account: '1505', expense: '9004', perksText: 'PCB - Perks', method: 'fifo', layers: [{ unitCost: 4.45, note: 'cost per unit' }] },
-    { id: 'mug', name: 'Miir travel mugs', short: 'Mugs', skus: ['8000-TM-WHT'], account: '1506', expense: '9005', perksText: 'Mugs - Perks', method: 'fifo', layers: [{ units: 10008, total: 166466.66, note: 'first order' }, { units: 5016, total: 86854.48, note: 'new mugs' }] },
+    { id: 'mug', name: 'Miir travel mugs', short: 'Mugs', skus: ['8000-TM-WHT'], account: '1506', expense: '9005', perksText: 'Mugs - Perks', method: 'workbook', layers: [{ units: 10008, total: 166466.66, note: 'first order' }, { units: 5016, total: 86854.48, note: 'new mugs' }] },
   ],
   perksSub: '020-320',
   merchSub: '009-000',
@@ -47,6 +47,13 @@ export const DEFAULT_INVENTORY_CONFIG = {
 export function valueUnits(units, layers = [], method = 'fifo') {
   if (!layers.length) return { value: null, unitCost: null, note: 'No cost set up.' };
   const cost = (l) => (l.unitCost != null ? l.unitCost : l.total / l.units);
+  // The workbook's way, as booked through September 2026: every unit at the first purchase's
+  // cost, plus each later purchase's units × (its cost to the cent − the first cost).
+  if (method === 'workbook') {
+    const c0 = cost(layers[0]);
+    const v = units * c0 + sum(layers.slice(1), (l) => (l.units || 0) * (round2(cost(l)) - c0));
+    return { value: round2(v), unitCost: units ? v / units : c0, note: null };
+  }
   if (method === 'average') {
     const known = layers.filter((l) => l.units);
     const c = known.length ? sum(known, (l) => l.total) / sum(known, (l) => l.units) : cost(layers[0]);

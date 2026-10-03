@@ -16,6 +16,8 @@ test('valuation: first in, first out keeps the newest cost; average blends; a co
   assert.equal(valueUnits(2561, [{ unitCost: 4.45 }]).value, 11396.45);
   assert.equal(valueUnits(5946, [{ units: 10090, total: 135169.73 }]).value, 79655.03);
   assert.match(valueUnits(20000, mugs).note, /more units than the purchases/);
+  // As the workbook valued mugs in September 2026 (3,122 units).
+  assert.equal(valueUnits(3122, mugs, 'workbook').value, 55373.54);
 });
 const round = (n) => Math.round(n * 100) / 100;
 

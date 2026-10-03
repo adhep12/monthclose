@@ -79,15 +79,16 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
     Batch 7 adjusting JE (inventory, perks 020-320, departments from the distribution sheet,
     non-inventory merch out of 009-000); batch 8 reclass of Stripe merch purchases out of 4015
     ("(HQ STOCK)" rows count; discounts off poster books). Lists GL merch lines ≥ $15,000 (kept
-    by gl.js as `largeMerch`). Reproduces Sept 2026 to the cent except mugs: the workbook valued
-    mugs as units × 16.63 plus 5,016 × (17.32 − 16.63) and left Portland mugs out; FIFO gives
-    53,885.79 for 3,112 units (open decision).
+    by gl.js as `largeMerch`). Mugs default to "as the workbook did it" (units × first cost + 5,016 ×
+    (17.32 − 16.63)), as booked through Sept 2026; the user plans to move to FIFO or average soon
+    (Costs…). 1552 CIP in the FY26 listing was reclassed to 1570 in July 2026 (GL018299) — the two
+    Axis Design rows are double counted in the listing. Row 187 Point Monitor's date is 8/21/2019.
   - **Fixed assets (`#/assets`)**: imports the Fixed Asset Listing (`fa/import.js`, newest "FA
     Listing FYxx" sheet; assets named "Delete" can be marked disposed at the cutover, booked
     already). Tie-out by account to the TB, batch 9 depreciation JE (true-up to last month's TB),
     batch 10 disposals JE in the FYE layout (proceeds out of 8049 010-000, gain/loss 8990). FY26
-    listing ties to the Sept 2026 TB except 1552 CIP (48,381.49 in the listing, nothing in the GL)
-    and a cent on 1555/1570. Roll-forward in `fa/rollforward.js`.
+    listing ties to the Sept 2026 TB except 1552 CIP (see Inventory note above: moved to 1570) and a
+    cent on 1555/1570. Roll-forward in `fa/rollforward.js`.
   - **Audit binder (`#/binder`)**: three optional filters (category — with schedules split by
     topic: cash, AP, investments, restricted, fixed assets —, account, period: FY, month or all)
     and one zip named for them (`BP_CassOperating_FY26.zip`, `BP_FullAuditBinder_FY26.zip`).

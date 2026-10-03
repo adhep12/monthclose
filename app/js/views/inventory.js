@@ -119,7 +119,7 @@ export default async function (main, { user, rerender }) {
       { label: 'Perks (020-320)', num: true, cell: (it) => money(it.perks) },
     ], t.items, { foot: (c) => ({ Item: 'Total', 'Ending value': money(round2(t.items.reduce((s, i) => s + (i.value || 0), 0))), Adjustment: money(round2(t.items.reduce((s, i) => s + (i.diff || 0), 0))) })[c.label] ?? '' }),
     t.items.some((i) => i.valueNote) ? h('div', { class: 'notice warn' }, t.items.filter((i) => i.valueNote).map((i) => `${i.name}: ${i.valueNote}`).join(' ')) : null,
-    h('p', { class: 'muted small' }, `Units are the warehouse’s “Available Primary” plus the Portland count (it carries forward from the last month that has one; type a new count when there is one). Valued ${cfg.items.every((i) => i.method !== 'average') ? 'first in, first out: what’s left is the newest purchase' : 'per item as set in Costs'}. The adjustment is the ending value less the GL; departments’ share comes from the merch distribution sheet and the rest is Patron Care perks.`),
+    h('p', { class: 'muted small' }, `Units are the warehouse’s “Available Primary” plus the Portland count (it carries forward from the last month that has one; type a new count when there is one). Valued ${cfg.items.map((i) => `${i.short} ${{ fifo: 'first in, first out', average: 'at average cost', workbook: 'as the workbook did it (first cost, plus later orders’ extra cost)' }[i.method]}`).join('; ')} — change it under Costs. The adjustment is the ending value less the GL; departments’ share comes from the merch distribution sheet and the rest is Patron Care perks.`),
     h('details', {}, h('summary', {}, 'Additions this month (inventory purchases booked to the inventory accounts)'),
       h('div', { class: 'row' }, t.items.map((it) => field(it.short, typed(it, 'additions', rec.additions?.[it.id], `Additions, ${it.short}`))))),
 
@@ -153,7 +153,7 @@ function editCosts(cfg, rerender) {
     const host = h('div');
     const draw = () => mount(host, items.map((it) => h('div', { class: 'card', style: { marginBottom: '.8rem' } },
       h('div', { class: 'row' }, h('h3', {}, it.name), h('span', { class: 'spacer' }),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Method'), select([['fifo', 'First in, first out'], ['average', 'Average cost']], it.method, { onchange: (e) => { it.method = e.target.value; } }))),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Method'), select([['fifo', 'First in, first out'], ['average', 'Average cost'], ['workbook', 'As the workbook did it']], it.method, { onchange: (e) => { it.method = e.target.value; } }))),
       table([
         { label: 'Purchase', cell: (l) => h('input', { value: l.note || '', onchange: (e) => { l.note = e.target.value; } }) },
         { label: 'Units', num: true, cell: (l) => h('input', { class: 'num', size: 9, value: l.units ?? '', placeholder: 'any', onchange: (e) => { const v = parseAmount(e.target.value); l.units = Number.isFinite(v) ? v : null; } }) },
