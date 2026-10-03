@@ -30,6 +30,18 @@
     },
     "sf-giving": {
       "access": "shared"
+    },
+    "ap-aging": {
+      "access": "shared"
+    },
+    "restricted-funds": {
+      "access": "shared"
+    },
+    "governance-docs": {
+      "access": "shared"
+    },
+    "governance-files": {
+      "access": "shared"
     }
   }
 }

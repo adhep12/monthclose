@@ -7,6 +7,7 @@ import { applyCdarsStatement, applyIntrafiExport } from '../cd/schedule.js';
 import { uploadFile, filesAvailable, explain } from '../store.js';
 import { logChange, nowIso } from '../audit.js';
 import { money } from '../money.js';
+import { statementName, renamed, statementTags } from '../naming.js';
 import { monthName } from '../fiscal.js';
 
 const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
@@ -53,12 +54,13 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
     if (r.type === 'picture') {
       if (!INVESTMENT_ACCOUNTS.includes(expectAccount)) { messages.push({ bad: true, text: `${file.name}: ${r.why}` }); continue; }
       let fileKey = null;
+      const stored = statementName({ account: expectAccount, period: month, original: file.name, extra: r.scanned ? 'scan' : 'screenshot' });
       if (filesAvailable()) {
-        try { fileKey = (await uploadFile('statements', file))?.key || null; }
+        try { fileKey = (await uploadFile('statements', renamed(file, stored)))?.key || null; }
         catch (err) { messages.push({ bad: true, text: explain(err, `Couldn’t store ${file.name}.`) }); continue; }
       }
       rec.bankFiles ||= {};
-      rec.bankFiles[expectAccount] = [...(rec.bankFiles[expectAccount] || []), { fileName: file.name, fileKey, attachedBy: user, attachedAt: nowIso(), scanned: !!r.scanned }];
+      rec.bankFiles[expectAccount] = [...(rec.bankFiles[expectAccount] || []), { fileName: stored, originalName: file.name, ...statementTags(expectAccount, month), fileKey, attachedBy: user, attachedAt: nowIso(), scanned: !!r.scanned }];
       logChange(rec, user, `Attached ${label(expectAccount)} ${r.scanned ? 'scanned statement' : 'screenshot'} ${file.name}`);
       messages.push({ text: `${file.name} kept with ${label(expectAccount)}. Type the figures from it below${expectAccount === 'tschetter' && r.scanned ? ', including the year-to-date expenses so its fees are booked' : ''}.` });
       changed = true;
@@ -73,11 +75,14 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
       && !(await ask('Different month', `${file.name} is dated ${monthName(fileMonth)}, but this is ${monthName(month)}. Use it for ${monthName(month)} anyway?`, { ok: 'Use it anyway' }))) continue;
 
     let fileKey = null;
+    // Stored as {Account}_{YYYY-MM}: CDARS by statement date (a maturity statement can come mid-month).
+    const stored = r.type === 'intrafi-export' ? statementName({ account: 'IntraFiExport', period: month, original: file.name })
+      : statementName({ account: acct, period: r.type === 'cdars' ? d.date : month, kind: d.kind, original: file.name });
     if (filesAvailable()) {
-      try { fileKey = (await uploadFile('statements', file))?.key || null; }
+      try { fileKey = (await uploadFile('statements', renamed(file, stored)))?.key || null; }
       catch (err) { messages.push({ bad: true, text: explain(err, `Couldn’t store ${file.name}; its numbers are still used.`) }); }
     }
-    const meta = { fileName: file.name, fileKey, attachedBy: user, attachedAt: nowIso() };
+    const meta = { fileName: stored, originalName: file.name, ...statementTags(acct, month), fileKey, attachedBy: user, attachedAt: nowIso() };
 
     if (r.type === 'cass') {
       rec.statements[d.kind] = { ...d, ...meta };
@@ -112,7 +117,7 @@ export async function attachFiles({ files, rec, cds, month, user, expectAccount 
       messages.push({ text: `${label(d.source)}: revenue ${money(d.revenue)}, interest ${money(d.interest)}, ending ${money(d.ending)}` });
     } else if (r.type === 'cdars') {
       const touched = applyCdarsStatement(cds, d, { user, file: file.name });
-      for (const cd of touched) { cd.files = { ...(cd.files || {}), [d.date]: { name: file.name, key: fileKey, by: user, at: nowIso() } }; await saveCd(cd); }
+      for (const cd of touched) { cd.files = { ...(cd.files || {}), [d.date]: { name: stored, originalName: file.name, ...statementTags('cd', d.month), key: fileKey, by: user, at: nowIso() } }; await saveCd(cd); }
       logChange(rec, user, `Attached CDARS statement ${file.name} (${touched.map((c) => `…${c.last4}`).join(', ')})`);
       messages.push({ text: `CD schedule: ${touched.map((c) => `…${c.last4} ${money(c.earned?.[d.month]?.amount || 0)}`).join(', ')}` });
     } else if (r.type === 'intrafi-export') {

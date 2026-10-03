@@ -1,6 +1,6 @@
 # Month Close
 
-BibleProject accounting's proof of cash and CDARS schedule, as a bp-vibes app. The landing page
+BibleProject accounting's proof of cash and CDARS schedule, plus audit prep pages (balance sheet checks, restricted funds, governance documents), as a bp-vibes app. The landing page
 is the fiscal-year proof of cash sheet (FY2026 = October 2025 – September 2026): click an
 account's cell for a month to attach its statement or type its figures. The fixed asset module
 (depreciation engine, FA listing import, JE export) is parked — its views were removed from the

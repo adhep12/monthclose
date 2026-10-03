@@ -2,19 +2,26 @@ import { h, mount, toast } from './ui.js';
 import { initStore, storeMode } from './store.js';
 import { monthName } from './fiscal.js';
 
-// Two tabs: Proof of cash (the fiscal-year sheet; everything about a month opens in pop-ups on it)
-// and the CD schedule. An old month link (#/poc/2026-07) opens the sheet with that month open.
+// Proof of cash (the fiscal-year sheet; everything about a month opens in pop-ups on it), the CD
+// schedule, and the audit prep pages, each on its own tab. An old month link (#/poc/2026-07) opens
+// the sheet with that month open.
 const routes = [
   [/^#?\/?$/, () => import('./views/poc-year.js')],
   [/^#\/poc$/, () => import('./views/poc-year.js')],
   [/^#\/poc\/(\d{4}-\d{2})$/, () => import('./views/poc-year.js')],
   [/^#\/poc\/import$/, () => import('./views/poc-import.js')],
   [/^#\/cds$/, () => import('./views/cds.js')],
+  [/^#\/balance-sheet$/, () => import('./views/balance-sheet.js')],
+  [/^#\/restricted$/, () => import('./views/restricted.js')],
+  [/^#\/governance$/, () => import('./views/governance.js')],
 ];
 
 const TABS = [
   ['#/poc', 'Proof of cash', (hash) => hash === '' || hash === '#/' || hash.startsWith('#/poc')],
   ['#/cds', 'CD schedule', (hash) => hash.startsWith('#/cds')],
+  ['#/balance-sheet', 'Balance sheet', (hash) => hash.startsWith('#/balance-sheet')],
+  ['#/restricted', 'Restricted funds', (hash) => hash.startsWith('#/restricted')],
+  ['#/governance', 'Governance', (hash) => hash.startsWith('#/governance')],
 ];
 
 let user = null;
@@ -72,7 +79,7 @@ export async function render() {
   const hash = location.hash || '#/';
   const root = document.getElementById('app');
   const header = h('header', { class: 'topbar' },
-    h('div', { class: 'brand' }, h('strong', {}, 'Proof of Cash'), h('span', { class: 'muted' }, 'BibleProject Accounting')),
+    h('div', { class: 'brand' }, h('strong', {}, 'Month Close'), h('span', { class: 'muted' }, 'BibleProject Accounting')),
     h('nav', { class: 'tabs-top' }, TABS.map(([href, label, active]) => h('a', { href, class: active(hash) ? 'active' : '' }, label))),
     h('span', { class: 'who muted' }, user?.first ? `Hi, ${user.first}` : ''));
   const banner = storeMode() === 'local'

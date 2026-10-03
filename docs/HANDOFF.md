@@ -47,6 +47,30 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
 - **Workbook import (`#/poc/import`)**, no longer on the toolbar (open the address directly), reads the old workbook. For months already in the app, the
   default mode merges only deposits in transit and hand adjustments (see §4).
 
+- **Audit prep tabs**, each its own page so the proof of cash stays as it was:
+  - **Balance sheet (`#/balance-sheet`)**: pick a month; upload its Trial Balance Summary (PDF or
+    Excel) and AP Aged Period-Sensitive export (Excel). *Cash* lists every cash account (1000–1201)
+    at month end against the statement ending balance proof of cash has, checks petty cash (1025)
+    is still 300.00 and warns when Cash Clearing (1200) holds more than 50,000 either way
+    (`settings` → `bs-config`). *Accounts payable* ties the aging's company total to GL 2010 and
+    lists anything 61+ days past due. Logic in `app/js/bs/`.
+  - **Restricted funds (`#/restricted`)**: a roll-forward per fund (opening + gifts − released =
+    ending), month or fiscal year to date, an Excel export, and the month's reclass JE (Dr 3001 /
+    Cr 3200 when restricted money grows; accounts editable). Language funds come from the GL
+    register: every Translation Support (4017) gift is restricted to the language its grant code
+    names (`TRANSLATION` in `app/js/restricted/funds.js` maps codes to languages), and spending on
+    that language's codes releases it; gifts with no language are general localization. The
+    schedule starts every fund at zero in the first month with a GL register; FY2025 and FY2026
+    are loaded. Other funds (Bolthouse, Murdock) are typed in (collection `restricted-funds`).
+    Open: whether any grant is conditional (would post to 2060 instead of 3200).
+  - **Governance (`#/governance`)**: board minutes, COI disclosures, signatory lists, CC
+    compilations (periods through Jan/May/Sep), with what's current for the fiscal year. Records
+    in `governance-docs`, files in `governance-files`. Open: board meeting frequency and the COI
+    filer list (the page expects everyone who has ever filed to file again each year).
+  - Statements are stored as `{Account}_{YYYY-MM}` on upload (`app/js/naming.js`), tagged
+    `{ category: 'statement', account, period }` with the original name kept, for the audit
+    binder export (not built yet).
+
 Fixed assets and depreciation were removed from the UI. The engine is still in `app/js/fa/` and
 its tests still run.
 
@@ -71,6 +95,11 @@ its tests still run.
 | Excel writer | `app/js/xlsx-io.js` (vendored SheetJS in `app/vendor/`) |
 | PDF text | `app/js/pdf-text.js` (vendored pdf.js **legacy** build, since the modern build breaks in Chromium) |
 | Tie-out comparison | `scripts/compare-to-workbook.mjs` |
+| GL register upload (shared by proof of cash and restricted funds) | `app/js/gl-upload.js` |
+| Balance sheet checks | `app/js/views/balance-sheet.js`, `app/js/bs/ap-aging.js`, `app/js/bs/cash.js`, `app/js/tb.js` (TB from PDF or Excel) |
+| Restricted funds | `app/js/views/restricted.js`, `app/js/restricted/funds.js` (grant activity kept by `app/js/gl.js`) |
+| Governance documents | `app/js/views/governance.js`, `app/js/governance/docs.js` |
+| Stored file names | `app/js/naming.js` |
 
 ## 2. The rules, and why
 
@@ -314,7 +343,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (53 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (118 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

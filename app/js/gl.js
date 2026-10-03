@@ -37,7 +37,9 @@ export function parseGlRegister(XLSX, wb) {
     // Each line keeps Acumatica's identifier ("GL GL017661 2": module, batch, line), unique across
     // the ledger, and who it names — the payer on a gift line ("Fidelity", customer FIDEC001).
     batch.lines.push({ id: ident, a: acct, cv: text(at(r, 0)), d: text(at(r, 5)), ref: text(at(r, 4)), amt: round2(net) });
-    if (GIVING.includes(acct)) (p.givingLines ||= []).push({ batch, id: ident, a: acct, cv: text(at(r, 0)), d: text(at(r, 5)), amt: round2(-net) });
+    const grant = grantOf(text(at(r, 2)));
+    if (GIVING.includes(acct)) (p.givingLines ||= []).push({ batch, id: ident, a: acct, cv: text(at(r, 0)), d: text(at(r, 5)), amt: round2(-net), grant });
+    addGrantActivity((p.grants ||= { gifts: {}, spend: {} }), acct, grant, net);
     // PayPal gifts given back ("Payment Refund", a debit to 4012) inside the month's PayPal batch.
     // (A whole batch reversed out of the wrong period also debits 4012, but it isn't money given back.)
     if (acct === '4012' && net > 0 && /refund/i.test(text(at(r, 5)))) batch.refunds += net;
@@ -56,6 +58,7 @@ export function parseGlRegister(XLSX, wb) {
     p.investmentFees = investmentFees(p.batches);
     p.investmentGl = investmentGl(p.batches);
     p.giving = givingByChannel(p.givingLines || []);
+    p.grants = roundGrants(p.grants || { gifts: {}, spend: {} });
     delete p.givingLines;
     // Every batch in the month, by Acumatica's batch number, so the next upload can say what was
     // added, changed or removed since.
@@ -69,6 +72,25 @@ export function parseGlRegister(XLSX, wb) {
   };
   return { periods: Object.values(periods).sort((x, y) => x.month.localeCompare(y.month)), lines,
     runAt: header('Date:'), fromPeriod: header('From Period:'), toPeriod: header('To Period:') };
+}
+
+// Restricted giving and what it pays for, by grant (the second part of the subaccount: 005-627 is
+// department 005, grant 627 Portuguese Video). Gifts are Translation Support (4017), credits less
+// debits; spending is expense lines (accounts 5000 and up) on any grant but 000, debits less
+// credits. The restricted funds schedule (restricted/funds.js) works from these.
+//   grants: { gifts: { '627': 103000, '000': 20000 }, spend: { '627': 185739.12, '131': 4210 } }
+export const RESTRICTED_GIFTS = '4017';
+export function grantOf(sub) {
+  const m = String(sub || '').match(/^\d{3}-(\d{3})$/);
+  return m ? m[1] : '000';
+}
+function addGrantActivity(g, acct, grant, net) {
+  if (acct === RESTRICTED_GIFTS) g.gifts[grant] = (g.gifts[grant] || 0) - net;
+  else if (/^[5-9]/.test(acct) && grant !== '000') g.spend[grant] = (g.spend[grant] || 0) + net;
+}
+function roundGrants(g) {
+  const r = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, round2(v)]).filter(([, v]) => v));
+  return { gifts: r(g.gifts), spend: r(g.spend) };
 }
 
 // Money into and out of Cass (1100) batch by batch, so deposits on the statements can be matched to
@@ -131,7 +153,7 @@ function givingByChannel(lines) {
     // Each wire line of 1,000 or more, for finding the Salesforce gift it pays: [date, amount, payer, batch].
     if (ch === 'Wire' && l.amt >= 1000) wireLines.push([l.batch.date, round2(l.amt), String(l.d || l.cv).replace(/^Wise Donation - /i, '').slice(0, 60), l.batch.batch]);
     const line = { batch: l.batch.batch, date: l.batch.date, desc: l.batch.desc.slice(0, 50), line: l.id, payer: String(l.d).slice(0, 40), acct: l.a, amount: l.amt };
-    if (l.a === '4017') restricted.push({ ...line, channel: ch });
+    if (l.a === '4017') restricted.push({ ...line, channel: ch, grant: l.grant });
     if (ch === 'Stripe') { const k = String(l.d).replace(/^\d+\s+/, '') || l.batch.desc; stripe[k] = round2((stripe[k] || 0) + l.amt); }
     else if (Math.abs(l.amt) >= 1000) (big[ch] ||= []).push(line);
   }
