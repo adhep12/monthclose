@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { schedule, accumThrough, depreciationFor, disposalSummary, lifeFromEndDate, fullyDepreciatedMonth } from '../app/js/fa/engine.js';
-import { buildDepreciationJE, buildDisposalJE, isBalanced, DEFAULT_FA_CONFIG } from '../app/js/fa/je.js';
+import { buildDepreciationJE, buildDisposalJE, buildDisposalsJE, isBalanced, DEFAULT_FA_CONFIG } from '../app/js/fa/je.js';
 import { toPeriod, fromPeriod, addMonths, monthDiff, lastDayOfMonth } from '../app/js/fiscal.js';
 import { round2 } from '../app/js/money.js';
 
@@ -125,7 +125,19 @@ test('disposal JE clears cost and A/D and books the loss', () => {
   assert.ok(isBalanced(je.lines));
   const by = Object.fromEntries(je.lines.map((l) => [l.account, l]));
   assert.equal(by['1541'].debit, 5000);
-  assert.equal(by['1100'].debit, 2000);
+  assert.equal(by[cfg.disposal.proceedsAccount].debit, 2000);
   assert.equal(by['8998'].debit, 5000);
   assert.equal(by['1540'].credit, 12000);
+});
+
+test('FYE disposals JE: every asset disposed in the month in one entry, like the Acumatica one', () => {
+  const a1 = { ...base, id: 'a1', cost: 10000, disposal: { date: '2026-09-30', proceeds: 3000 } };
+  const a2 = { ...base, id: 'a2', cost: 2000, disposal: { date: '2026-09-15', proceeds: 0 } };
+  const old = { ...base, id: 'a3', disposal: { date: '2026-09-30', proceeds: 0, booked: true } };
+  const je = buildDisposalsJE({ month: '2026-09', assets: [a1, a2, old, base] });
+  assert.deepEqual(je.assets.map((a) => a.id), ['a1', 'a2']);
+  assert.ok(isBalanced(je.lines));
+  assert.deepEqual(je.lines.map((l) => l.account), ['8049', '1541', '8990', '1540']);
+  assert.equal(je.lines[3].credit, 12000);
+  assert.equal(buildDisposalsJE({ month: '2026-08', assets: [a1] }).lines.length, 0);
 });

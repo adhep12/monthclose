@@ -57,6 +57,31 @@ export function parseTrialBalance(XLSX, wb) {
   return { period, month, runAt, accounts };
 }
 
+// The same report saved as PDF. Each account is one line of text:
+//   "1200 Asset Bank Transfer - Cash Clearing Account - CASHASSET 0.00 0.00 1,513,592.67 -1,513,592.67"
+// (beginning, debit, credit, ending), with the Financial Period in the page header.
+export function looksLikeTrialBalance(lines) {
+  return lines.slice(0, 8).some((l) => /^Trial Balance Summary/.test(l.text));
+}
+
+export function parseTrialBalanceText(lines) {
+  const all = lines.map((l) => l.text);
+  const period = (all.join('\n').match(/Financial Period:\s*(\d{2}-\d{4})/) || [])[1];
+  if (!period) throw new Error('Couldn’t read the Financial Period from the report header.');
+  const runAt = (all.join('\n').match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{4}[^\n]*?(?:AM|PM))/) || [])[1] || null;
+  const N = '(-?[\\d,]+\\.\\d{2})';
+  const re = new RegExp(`^(\\d{4}) (Asset|Liability|Income|Expense) (.+?) ${N} ${N} ${N} ${N}$`);
+  const n = (s) => Number(s.replace(/,/g, ''));
+  const accounts = {};
+  for (const t of all) {
+    const m = t.match(re);
+    if (!m) continue;
+    accounts[m[1]] = { type: m[2], description: m[3].replace(/\s+-\s+[A-Z]+$/, '').trim(), begin: n(m[4]), debit: n(m[5]), credit: n(m[6]), end: n(m[7]) };
+  }
+  if (!Object.keys(accounts).length) throw new Error('No accounts found in that trial balance.');
+  return { period, month: fromPeriod(period), runAt, accounts };
+}
+
 function rowText(at, r, range) {
   let s = '';
   for (let c = range.s.c; c <= range.e.c; c++) s += ' ' + text(at(r, c));

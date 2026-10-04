@@ -47,8 +47,68 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
 - **Workbook import (`#/poc/import`)**, no longer on the toolbar (open the address directly), reads the old workbook. For months already in the app, the
   default mode merges only deposits in transit and hand adjustments (see §4).
 
-Fixed assets and depreciation were removed from the UI. The engine is still in `app/js/fa/` and
-its tests still run.
+- **Audit prep tabs**, each its own page so the proof of cash stays as it was:
+  - **Balance sheet (`#/balance-sheet`)**: pick a month; upload its Trial Balance Summary (PDF or
+    Excel) and AP Aged Period-Sensitive export (Excel). *Cash* lists every cash account (1000–1201)
+    at month end against the statement ending balance proof of cash has, checks petty cash (1025)
+    is still 300.00 and warns when Cash Clearing (1200) holds more than 50,000 either way
+    (`settings` → `bs-config`). *Accounts payable* ties the aging's company total to GL 2010 and
+    lists anything 61+ days past due. Logic in `app/js/bs/`.
+  - **Restricted funds (`#/restricted`)**: a roll-forward per fund (opening + gifts − released =
+    ending), month or fiscal year to date, an Excel export, and the month's reclass JE (Dr 3001 /
+    Cr 3200 when restricted money grows; accounts editable). Language funds come from the GL
+    register: every Translation Support (4017) gift is restricted to the language its grant code
+    names (`TRANSLATION` in `app/js/restricted/funds.js` maps codes to languages), and spending on
+    that language's codes releases it; gifts with no language are general localization. The
+    schedule starts every fund at zero in the first month with a GL register; FY2025 and FY2026
+    are loaded. Other funds (Bolthouse, Murdock) are typed in (collection `restricted-funds`).
+    Open: whether any grant is conditional (would post to 2060 instead of 3200).
+  - **Governance (`#/governance`)**: board minutes, COI disclosures, signatory lists, CC
+    compilations (periods through Jan/May/Sep), with what's current for the fiscal year. Records
+    in `governance-docs`, files in `governance-files`. Open: board meeting frequency and the COI
+    filer list (the page expects everyone who has ever filed to file again each year).
+  - Statements are stored as `{Account}_{YYYY-MM}` on upload (`app/js/naming.js`), tagged
+    `{ category: 'statement', account, period }` with the original name kept. Uploaded TBs and AP
+    agings are kept as received in `source-files` (`TrialBalance_YYYY-MM`, `APAging_YYYY-MM`).
+  - **Checklist (`#/checklist`, first tab)**: the Slab "Month Close Checklist" (sections, steps,
+    owners) as `STEPS` in `app/js/close/checklist.js` — edit it when Slab changes. Each step is
+    ticked per month (Prepared / Approved for bank accounts and reviews, Done otherwise; who and
+    when, logged; collection `close-months`), shows the app's evidence (statement attached, AP ties,
+    inventory JE ready, CC compilation in the vault…) and, where it needs a file, what to upload,
+    from where, in what format and on which tab. CC compilation only in Jan/May/Sep, NCF quarterly.
+    Excel export per FY; in the binder as "Schedules — Close checklist".
+  - **Inventory (`#/inventory`)**: the "Monthly Inventory Tie Out" workbook. Per month: upload
+    the Extensiv InventoryGridExport (units by SKU, "Available Primary"), the Merch Distribution
+    Sheet ("Johanna Input" + "Reference" tabs; all months in it) and the Salesforce Product Sales By
+    Product & Month report (all months); type the Portland count (carries forward). Items: CTB
+    5100 → 1500/9000, PCB 4001 → 1505/9004, mugs 8000-TM-WHT → 1506/9005; costs are purchases
+    (units, total) valued FIFO or average (Costs…). GL before adjusting from last month's TB.
+    Batch 7 adjusting JE (inventory, perks 020-320, departments from the distribution sheet,
+    non-inventory merch out of 009-000); batch 8 reclass of Stripe merch purchases out of 4015
+    ("(HQ STOCK)" rows count; discounts off poster books). Lists GL merch lines ≥ $15,000 (kept
+    by gl.js as `largeMerch`). Mugs default to "as the workbook did it" (units × first cost + 5,016 ×
+    (17.32 − 16.63)), as booked through Sept 2026; the user plans to move to FIFO or average soon
+    (Costs…). 1552 CIP in the FY26 listing was reclassed to 1570 in July 2026 (GL018299) — the two
+    Axis Design rows are double counted in the listing. Row 187 Point Monitor's date is 8/21/2019.
+  - **Fixed assets (`#/assets`)**: imports the Fixed Asset Listing (`fa/import.js`, newest "FA
+    Listing FYxx" sheet; assets named "Delete" can be marked disposed at the cutover, booked
+    already). Tie-out by account to the TB, batch 9 depreciation JE (true-up to last month's TB),
+    batch 10 disposals JE in the FYE layout (proceeds out of 8049 010-000, gain/loss 8990). FY26
+    listing ties to the Sept 2026 TB except 1552 CIP (see Inventory note above: moved to 1570) and a
+    cent on 1555/1570. Roll-forward in `fa/rollforward.js`.
+  - **Audit binder (`#/binder`)**: three optional filters (category — with schedules split by
+    topic: cash, AP, investments, restricted, fixed assets —, account, period: FY, month or all)
+    and one zip named for them (`BP_CassOperating_FY26.zip`, `BP_FullAuditBinder_FY26.zip`).
+    Stored files go in as they are (statements attached under the bank's name are renamed in the
+    zip); schedules (proof of cash workbook, cash tie-out, AP tie-out, CD schedule, restricted
+    roll-forward), each month's JEs and TBs with no stored file are made at download
+    (`app/js/binder/make.js`). Every zip has `Index.csv` and `README.txt`; a file that couldn't be
+    fetched is listed there with the reason instead of failing the download. The zip is written
+    by `app/js/zip.js` (stored, no compression). Not checked on the platform yet: fetching a
+    stored file from its `files.url()` link inside the app — if the platform refuses it, Index.csv
+    will say so for every stored file. Inventory and fixed asset schedules and JEs are included.
+
+Fixed assets are back as their own tab (above), on the engine in `app/js/fa/`.
 
 ### Where things live
 
@@ -71,6 +131,15 @@ its tests still run.
 | Excel writer | `app/js/xlsx-io.js` (vendored SheetJS in `app/vendor/`) |
 | PDF text | `app/js/pdf-text.js` (vendored pdf.js **legacy** build, since the modern build breaks in Chromium) |
 | Tie-out comparison | `scripts/compare-to-workbook.mjs` |
+| GL register upload (shared by proof of cash and restricted funds) | `app/js/gl-upload.js` |
+| Balance sheet checks | `app/js/views/balance-sheet.js`, `app/js/bs/ap-aging.js`, `app/js/bs/cash.js`, `app/js/tb.js` (TB from PDF or Excel) |
+| Restricted funds | `app/js/views/restricted.js`, `app/js/restricted/funds.js` (grant activity kept by `app/js/gl.js`) |
+| Governance documents | `app/js/views/governance.js`, `app/js/governance/docs.js` |
+| Stored file names | `app/js/naming.js` |
+| Inventory | `app/js/views/inventory.js`, `app/js/inventory/parse.js` (the three reports), `app/js/inventory/tieout.js` (valuation, JEs) |
+| Fixed assets | `app/js/views/assets.js`, `app/js/fa/` (engine, import, JEs, roll-forward) |
+| Month-end checklist | `app/js/views/checklist.js`, `app/js/close/checklist.js` (the Slab steps) |
+| Audit binder | `app/js/views/binder.js`, `app/js/binder/items.js` (what's in it, filters, names), `app/js/binder/make.js` (schedules made at download), `app/js/zip.js` |
 
 ## 2. The rules, and why
 
@@ -314,7 +383,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (53 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (132 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

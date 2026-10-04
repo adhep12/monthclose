@@ -27,14 +27,18 @@ export const DEFAULT_FA_CONFIG = {
   adSub: '000-000',
   adDept: '000 - General',
   tranDescription: 'Accumulated Depreciation',
+  // Disposals (the FYE disposal JE): money received for disposed equipment was booked to
+  // Equipment expense when it came in, so the JE moves it out of there.
   disposal: {
-    gainLossAccount: '',       // not known yet — asked for
+    gainLossAccount: '8990',   // Gain/Loss on Disposal of Assets
     gainLossSub: '000-000',
     gainLossDept: '000 - General',
-    proceedsAccount: '1100',   // Cass - General Operating
-    proceedsSub: '000-000',
-    proceedsDept: '000 - General',
+    proceedsAccount: '8049',   // Equipment (where the cash received was booked)
+    proceedsSub: '010-000',
+    proceedsDept: '010 - Product Engineering',
   },
+  // Assets under this cost are expensed (from October 2023).
+  capitalizationThreshold: 7500,
   // Account descriptions for the JE "Description" column; filled from a trial balance upload.
   accountNames: {},
 };
@@ -121,6 +125,33 @@ export function buildDisposalJE({ asset, config = DEFAULT_FA_CONFIG }) {
   }
   lines.push(line(config, { dept: config.adDept, account: asset.group, sub: config.adSub, credit: asset.cost, tranDescription: tran }));
   return { month: monthOfDate(asset.disposal.date), summary: s, lines };
+}
+
+// Every asset disposed in `month`, in one JE, laid out like the FYE disposal JE: proceeds out of
+// where they were booked, A/D removed per account, the gain or loss, original cost removed per
+// account. Assets marked `disposal.booked` (booked in Acumatica before the app) are left out.
+export function buildDisposalsJE({ month, assets, config = DEFAULT_FA_CONFIG }) {
+  const list = assets.filter((a) => a.disposal?.date && monthOfDate(a.disposal.date) === month && !a.disposal.booked);
+  if (!list.length) return { month, assets: [], lines: [] };
+  const d = config.disposal;
+  const sums = list.map((a) => ({ a, s: disposalSummary(a) })).filter((x) => x.s);
+  const proceeds = round2(sum(sums, (x) => x.s.proceeds || 0));
+  const gain = round2(sum(sums, (x) => x.s.gainLoss));
+  const byGroup = {};
+  for (const { a, s: x } of sums) {
+    const g = (byGroup[a.group] ||= { cost: 0, accum: 0 });
+    g.cost += a.cost; g.accum += x.accum;
+  }
+  const lines = [];
+  if (proceeds) lines.push(line(config, { dept: d.proceedsDept, account: d.proceedsAccount, sub: d.proceedsSub, debit: proceeds, tranDescription: 'FYE - Fixed Asset Disposals - to reclass cash received from disposal of equipment' }));
+  for (const [group, g] of Object.entries(byGroup)) {
+    const ad = config.groups.find((x) => x.asset === group)?.ad;
+    if (!ad) throw new Error(`No accumulated depreciation account set up for ${group}.`);
+    lines.push(line(config, { dept: config.adDept, account: ad, sub: config.adSub, debit: round2(g.accum), tranDescription: 'FYE - Fixed Asset Disposals - to remove depreciation' }));
+  }
+  if (gain) lines.push(line(config, { dept: d.gainLossDept, account: d.gainLossAccount, sub: d.gainLossSub, debit: gain < 0 ? -gain : 0, credit: gain > 0 ? gain : 0, tranDescription: `FYE - Fixed Asset Disposals - for ${gain > 0 ? 'gain' : 'loss'} on disposal of assets` }));
+  for (const [group, g] of Object.entries(byGroup)) lines.push(line(config, { dept: config.adDept, account: group, sub: config.adSub, credit: round2(g.cost), tranDescription: 'FYE - Fixed Asset Disposals - to remove FA original cost' }));
+  return { month, assets: list, lines, proceeds, gain };
 }
 
 export function isBalanced(lines) {

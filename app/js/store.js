@@ -108,6 +108,11 @@ export async function fileUrl(col, key) {
   return filesBackend.url(col, key);
 }
 
+export async function removeFile(col, key) {
+  if (!filesBackend || !key) return;
+  return filesBackend.remove(col, key);
+}
+
 export function explain(err, fallback = 'Something went wrong.') {
   if (err?.signedOut) return 'Signing you in again…';
   if (err?.full) return 'This app is out of storage space. Nothing was deleted — ask the app owner to free space in HAL.';
