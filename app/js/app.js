@@ -11,6 +11,7 @@ const routes = [
   [/^#\/poc\/(\d{4}-\d{2})$/, () => import('./views/poc-year.js')],
   [/^#\/poc\/import$/, () => import('./views/poc-import.js')],
   [/^#\/cds$/, () => import('./views/cds.js')],
+  [/^#\/checklist$/, () => import('./views/checklist.js')],
   [/^#\/balance-sheet$/, () => import('./views/balance-sheet.js')],
   [/^#\/restricted$/, () => import('./views/restricted.js')],
   [/^#\/governance$/, () => import('./views/governance.js')],
@@ -20,6 +21,7 @@ const routes = [
 ];
 
 const TABS = [
+  ['#/checklist', 'Checklist', (hash) => hash.startsWith('#/checklist')],
   ['#/poc', 'Proof of cash', (hash) => hash === '' || hash === '#/' || hash.startsWith('#/poc')],
   ['#/cds', 'CD schedule', (hash) => hash.startsWith('#/cds')],
   ['#/balance-sheet', 'Balance sheet', (hash) => hash.startsWith('#/balance-sheet')],

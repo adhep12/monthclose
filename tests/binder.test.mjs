@@ -80,3 +80,26 @@ test('zip: stored entries with their CRCs, and duplicate names kept apart', () =
   assert.equal(dv.getUint16(b.length - 22 + 10, true), 2);
   assert.match(new TextDecoder().decode(b), /a\/x \(2\)\.pdf/);
 });
+
+test('month-end checklist: the Slab steps, ticked with who and when, and the app’s evidence', async () => {
+  const { closeChecklist, checklistRows, STEPS } = await import('../app/js/close/checklist.js');
+  const c = closeChecklist('2026-09', {
+    rec: { statements: { operating: { fileName: 'CassOperating_2026-09.pdf', attachedBy: 'Alex', attachedAt: '2026-10-02T10:00:00Z' }, incoming: {}, outgoing: {} } },
+    aging: { fileName: 'APAging_2026-09.xlsx', uploadedBy: 'Alex' }, apTies: true, apLate: 0,
+    govDocs: [{ type: 'cc-compilation', period: '2026-09', fileName: 'CCCompilation_2026-09.pdf', uploadedBy: 'Joel' }],
+    close: { ticks: { 'cass-op': { prepared: { by: 'Alex', at: '2026-10-03T10:00:00Z' }, approved: { by: 'Joel', at: '2026-10-04T10:00:00Z' } }, stripe: { prepared: { by: 'Alex', at: 'x' } } } },
+  });
+  const s = Object.fromEntries(c.steps.map((x) => [x.id, x]));
+  assert.equal(s['cass-op'].done, true);
+  assert.deepEqual(s['cass-op'].evidence.detail, { by: 'Alex', at: '2026-10-02T10:00:00Z', file: 'CassOperating_2026-09.pdf' });
+  assert.equal(s.stripe.done, false); // prepared, not approved
+  assert.equal(s['ap-aging'].evidence.label, 'Ties to GL 2010');
+  assert.equal(s.cc.evidence.ok, true); // September is a CC compilation month
+  assert.equal(s.divvy.evidence, null); // done outside the app
+  assert.ok(!closeChecklist('2026-08', {}).steps.some((x) => x.id === 'cc'));
+  assert.ok(closeChecklist('2026-09', {}).steps.some((x) => x.id === 'ncf')); // quarterly
+  assert.equal(c.done, 1);
+  assert.equal(new Set(STEPS.map((x) => x.id)).size, STEPS.length);
+  const rows = checklistRows([c]);
+  assert.match(rows.find((r) => r[2] === 'Cass Operating')[5], /^Prepared: Alex 2026-10-03 10:00; Approved \/ released: Joel/);
+});

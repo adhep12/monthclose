@@ -13,6 +13,7 @@
 //   governance-docs   board minutes, COI disclosures, signatory lists, CC compilations; key = doc id
 //   governance-files  (files) the documents themselves
 //   source-files    (files) uploaded trial balances and AP agings as received, for the audit binder
+//   close-months    the month-end checklist's sign-offs, key = 'YYYY-MM'
 //   inventory-months  the monthly inventory tie-out's inputs (warehouse units, Portland count,
 //                   departments' merch, product sales), key = 'YYYY-MM'
 
@@ -270,4 +271,18 @@ export async function listInventoryMonths() {
 
 export async function saveInventoryMonth(rec) {
   await store.upsert('inventory-months', rec.month, rec);
+}
+
+// ---- Month-end checklist ----------------------------------------------------------------------
+
+export async function listCloseMonths() {
+  return store.listAll('close-months');
+}
+
+export async function loadCloseMonth(month) {
+  return store.get('close-months', month);
+}
+
+export async function saveCloseMonth(rec) {
+  await store.upsert('close-months', rec.month, rec);
 }

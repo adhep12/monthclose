@@ -48,6 +48,9 @@
     },
     "inventory-months": {
       "access": "shared"
+    },
+    "close-months": {
+      "access": "shared"
     }
   }
 }

@@ -41,6 +41,7 @@ export default async function (main, { user, rerender }) {
   const items = [
     ...statementItems(recs, cds),
     ...madeItems({
+      closeFys: [...new Set([fiscalYear(addMonths(currentMonth(), -1)), ...recs.map((r) => fiscalYear(r.month)), ...tbs.map((t) => fiscalYear(t.month))])].sort(),
       pocFys: [...new Set(recs.filter(hasPoc).map((r) => fiscalYear(r.month)))].sort(),
       cashMonths, apMonths: agings.map((a) => a.month).sort(), agings,
       cdFys: [...new Set(cds.flatMap((c) => Object.keys(c.earned || {})).map(fiscalYear))].sort(),

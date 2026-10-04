@@ -70,6 +70,13 @@ schedule**. Anyone signed in at BibleProject can open it, and all collections ar
   - Statements are stored as `{Account}_{YYYY-MM}` on upload (`app/js/naming.js`), tagged
     `{ category: 'statement', account, period }` with the original name kept. Uploaded TBs and AP
     agings are kept as received in `source-files` (`TrialBalance_YYYY-MM`, `APAging_YYYY-MM`).
+  - **Checklist (`#/checklist`, first tab)**: the Slab "Month Close Checklist" (sections, steps,
+    owners) as `STEPS` in `app/js/close/checklist.js` — edit it when Slab changes. Each step is
+    ticked per month (Prepared / Approved for bank accounts and reviews, Done otherwise; who and
+    when, logged; collection `close-months`), shows the app's evidence (statement attached, AP ties,
+    inventory JE ready, CC compilation in the vault…) and, where it needs a file, what to upload,
+    from where, in what format and on which tab. CC compilation only in Jan/May/Sep, NCF quarterly.
+    Excel export per FY; in the binder as "Schedules — Close checklist".
   - **Inventory (`#/inventory`)**: the "Monthly Inventory Tie Out" workbook. Per month: upload
     the Extensiv InventoryGridExport (units by SKU, "Available Primary"), the Merch Distribution
     Sheet ("Johanna Input" + "Reference" tabs; all months in it) and the Salesforce Product Sales By
@@ -131,6 +138,7 @@ Fixed assets are back as their own tab (above), on the engine in `app/js/fa/`.
 | Stored file names | `app/js/naming.js` |
 | Inventory | `app/js/views/inventory.js`, `app/js/inventory/parse.js` (the three reports), `app/js/inventory/tieout.js` (valuation, JEs) |
 | Fixed assets | `app/js/views/assets.js`, `app/js/fa/` (engine, import, JEs, roll-forward) |
+| Month-end checklist | `app/js/views/checklist.js`, `app/js/close/checklist.js` (the Slab steps) |
 | Audit binder | `app/js/views/binder.js`, `app/js/binder/items.js` (what's in it, filters, names), `app/js/binder/make.js` (schedules made at download), `app/js/zip.js` |
 
 ## 2. The rules, and why
@@ -375,7 +383,7 @@ Wise for Dec, Mar and May, and attach Incoming for Feb and May.
 
 ## 5. Working on the app
 
-- `npm test` runs node's test runner with no dependencies (131 tests). Run it before every commit.
+- `npm test` runs node's test runner with no dependencies (132 tests). Run it before every commit.
 - `npm run serve` previews at http://localhost:8765. Without the platform, data goes to
   localStorage and a banner says so. Clear it with `localStorage.clear()`.
 - `npm run package` checks the deploy rules and writes `dist/monthclose.zip`.

@@ -2,6 +2,7 @@
 // returns workbook bytes; `months` narrows a year's schedule to the months asked for.
 
 import { workbookBytes } from '../xlsx-io.js';
+import { checklistRows } from '../close/checklist.js';
 import { cashTieOut, balancesFrom } from '../bs/cash.js';
 import { apTieOut, BUCKETS, AP_ACCOUNT } from '../bs/ap-aging.js';
 import { statementEndings } from '../views/balance-sheet.js';
@@ -19,6 +20,13 @@ const short = (m) => monthName(m, { short: true });
 // ctx: { user, recBy, cds, tbBy, agingBy, bsCfg, gl: { result } (restricted funds run), glBy,
 // jeDefaults, restrictedCfg, names }
 export const MAKERS = {
+  async checklist(item, ctx, months) {
+    const { loadCloseData } = await import('../views/checklist.js');
+    const d = await loadCloseData();
+    const done = months.filter((m) => m < new Date().toISOString().slice(0, 7));
+    return workbookBytes([{ name: 'Checklist', rows: checklistRows(done.map((m) => d.forMonth(m))), cols: [9, 20, 44, 9, 22, 17, 30, 70, 18, 44, 40], freeze: { ySplit: 1 } }]);
+  },
+
   async poc(item, ctx) {
     const mod = await import('../views/poc-year.js');
     const api = await mod.default(document.createElement('main'), { user: ctx.user, rerender: () => {}, binder: { fy: item.fy } });

@@ -19,6 +19,7 @@ export const CATEGORIES = [
   ['tb', 'Trial balances'],
 ];
 export const TOPICS = [
+  ['close', 'Close checklist'],
   ['cash', 'Cash (proof of cash, cash tie-out)'],
   ['ap', 'Accounts payable'],
   ['investments', 'Investments (CD schedule)'],
@@ -86,8 +87,9 @@ export function trialBalanceItems(tbs = []) {
 
 // Schedules and JEs made at download time, one per fiscal year (or per month, for JEs), for the
 // fiscal years and months the app has anything for.
-export function madeItems({ pocFys = [], cashMonths = [], apMonths = [], agings = [], cdFys = [], restrictedFys = [], jeMonths = [], inventoryMonths = [], inventoryFiles = [], faMonths = [] }) {
+export function madeItems({ closeFys = [], pocFys = [], cashMonths = [], apMonths = [], agings = [], cdFys = [], restrictedFys = [], jeMonths = [], inventoryMonths = [], inventoryFiles = [], faMonths = [] }) {
   const out = [];
+  for (const fy of closeFys) out.push({ category: 'schedule', topic: 'close', fy, months: fyMonths(fy), make: 'checklist', folder: `${FOLDERS.schedule}/Close checklist`, name: `CloseChecklist_FY${fy}.xlsx`, label: `Month-end checklist FY${fy}` });
   for (const fy of pocFys) out.push({ category: 'schedule', topic: 'cash', fy, months: fyMonths(fy), make: 'poc', folder: `${FOLDERS.schedule}/Proof of cash`, name: `ProofOfCash_FY${fy}.xlsx`, label: `Proof of cash FY${fy}` });
   for (const fy of [...new Set(cashMonths.map(fiscalYear))]) out.push({ category: 'schedule', topic: 'cash', fy, months: cashMonths.filter((m) => fiscalYear(m) === fy), make: 'cash', folder: `${FOLDERS.schedule}/Cash tie-out`, name: `CashTieOut_FY${fy}.xlsx`, label: `Cash tie-out FY${fy}` });
   for (const fy of [...new Set(apMonths.map(fiscalYear))]) out.push({ category: 'schedule', topic: 'ap', fy, months: apMonths.filter((m) => fiscalYear(m) === fy), make: 'ap', folder: `${FOLDERS.schedule}/Accounts payable`, name: `APTieOut_FY${fy}.xlsx`, label: `AP tie-out FY${fy}` });
