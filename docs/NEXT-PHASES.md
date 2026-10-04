@@ -99,6 +99,104 @@ valuation.
 
 ---
 
+## Assumptions built in, not yet confirmed
+
+Each of these is how the app works today. If one is wrong, the fix is usually a setting or a few
+lines — but until someone confirms it, treat the numbers it drives as provisional.
+
+### Restricted funds (`restricted/funds.js`)
+1. **Every Translation Support (4017) gift is restricted.** (Confirmed: to its language, or general
+   localization if none.) No other revenue account carries restricted gifts.
+2. **The language comes from the grant code** on the gift's subaccount (005-**627**). Codes are
+   grouped by language: Portuguese 611/618/627/665, Spanish 632/662/663/664, French 613/654/667,
+   Arabic 602–606 (dialects together). 609 (Department Dev) and 622 (Luke/Acts) count as general
+   localization. A gift coded to Portuguese *video* can be released by Portuguese *podcast* spending.
+3. **Released automatically as it's spent:** spending = any expense line (accounts 5000 and up) on
+   that language's grant codes, in the month it's booked. Nothing is released by a person deciding
+   to; there's no review of whether the spending actually met the donor's purpose.
+4. **A release never takes a fund below zero.** Spending beyond what's restricted is treated as the
+   organization's own money; nothing carries forward to be released by later gifts.
+5. **Gifts come in before spending in the same month**, so a gift and spending in one month release
+   against each other.
+6. **General localization pays for what a language's own fund didn't cover** — any language,
+   after that language's fund is used up.
+7. **Refunds or reclasses (debits to 4017) reduce the fund** they're coded to.
+8. **Every fund starts at zero in October 2024** (the first GL register loaded). No opening
+   balances from the audited financials; the page lists funds an older balance could still affect.
+9. **The gifts are restricted, not conditional:** they post to 3200 (Net Assets Restricted), not
+   2060 (Restricted Deferred Revenue).
+10. **The reclass JE** each month is the net change per fund: Dr 3001 / Cr 3200 when restricted
+    money grows, the reverse when released, subaccount 000-000. 3001 is assumed to be the right
+    "without donor restrictions" account (3100 is the current-year net income line).
+11. **Bolthouse and Murdock are typed in by hand** (opening balance, gifts, schedule or grant codes).
+    The Slab checklist says these are already booked as a receivable — 1220 Contributions
+    Receivable carries $750,000 at September 2025 — and the app doesn't yet look at the receivable:
+    whether a pledge is restricted when booked or when received isn't modeled.
+12. **Spending that's capitalized** (an asset bought with restricted money) doesn't release
+    anything — only expense accounts count.
+
+### Balance sheet checks (`bs/`)
+13. **Cash on the balance sheet is accounts 1000–1201** (1210 on is receivables; 1250 isn't cash).
+14. **Petty cash is always $300.00** (confirmed) and is never reconciled to anything else.
+15. **Cash Clearing (1200) over $50,000 either way** at month end is a problem; under it isn't.
+16. **A difference between a statement and the GL is timing** (outstanding checks, deposits in
+    transit); the balance sheet page shows it but doesn't explain it — proof of cash does.
+17. **AP exceptions are the 61–90 and Over 90 columns** of the aging; the tie is the company total
+    against 2010's month-end balance.
+18. **A month's balances come from its own TB**, or from the next month's TB beginning balances.
+
+### Inventory (`inventory/`)
+19. **Only three items are inventory:** SKU 5100 (How to Read → 1500), 4001 (poster collection →
+    1505), 8000-TM-WHT (mugs → 1506). Everything else in the warehouse (apparel, caps, packaging,
+    Welcome Books, thumb drives…) is expensed.
+20. **Units are "Available Primary"**, including items on hold (the mugs are on hold in the export).
+21. **The Portland count carries forward** until someone types a new one.
+22. **Costs:** coffee table books 135,169.73 / 10,090 units; poster books $4.45 a unit; mugs two
+    orders (10,008 at 166,466.66; 5,016 at 86,854.48), valued as the workbook did — to change.
+23. **The GL before adjusting** is last month's TB ending balance, plus additions typed for the month.
+24. **The distribution sheet's cost is right as saved** (cost per item × quantity, plus shipping and
+    storage for inventory items). Patron Care with no grant is 020-320; categories marked "None"
+    are left out of the JE.
+25. **What departments didn't take is Patron Care perks** (020-320).
+26. **Stripe reclass:** the products and accounts are How to Read → 4081, Poster Collection Book →
+    4084, Video Thumb Drive → 4083, Travel Mug → 4085, SHIPPING → 9050 009-000. "(HQ STOCK)" sales
+    count; "BibleProject Coffee Table Book" doesn't (as in September's workbook); **all discounts
+    come off poster book sales**; apparel and other merch stay in Stripe Donations.
+27. **A warehouse export run on the 1st is the previous month's count** (the upload asks which month).
+28. **A merch purchase of $15,000 or more is inventory** — the app lists GL lines that size on
+    9000–9099 and 1500–1509 but doesn't act on them.
+
+### Fixed assets (`fa/`)
+29. **The FY26 listing is the truth at September 2026:** each asset's "Remaining" and monthly amount
+    carry forward unchanged (the old sheet's monthly amounts aren't recalculated).
+30. **Assets named "Delete" were disposed at September 2026** and their disposal JE is already booked.
+31. **New assets default to straight-line, 60 months, starting the month after** they're placed in
+    service; the capitalization threshold is $7,500.
+32. **The depreciation JE trues each A/D account up to the schedule** using last month's TB — so if the
+    GL drifted, the JE corrects it without anyone deciding to.
+33. **Disposal proceeds were booked to 8049 (010-000) when received**; the disposal JE moves them
+    out, and gain/loss goes to 8990 (as the FY26 disposal JE did).
+34. **Construction in progress isn't depreciated**; the "2020 Total Asset" subtotal depreciates as one
+    asset (its detail rows are folded into it).
+
+### Everything else
+35. **Statements are named for the account and month of the cell they're attached to**; CDARS by
+    statement date.
+36. **COI disclosures:** anyone who has ever filed is expected to file every year. CC compilations
+    are due for the periods ending January, May and September.
+37. **All data is readable by anyone signed in at BibleProject** (every collection is `shared`),
+    including governance documents — decided, noted here for the auditors.
+38. **The audit binder makes schedules from the figures as they are now**, not as they were at
+    close, until Phase A (lock) is built.
+39. **JE batch numbers 1–10** in the Acumatica downloads are the app's own (1 Stripe, 2 PayPal,
+    3 Tschetter, 4 Delap, 5 CD interest, 6 restricted funds, 7 inventory adjustment, 8 Stripe merch
+    reclass, 9 depreciation, 10 disposals); assumed not to clash with anything in Acumatica.
+40. **Checklist owners** are as in the July 2026 Slab checklist; the same person preparing and
+    approving is flagged, not blocked.
+41. **The fiscal year is October–September** (confirmed).
+
+---
+
 ## Open items carried forward
 
 - **Mug valuation:** the app values mugs as the workbook does today; switch to first-in-first-out or
