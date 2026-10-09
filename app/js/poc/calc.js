@@ -20,6 +20,10 @@ import { round2, sum } from '../money.js';
 // match is one-to-one.
 export const BANK_SOURCES = [
   { id: 'cassOp', label: 'Cass Operating', gl: '1100', hint: 'Operating, Incoming and Outgoing statements' },
+  // OneStory Marshall LLC, a disregarded entity of BibleProject (the building at 810 NW Marshall),
+  // from September 2026: its own Cass accounts, read like KeyBank (deposits, interest, ending).
+  { id: 'osmOp', label: 'OneStory Marshall - Cass Operating', gl: '1110', hint: 'Cass statement …4676' },
+  { id: 'osmSav', label: 'OneStory Marshall - Cass Savings', gl: '1111', hint: 'Cass statement …4839' },
   { id: 'stripe', label: 'Stripe', gl: '1015', revenueGl: '4015', hint: 'Stripe monthly statement CSV' },
   { id: 'paypal', label: 'PayPal', gl: '1012', revenueGl: '4012' },
   { id: 'wise', label: 'Wise', gl: '1013' },
@@ -52,8 +56,9 @@ export const ADJUSTMENT_TYPES = {
 
 export const DEFAULT_POC_CONFIG = {
   // GL revenue = credits less debits in these accounts. CC rewards (4077) are included — the
-  // Divvy rewards land in Cass Operating and count as bank revenue.
-  revenueAccounts: ['4010', '4012', '4015', '4017', '4018', '4075', '4077', '4081', '4083', '4084', '4085'],
+  // Divvy rewards land in Cass Operating and count as bank revenue. Rental income from OneStory
+  // Marshall (4030) is revenue too: the building is BibleProject's (a disregarded entity).
+  revenueAccounts: ['4010', '4012', '4015', '4017', '4018', '4030', '4075', '4077', '4081', '4083', '4084', '4085'],
   // GL interest = interest income plus investment gain/loss.
   interestAccounts: ['4050', '8999'],
 };

@@ -117,7 +117,11 @@ export async function removeTrialBalance(month) {
 
 export async function loadPocConfig() {
   const saved = await store.get('settings', 'poc-config');
-  return { ...DEFAULT_POC_CONFIG, ...(saved || {}) };
+  const cfg = { ...DEFAULT_POC_CONFIG, ...(saved || {}) };
+  // Settings saved earlier carry a copy of the account lists; an account added to the built-in
+  // list (4030, OneStory rent) counts whatever the copy says.
+  for (const k of ['revenueAccounts', 'interestAccounts']) cfg[k] = [...new Set([...(DEFAULT_POC_CONFIG[k] || []), ...(saved?.[k] || [])])];
+  return cfg;
 }
 
 export async function savePocConfig(cfg) {

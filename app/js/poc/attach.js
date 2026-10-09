@@ -33,6 +33,8 @@ export const ACCOUNT_FILES = {
   keyOp: { accept: '.pdf', hint: 'KeyBank Business Reward Checking statement (PDF).' },
   keyMM: { accept: '.pdf', hint: 'KeyBank Money Market statement (PDF).' },
   ics: { accept: '.pdf', hint: 'ICS monthly statement (PDF).' },
+  osmOp: { accept: '.pdf', hint: 'OneStory Marshall Cass Operating statement (…4676, PDF).' },
+  osmSav: { accept: '.pdf', hint: 'OneStory Marshall Cass Savings statement (…4839, PDF).' },
   cd: { accept: '.pdf,.xlsx', hint: 'CDARS statements (month-end and any maturities), or the IntraFi accounts export run on the 1st.', multiple: true },
   delap: { accept: '.png,.jpg,.jpeg,.pdf', hint: 'Type the ending value from Fidelity. A screenshot can be kept with it.', multiple: true },
   tschetter: { accept: '.pdf,.png,.jpg,.jpeg', hint: 'The Schwab statement (PDF) books the gain and the fees since they were last booked. Portal screenshots only book the gain: keep them here and type the ending value.', multiple: true },

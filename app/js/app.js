@@ -31,6 +31,12 @@ const TABS = [
   ['#/assets', 'Fixed assets', (hash) => hash.startsWith('#/assets')],
   ['#/binder', 'Audit binder', (hash) => hash.startsWith('#/binder')],
 ];
+// Tabs shown in the top bar for now (user, 2026-10-09). The others still open at their address
+// (#/binder, #/checklist, …) and keep their data; add a tab's address here to show it again.
+const SHOWN_TABS = ['#/poc', '#/cds'];
+
+// A hidden tab opened at its address still shows itself in the top bar while you're on it.
+const shownHashTab = (hash) => (TABS.find(([, , active]) => active(hash)) || [])[0];
 
 let user = null;
 
@@ -88,7 +94,7 @@ export async function render() {
   const root = document.getElementById('app');
   const header = h('header', { class: 'topbar' },
     h('div', { class: 'brand' }, h('strong', {}, 'Month Close'), h('span', { class: 'muted' }, 'BibleProject Accounting')),
-    h('nav', { class: 'tabs-top' }, TABS.map(([href, label, active]) => h('a', { href, class: active(hash) ? 'active' : '' }, label))),
+    h('nav', { class: 'tabs-top' }, TABS.filter(([href]) => SHOWN_TABS.includes(href) || href === shownHashTab(hash)).map(([href, label, active]) => h('a', { href, class: active(hash) ? 'active' : '' }, label))),
     h('span', { class: 'who muted' }, user?.first ? `Hi, ${user.first}` : ''));
   const banner = storeMode() === 'local'
     ? h('div', { class: 'banner warn' }, 'Preview mode: the platform storage isn’t reachable, so anything you save stays in this browser only. Deploy to bp-vibes to share data.')

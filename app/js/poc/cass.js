@@ -20,6 +20,26 @@ export const CASS_ACCOUNTS = {
   3410: { kind: 'outgoing', label: 'Cass Outgoing Wires' },
 };
 
+// OneStory Marshall LLC's own Cass accounts. Not BibleProject's Cass Operating: they have their own
+// lines on the sheet (and GL accounts), so they're told apart by account number before anything else.
+export const OSM_ACCOUNTS = { 4676: 'osmOp', 4839: 'osmSav' };
+export function osmAccountOf(lines) {
+  const t = lines.slice(0, 40).map((l) => l.text).join('\n');
+  const n = (t.match(/Account Number:\s*(\d+)/) || [])[1];
+  return n && /Statement Date:/.test(t) ? OSM_ACCOUNTS[n.slice(-4)] || null : null;
+}
+
+// A OneStory statement as a bank line: deposits are its revenue (the GL then says what each one
+// was), interest credits its interest, and it ties when every line read adds up to its summary.
+export function osmStatement(lines, source) {
+  const s = parseCassStatement(lines);
+  const credits = s.transactions.filter((t) => t.section === 'credit');
+  const interest = round2(credits.filter((t) => /interest/i.test(t.desc)).reduce((a, t) => a + t.amount, 0));
+  return { source, account: s.accountNumber, date: s.statementDate, month: s.month, beginning: s.summary.beginning, ending: s.summary.ending,
+    revenue: round2(s.summary.credits.total - interest), interest, withdrawals: s.summary.debits.total, transactions: s.transactions,
+    ties: s.check.creditsOk && s.check.debitsOk && s.check.balanceOk };
+}
+
 export function looksLikeCass(lines) {
   return lines.some((l) => /DEPOSITS AND OTHER CREDITS|OTHER DEBITS AND WITHDRAWALS/.test(l.text))
     && lines.some((l) => /Statement Date:/.test(l.text));

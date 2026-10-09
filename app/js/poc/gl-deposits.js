@@ -637,7 +637,8 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       if (Math.abs(amount) < 0.005) continue;
       const id = `auto-glnocash-${x.batch}`;
       const onAccount = Object.keys(x.accounts).some((a) => /^12[1-9]\d$/.test(a));
-      const adj = { id, account: 'cassOp', type: onAccount ? 'timing' : 'other', auto: true, gl: x.batch, amount,
+      // OneStory Marshall's rent (4030) belongs with its own account's line.
+      const adj = { id, account: '4030' in x.accounts ? 'osmOp' : 'cassOp', type: onAccount ? 'timing' : 'other', auto: true, gl: x.batch, amount,
         label: onAccount ? `Merchandise sold on account: ${x.desc}` : `Revenue the GL moved with no cash: ${x.desc}`,
         note: `GL ${x.batch} (${x.date}): ${Object.entries(x.accounts).map(([a, v]) => `${accountName(a, names)} ${v > 0 ? 'Cr' : 'Dr'} ${money2(Math.abs(v))}`).join(', ')}`,
         why: onAccount ? 'Booked as revenue when sold; the cash comes in later, when the receivable is paid (that deposit is then taken out as recognized in an earlier month).'
