@@ -239,3 +239,13 @@ test('CSV: the same columns and rows, dates m/d/yyyy, text with commas or quotes
   assert.equal(rows[1], '1,8/31/2026,"Stripe, ""monthly""",1200,000-000,150000.00,,9 Payouts & Transfers');
   assert.equal(rows.length, 1 + je.lines.length);
 });
+
+test('A Tschetter fee entry and its reversal net out, even when the reversal has no 1171 line (Apr 2026)', async () => {
+  const { investmentAccountOf } = await import('../app/js/gl.js');
+  const original = { desc: 'Unrealized Gains - Tschetter Group (Expenses Quarterly)', accounts: { 1171: 0, 8999: -9697.84, 8070: 9697.84 } };
+  const reversal = { desc: 'Unrealized Gains - Tschetter Group (Expenses Quarterly) - Reversal', accounts: { 8999: 9697.84, 8070: -9697.84 } };
+  assert.deepEqual([investmentAccountOf(original), investmentAccountOf(reversal)], ['1171', '1171']);
+  assert.equal(investmentAccountOf({ desc: 'Unrealized Gains - Delap', accounts: { 8999: 5 } }), '1170');
+  // A DAF gift batch with an Overflow fee (8070) names no investment: not counted as one.
+  assert.equal(investmentAccountOf({ desc: 'DAF Gifts - Fidelity, NCF, Overflow', accounts: { 1100: -10, 4018: 10.5, 8070: -0.5 } }), null);
+});

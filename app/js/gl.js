@@ -180,10 +180,21 @@ function stripeReclasses(batches) {
 // statement's change in value, grossed up by the fee (Cr 8999), with the fee as an expense
 // (Dr 8070) — so the fee is added back to the change in value. Tschetter bills quarterly.
 export const INVESTMENT_GL = { 1170: 'delap', 1171: 'tschetter' };
+// Which investment account a batch is about: the one it has a line on, or, for an 8070 / 8999
+// entry with no investment line, the one its description names. A reversal is often keyed
+// without the zero 1171 line the original had (Apr 2026: GL018327, Tschetter fees 9,697.84,
+// reversed by GL019056), and without this it wouldn't net out.
+const NAMED = [[/tschetter/i, '1171'], [/delap/i, '1170']];
+export function investmentAccountOf(b) {
+  const onLine = Object.keys(INVESTMENT_GL).find((a) => a in b.accounts);
+  if (onLine) return onLine;
+  if (!('8070' in b.accounts || '8999' in b.accounts)) return null;
+  return (NAMED.find(([re]) => re.test(b.desc || '')) || [])[1] || null;
+}
 function investmentFees(batches) {
   const out = [];
   for (const b of batches) {
-    const acct = Object.keys(INVESTMENT_GL).find((a) => a in b.accounts);
+    const acct = investmentAccountOf(b);
     const fee = round2(b.accounts['8070'] || 0);
     if (acct && fee) out.push({ account: INVESTMENT_GL[acct], batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: fee });
   }
@@ -196,7 +207,7 @@ function investmentFees(batches) {
 function investmentGl(batches) {
   const out = [];
   for (const b of batches) {
-    const acct = Object.keys(INVESTMENT_GL).find((a) => a in b.accounts);
+    const acct = investmentAccountOf(b);
     if (!acct || !('8999' in b.accounts || '4050' in b.accounts)) continue;
     const gain = round2(-((b.accounts['8999'] || 0) + (b.accounts['4050'] || 0)));
     if (!gain && !b.accounts['8070']) continue;
