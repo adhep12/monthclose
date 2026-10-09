@@ -22,6 +22,7 @@
 import { round2, sum } from '../money.js';
 import { addMonths, lastDayOfMonth } from '../fiscal.js';
 import { PAYPAL_GL } from '../gl.js';
+import { acct, accountTitle } from '../accounts.js';
 import { DEFAULT_POC_CONFIG, isSweep, defaultExclusions, manualExclusions, exclusionInfo } from './calc.js';
 
 const STRIPE = /^STRIPE/i;
@@ -38,7 +39,7 @@ const ACCOUNT_NAMES = {
   1220: 'grants / pledges receivable', 2010: 'accounts payable', 2041: 'agency (pass-through)', 2042: 'sales tax', 2050: 'payroll',
   9050: 'shipping (COGS)',
 };
-export const accountName = (a, names = {}) => `${a} ${names[a] || ACCOUNT_NAMES[a] || ''}`.trim();
+export const accountName = (a, names = {}) => `${a} ${names[a] || accountTitle(a) || ACCOUNT_NAMES[a] || ''}`.trim();
 const money2 = (v) => (v ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // Money leaving Cass (not the sweeps between its own accounts), for matching a chargeback.
 const cassDebits = (rec) => ['operating', 'incoming', 'outgoing'].flatMap((k) => (rec?.statements?.[k]?.transactions || []).filter((t) => t.section !== 'credit' && !isSweep(t)));
@@ -571,13 +572,13 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         if (from) {
           res.adjustments.push({ id, account: 'cassOp', type: 'timing', label: 'Stripe money received earlier, recognized as giving now', amount: net, auto: true, gl: x.batch, evidence: 'both', clearing: true,
             note: `Received ${from.date} through Stripe (${from.desc} ${money2(net)}, GL ${from.glIn}); GL ${x.batch} (${x.date}) moves it from Stripe clearing to giving`,
-            why: 'Came into Cass through Stripe but wasn’t one of Stripe’s payouts (a gift through another Stripe account). The GL held it in Stripe clearing (1200) and moved it to giving this month, so it’s counted now — it was taken out as timing the month it arrived.',
+            why: `Came into Cass through Stripe but wasn’t one of Stripe’s payouts (a gift through another Stripe account). The GL held it in ${acct('1200')} and moved it to giving this month, so it’s counted now — it was taken out as timing the month it arrived.`,
             detail: [{ date: x.date, amount: net, desc: `${x.desc} — received ${from.date} (${monthLabel(from.month)})` }] });
           continue;
         }
         res.adjustments.push({ id, account: 'stripe', type: 'not-revenue', label: `Stripe, per the GL: ${x.desc}`, amount: net, auto: true, gl: x.batch,
           note: `GL ${x.batch} (${x.date}): ${moved.map(([a, v]) => `${v > 0 ? 'to' : 'from'} ${accountName(a, names)} ${round2(Math.abs(v)).toFixed(2)}`).join(', ')}`,
-          why: 'Stripe’s gross includes sales the GL doesn’t count as revenue — shipping (9050) and sales tax (2042) on merchandise — and the GL sometimes adds a stray Stripe transfer to giving.',
+          why: `Stripe’s gross includes sales the GL doesn’t count as revenue — shipping (${acct('9050')}) and sales tax (${acct('2042')}) on merchandise — and the GL sometimes adds a stray Stripe transfer to giving.`,
           detail: [{ date: x.date, amount: net, desc: x.desc }] });
       }
     }
@@ -647,8 +648,8 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         const from = into ? null : Object.keys(glBy).filter((mm) => mm < m).sort().reverse()
           .find((mm) => (glBy[mm]?.noCashRevenue || []).some((y) => (y.accounts['2033'] || 0) > 0.005));
         const padj = { id: pid, account: 'osmOp', type: 'timing', auto: true, gl: x.batch, amount: prepaid, evidence: 'gl',
-          label: into ? 'Prepaid rent received, not yet earned (2033)' : `Prepaid rent earned (2033)${from ? `, received ${monthLabel(from)}` : ''}`,
-          note: `GL ${x.batch} (${x.date}): ${into ? 'moves' : 'releases'} ${money2(Math.abs(prepaid))} ${into ? 'from rental income into' : 'from'} ${accountName('2033', names)}${into ? '' : ' into rental income'}.`,
+          label: into ? `Prepaid rent received, not yet earned (${acct('2033')})` : `Prepaid rent earned (${acct('2033')})${from ? `, received ${monthLabel(from)}` : ''}`,
+          note: `GL ${x.batch} (${x.date}): ${into ? 'moves' : 'releases'} ${money2(Math.abs(prepaid))} ${into ? `from ${accountName('4030', names)} into` : 'from'} ${accountName('2033', names)}${into ? '' : ` into ${accountName('4030', names)}`}.`,
           why: into ? 'The money came in this month, but it’s rent for a later period: the GL holds it as prepaid rent (a liability) until it’s earned.'
             : 'Rent received in an earlier month, recognized now: the GL takes it out of prepaid rent with no cash moving this month.',
           detail: [{ date: x.date, amount: Math.abs(prepaid), desc: x.desc }] };
@@ -691,7 +692,7 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
         const adj = { id, account: 'cassOp', type: fee ? 'other' : 'timing', auto: true, gl: r.batch, amount, evidence: 'gl', // the statement shows the net deposit only
           label: fee ? `Fees kept by the giving platform: ${r.desc}` : `Revenue released from ${accountName(acct, names)}: ${r.desc}`,
           note: `GL ${r.batch} (${r.date}): deposit ${money2(r.amount)}, revenue ${money2(revenueIn(r.accounts))}, ${accountName(acct, names)} Dr ${money2(amount)}${earlier ? ` — held back by GL ${earlier.batch} (${earlier.date}, ${monthLabel(earlier.month)})` : ''}`,
-          why: fee ? 'The platform (Overflow and the like) sends the gift less its fee. The GL books the whole gift as revenue and the fee as an expense (8070), so revenue is more than the deposit by the fee.'
+          why: fee ? `The platform (Overflow and the like) sends the gift less its fee. The GL books the whole gift as revenue and the fee as an expense (${accountName(acct, names)}), so revenue is more than the deposit by the fee.`
             : 'Part of this entry’s revenue comes from a liability, not from the deposit — a gift held back earlier and recognized now. That part never reached the bank this month.',
           detail: [{ date: r.date, amount, desc: r.desc }] };
         const by = coveredBy(amount);

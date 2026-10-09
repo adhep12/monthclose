@@ -50,7 +50,7 @@ test('each adjustment line says who, where it is on the statement and in the GL'
   assert.equal(wise.group, 'Transfers between our accounts');
   assert.equal(wise.bank, 'Cass Incoming Wires …5892, statement 2026-02-28 (incoming-feb.pdf) · Credits · 2/20 199,998.87 “WISE US INC/BP Wise”');
   assert.equal(wise.glBatch, 'GL0100');
-  assert.equal(wise.gl, '2/20 Wise Transfer · Dr 1100 Cass 199,998.87 / Cr 1013 Wise 199,998.87 · line GL GL0100 2');
+  assert.equal(wise.gl, '2/20 Wise Transfer · Dr 1100 Cass - General Operating 199,998.87 / Cr 1013 Wise 199,998.87 · line GL GL0100 2');
   assert.equal(wise.who, 'Transfer from Wise');
 
   // Who: the payer on the GL line when the statement doesn't name them.
@@ -108,6 +108,6 @@ test('refs are permanent: kept on re-export, new lines get the next number, gone
 });
 
 test('bookedText writes a batch as a journal entry', () => {
-  assert.equal(bookedText({ accounts: { 1100: -50, 4010: 50 } }), 'Dr 1100 Cass 50.00 / Cr 4010 50.00');
+  assert.equal(bookedText({ accounts: { 1100: -50, 4010: 50 } }), 'Dr 1100 Cass - General Operating 50.00 / Cr 4010 Checks 50.00');
   assert.equal(bookedText(null), '');
 });

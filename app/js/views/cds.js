@@ -11,6 +11,7 @@ import { fiscalYear, monthName, addMonths, lastDayOfMonth, monthOfDate, currentM
 import { explain, uploadFile, filesAvailable } from '../store.js';
 import { when } from '../audit.js';
 import { statementName, renamed, statementTags } from '../naming.js';
+import { acct, setAccountNames } from '../accounts.js';
 
 const SOURCE_LABEL = { statement: 'CDARS statement', workbook: 'old workbook', export: 'IntraFi export', typed: 'typed' };
 
@@ -32,6 +33,7 @@ export default async function (main, { user, rerender }) {
   if (!month) month = cdsFirst.flatMap((c) => Object.keys(c.earned || {})).sort().pop() || addMonths(currentMonth(), -1);
   const pickMonth = (m) => { try { localStorage.setItem(MONTH_KEY, m); } catch { /* ignore */ } rerender(); };
   const [cds, gl, cfg] = [cdsFirst, await gl1150(month), await loadConfig()];
+  setAccountNames(cfg.accountNames);
   const fy = fiscalYear(month);
   const months = fyMonths(fy);
   const s = monthSummary(cds, month);
@@ -144,7 +146,7 @@ export default async function (main, { user, rerender }) {
     h('div', { class: 'cards wide' },
       h('div', { class: 'card' }, h('h3', {}, monthName(month)),
         h('div', { class: 'recon' },
-          row('Interest earned (accrue: Dr 1150 / Cr 4050)', money(s.accrued)),
+          row(`Interest earned (accrue: Dr ${acct('1150')} / Cr ${acct('4050')})`, money(s.accrued)),
           row('Interest paid at maturity (rolled over)', money(s.realized)),
           row('Principal of open CDs', money(s.principal)),
           row('Interest earned, not yet paid', money(s.unpaidInterest)),

@@ -48,12 +48,12 @@ export function glBatchIndex(glBy = {}) {
   return out;
 }
 
-// What a batch booked, as a journal entry: "Dr 1100 Cass 5,000.00 / Cr 4018 5,000.00". The
+// What a batch booked, as a journal entry: "Dr 1100 Cass - General Operating 5,000.00 / Cr 4018 … 5,000.00". The
 // accounts are kept net credit positive.
 export function bookedText(b) {
   if (!b?.accounts) return '';
   const e = Object.entries(b.accounts).filter(([, v]) => Math.abs(v) >= 0.005);
-  const name = (a) => accountName(a, { 1100: 'Cass' });
+  const name = (a) => accountName(a);
   return [...e.filter(([, v]) => v < 0).map(([a, v]) => `Dr ${name(a)} ${money2(-v)}`), ...e.filter(([, v]) => v > 0).map(([a, v]) => `Cr ${name(a)} ${money2(v)}`)].join(' / ');
 }
 
@@ -150,7 +150,7 @@ export function auditRows({ m, rec, c, glIndex = new Map(), priorDeposits = null
       evidence: EVIDENCE.gl.label, evidenceKey: 'gl',
       bank: 'None: no deposit of its own; the settlement document (e.g. a closing statement) shows it',
       glBatch: x.batch,
-      gl: b ? [`${md(b.date)} ${b.desc || ''}`.trim(), `Cr 4050 ${money2(x.amount)}`].filter(Boolean).join(' · ') : `Cr 4050 ${money2(x.amount)}`,
+      gl: b ? [`${md(b.date)} ${b.desc || ''}`.trim(), `Cr ${accountName('4050')} ${money2(x.amount)}`].filter(Boolean).join(' · ') : `Cr ${accountName('4050')} ${money2(x.amount)}`,
       why: `Interest income the GL booked with no cash or investment account on the other side: received inside another settlement, so no statement lists it.${ok ? ` Confirmed by ${ok.by}${ok.at ? `, ${String(ok.at).slice(0, 10)}` : ''}${ok.note ? `: “${ok.note}”` : ''}.` : ' Not confirmed yet.'}`,
     });
   }

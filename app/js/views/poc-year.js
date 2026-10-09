@@ -4,7 +4,8 @@
 // Adjustments to open up what's being taken out; click GL to load Acumatica's numbers.
 
 import { h, mount, toast, fileButton, ask, askValue, panel, table, notify, statusPill, dropTarget, carryScroll, topPanelScroll, nextDialog } from '../ui.js';
-import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa, listSfGiving, saveSfGiving } from '../data.js';
+import { loadPocMonths, loadPocMonth, savePocMonth, listGlActivity, saveGlActivity, loadPocConfig, savePocConfig, loadCds, saveCd, deleteCd, listSoa, saveSoa, listSfGiving, saveSfGiving, loadConfig, saveAccountNames } from '../data.js';
+import { acct, setAccountNames, parseChartOfAccounts } from '../accounts.js';
 import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '../cd/schedule.js';
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
@@ -209,7 +210,9 @@ function blank(month) {
 // for the audit binder.
 export default async function (main, { user, rerender, month: openMonthParam = null, binder = null }) {
   const relist = !listed || Date.now() - listed.at > LIST_FRESH_MS || !Object.keys(recentSaves).length;
-  const [recs, glActs, cfg, cds, soas, sfList] = await Promise.all([relist ? loadPocMonths() : listed.recs, listGlActivity(), loadPocConfig(), loadCds(), listSoa(), listSfGiving().catch(() => [])]);
+  const [recs, glActs, cfg, cds, soas, sfList, faCfg] = await Promise.all([relist ? loadPocMonths() : listed.recs, listGlActivity(), loadPocConfig(), loadCds(), listSoa(), listSfGiving().catch(() => []), loadConfig().catch(() => null)]);
+  // Account names for the explanations ("2033 Prepaid Rent - OneStory"): built in, or as uploaded.
+  setAccountNames(faCfg?.accountNames);
   if (relist) listed = { at: Date.now(), recs };
   // Right after a save, the platform's list can still hand back the month as it was; what this
   // page just saved wins until the list catches up.
@@ -600,7 +603,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
                   field('Net deposits (withdrawals)', inp('netDeposits'), id === 'delap' && fidelityTransfers(rec).total && b.netDeposits == null
                     ? `Left blank: Cass received ${money(fidelityTransfers(rec).total, { dash: false })} from Fidelity this month, so that’s used as a withdrawal.` : 'Money put in is positive; taken out (withdrawals, fees) negative.'),
                   field('Fees taken out', inp('fees'), c.deposits?.fees?.[id] && b.fees == null
-                    ? `Left blank: the GL booked ${money(c.deposits.fees[id].amount, { dash: false })} in fees this month (${c.deposits.fees[id].batches.map((x) => x.batch).join(', ')}, Dr 8070), so that’s added back.`
+                    ? `Left blank: the GL booked ${money(c.deposits.fees[id].amount, { dash: false })} in fees this month (${c.deposits.fees[id].batches.map((x) => x.batch).join(', ')}, Dr ${acct('8070')}), so that’s added back.`
                     : 'Management fees deducted from the account (Tschetter bills quarterly). Added back: the GL books them as an expense and grosses up the gain.'),
                   field('Beginning value (optional)', inp('beginning'), 'From the statement or screenshot. Only a check: the JE books the change from the last ending booked, and flags a beginning that differs.'),
                   id === 'tschetter' ? field('Expenses year to date', rec.bankStatements?.tschetter ? h('span', {}, money(rec.bankStatements.tschetter.feesYtd, { dash: false }), h('span', { class: 'muted small' }, ' (from the statement)')) : inp('feesYtd'),
@@ -684,23 +687,34 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     for (const x of ms) {
       const a = glBy[x].accounts;
       const r = { m: x };
-      for (const acct of ['2033', '2032']) {
-        const net = round2(-(a[acct] || 0)); // a credit adds to what's held
-        bal[acct] = round2(bal[acct] + net);
-        r[acct] = net; r[`bal${acct}`] = bal[acct];
+      for (const k of ['2033', '2032']) {
+        const net = round2(-(a[k] || 0)); // a credit adds to what's held
+        bal[k] = round2(bal[k] + net);
+        r[k] = net; r[`bal${k}`] = bal[k];
       }
       if (r['2033'] || r['2032'] || rows.length) rows.push(r);
     }
     if (!rows.length) return null;
     return h('div', {}, h('h3', {}, 'Held for tenants (from the GL)'),
-      h('p', { class: 'muted small' }, 'Prepaid rent is rent received before it’s earned: it comes out of revenue the month it arrives and back in the month the GL releases it (Dr 2033, Cr 4030, no cash), both on the sheet under Timing. September 2026’s 27,204.20 is the whole closing credit (October rent 26,459.07 plus 745.13 of 9/30 rent), to be released at once. Security deposits are held and never become revenue.'),
+      h('p', { class: 'muted small' }, `Prepaid rent is rent received before it’s earned: it comes out of revenue the month it arrives and back in the month the GL releases it (Dr ${acct('2033')}, Cr ${acct('4030')}, no cash), both on the sheet under Timing. September 2026’s 27,204.20 is the whole closing credit (October rent 26,459.07 plus 745.13 of 9/30 rent), to be released at once. Security deposits are held and never become revenue.`),
       table([
         { label: 'Month', cell: (r) => monthName(r.m) },
-        { label: 'Prepaid rent in (out)', num: true, cell: (r) => money(r['2033']) },
-        { label: 'Prepaid rent held', num: true, cell: (r) => money(r.bal2033, { dash: false }) },
-        { label: 'Security deposits in (out)', num: true, cell: (r) => money(r['2032']) },
-        { label: 'Security deposits held', num: true, cell: (r) => money(r.bal2032, { dash: false }) },
+        { label: `${acct('2033')}: in (out)`, num: true, cell: (r) => money(r['2033']) },
+        { label: `${acct('2033')}: held`, num: true, cell: (r) => money(r.bal2033, { dash: false }) },
+        { label: `${acct('2032')}: in (out)`, num: true, cell: (r) => money(r['2032']) },
+        { label: `${acct('2032')}: held`, num: true, cell: (r) => money(r.bal2032, { dash: false }) },
       ], rows));
+  }
+
+  // Acumatica's Chart of Accounts export: the names the explanations use for each account number.
+  async function uploadChart(file) {
+    try {
+      const { XLSX, wb } = await readWorkbook(file);
+      const names = parseChartOfAccounts(XLSX, wb);
+      setAccountNames(await saveAccountNames(names));
+      toast(`Chart of accounts loaded: ${Object.keys(names).length} accounts named (e.g. ${acct('2033')}).`);
+      rerender();
+    } catch (err) { toast(explain(err, 'Couldn’t read the chart of accounts.'), 'error'); }
   }
 
   // Money out of Wise is never revenue. Sent to one of our own accounts, it should land there — and
@@ -1041,7 +1055,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   }
   async function openNoCashInterest(m) {
     await panel(`${NO_CASH_INTEREST} — ${monthName(m)}`, (body, close) => mount(body,
-      h('p', { class: 'muted small' }, 'Interest income (4050) the GL booked with no cash or investment account on the other side: received inside another settlement, not as a deposit of its own, so no bank statement lists it. September 2026: interest on the OneStory escrow, credited on the closing statement (IBA Interest). Check each against its settlement document and confirm it.'),
+      h('p', { class: 'muted small' }, `${acct('4050')} the GL booked with no cash or investment account on the other side: received inside another settlement, not as a deposit of its own, so no bank statement lists it. September 2026: interest on the OneStory escrow, credited on the closing statement (IBA Interest). Check each against its settlement document and confirm it.`),
       intItems(m).length ? noCashInterestTable(m, close) : h('p', { class: 'muted' }, 'None this month.')), { wide: true });
   }
 
@@ -1388,7 +1402,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       step('Ending value', b.ending, 'From the statement'),
       step(`Less ${monthName(addMonths(m, -1))} ending value`, -priorEnding, b.priorEnding != null ? 'Typed' : 'From last month’s statement'),
       net ? step(net < 0 ? 'Plus money taken out' : 'Less money put in', -net, b.netDeposits != null ? 'Typed' : `Fidelity MoneyLine transfers into Cass this month: ${fidelityTransfers(rec).items.map((t) => `${t.date} ${money(t.amount)}`).join(', ')}`) : null,
-      fee ? step('Plus fees taken out', fee, b.fees != null ? 'Typed' : `Per the GL: ${glFee.batches.map((x) => `${x.batch} ${x.desc} (Dr 8070 ${money(x.amount)})`).join('; ')} — the GL books the gain before the fee and the fee as an expense`) : null,
+      fee ? step('Plus fees taken out', fee, b.fees != null ? 'Typed' : `Per the GL: ${glFee.batches.map((x) => `${x.batch} ${x.desc} (Dr ${acct('8070')} ${money(x.amount)})`).join('; ')} — the GL books the gain before the fee and the fee as an expense`) : null,
       h('div', { class: 'recon-row total' }, h('span', {}, 'Gain / interest'), h('span', { class: 'num' }, h('strong', {}, money(gain, { dash: false })))),
       inv ? h('div', { class: 'recon-row' }, h('span', {}, 'The GL booked', h('div', { class: 'muted small' }, inv.batches.map((x) => `${x.batch} ${x.desc}: gain ${money(x.gain)}${x.fee ? `, fee ${money(x.fee)}` : ''}`).join('; '))),
         h('span', { class: 'num' }, money(inv.gain, { dash: false }), ' ', Math.abs(diff) < 0.005 ? statusPill('Ties', 'good') : statusPill(`${money(diff, { dash: false })} different`, 'bad'))) : null);
@@ -1852,7 +1866,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         ], r.reasons) : h('p', { class: 'muted small' }, 'Nothing the app can put a number on yet.'),
         sfAdjForm(m, r, close),
         sfToDate(r),
-        r.restricted.length ? h('div', {}, h('h3', {}, 'Restricted gifts (4017) in the GL'),
+        r.restricted.length ? h('div', {}, h('h3', {}, `Restricted gifts (${acct('4017')}) in the GL`),
           h('p', { class: 'muted small' }, 'Counted in the channel they came in by, as Salesforce does. Salesforce may record a restricted gift when it’s given and the GL when it’s released, so they’re listed here to check.'),
           table([
             { label: 'Date', cell: (x) => x.date },
@@ -2186,7 +2200,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
       for (const x of c.timing.noCashInterestItems || []) {
         const k = rec?.intConfirm?.[x.batch];
-        checks.push([monthName(m), 'Interest without a deposit', k && Math.abs(k.amount - x.amount) < 0.005 ? `Confirmed (${k.by})` : 'NOT CONFIRMED', `${x.batch} ${x.date} ${x.desc}: ${money(x.amount, { dash: false })} of 4050 with no deposit; evidence is the GL entry and the settlement document.`]);
+        checks.push([monthName(m), 'Interest without a deposit', k && Math.abs(k.amount - x.amount) < 0.005 ? `Confirmed (${k.by})` : 'NOT CONFIRMED', `${x.batch} ${x.date} ${x.desc}: ${money(x.amount, { dash: false })} of ${acct('4050')} with no deposit; evidence is the GL entry and the settlement document.`]);
       }
       if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
     }
@@ -2290,6 +2304,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         h('button', { class: 'btn', onclick: openExport, title: 'The sheet as an Excel workbook, or printed / saved as PDF' }, 'Export'),
         h('button', { class: 'btn', onclick: () => openJeExport(), title: 'A month’s journal entries, in one file for Acumatica’s import' }, 'Download for Acumatica'),
         fileButton('Upload GL register…', '.xlsx,.xls', async (file) => { if (await uploadGlRegister(file)) rerender(); }),
+        fileButton('Upload chart of accounts…', '.xlsx,.xls', uploadChart),
         h('button', { class: 'btn', onclick: openAliases, title: 'The names the app treats as the same payer on a statement and in the GL' }, 'Payer names'))),
     h('div', { class: 'row tabs' },
       years.map((y) => h('button', { class: y === fy ? 'tab active' : 'tab', onclick: () => pickFy(y), title: `October ${y - 1} – September ${y}` }, `FY${y}`, h('span', { class: 'tab-sub' }, ` Oct ${String(y - 1).slice(2)}–Sep ${String(y).slice(2)}`))),

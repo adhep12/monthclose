@@ -14,14 +14,24 @@ const osm = (m) => d[m].adjustments.filter((a) => a.account === 'osmOp').map((a)
 
 test('Prepaid rent: received in September (out of revenue), the rest of the entry is revenue moved with no cash', () => {
   assert.deepEqual(osm('2026-09'), [
-    ['auto-glprepaid-GL019115', -27204.2, 'timing', 'Prepaid rent received, not yet earned (2033)'],
+    ['auto-glprepaid-GL019115', -27204.2, 'timing', 'Prepaid rent received, not yet earned (2033 Prepaid Rent - OneStory)'],
     ['auto-glnocash-GL019115', 316.84, 'other', 'Revenue the GL moved with no cash: OneStory Marshall Acquisition & Capitalization FYE 26'],
   ]);
   assert.deepEqual(d['2026-09'].noCashInterest.map((x) => x.amount), [576.13]);
 });
 
 test('Prepaid rent: released with no cash, it comes back into revenue, linked to the month it came in', () => {
-  assert.deepEqual(osm('2026-10'), [['auto-glprepaid-GL019200', 27204.2, 'timing', 'Prepaid rent earned (2033), received September 2026']]);
+  assert.deepEqual(osm('2026-10'), [['auto-glprepaid-GL019200', 27204.2, 'timing', 'Prepaid rent earned (2033 Prepaid Rent - OneStory), received September 2026']]);
   // The two cancel: received September, earned October.
   assert.equal(Math.round((osm('2026-09')[0][1] + osm('2026-10')[0][1]) * 100) / 100, 0);
+});
+
+test('Account names: built in, replaced by an uploaded chart of accounts', async () => {
+  const { acct, setAccountNames } = await import('../app/js/accounts.js');
+  assert.equal(acct('4030'), '4030 Rental Income - OneStory Marshall');
+  assert.equal(acct('99999'), '99999');
+  setAccountNames({ 2033: 'Prepaid Rent' });
+  assert.equal(acct('2033'), '2033 Prepaid Rent');
+  setAccountNames();
+  assert.equal(acct('2033'), '2033 Prepaid Rent - OneStory');
 });

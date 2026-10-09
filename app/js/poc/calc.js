@@ -14,6 +14,7 @@
 import { classifyWiseItems, wiseTotals, wiseTies, wiseSender, paypalRevenue, paypalTies } from './banks.js';
 import { stripeRevenue } from './stripe.js';
 import { round2, sum } from '../money.js';
+import { acct } from '../accounts.js';
 
 // gl = the cash account in Acumatica whose month-end balance the statement's ending balance
 // should match. revenueGl = the revenue line on the statement of activities it feeds, where the
@@ -248,7 +249,7 @@ export function statementAdjustments(rec, deposits = null) {
     for (const t of split.late) {
       adj.push({ id: `auto-stripelate-${t.id}`, account: 'cassOp', type: 'timing', label: 'Stripe money the GL recognizes as giving later', amount: -t.amount, auto: true, gl: t.late.glIn, evidence: 'both',
         note: `Not one of Stripe’s payouts: GL ${t.late.glIn} holds it in Stripe clearing; GL ${t.late.to.batch} (${t.late.to.date}) moves it to giving`,
-        why: 'Came into Cass through Stripe but wasn’t one of Stripe’s payouts (a gift through another Stripe account). The GL held it in Stripe clearing (1200) and recognizes it as giving in a later month, so it comes out now and is counted then.',
+        why: `Came into Cass through Stripe but wasn’t one of Stripe’s payouts (a gift through another Stripe account). The GL held it in ${acct('1200')} and recognizes it as giving in a later month, so it comes out now and is counted then.`,
         detail: [{ id: t.id, date: t.date, amount: t.amount, desc: t.desc, note: `${t.desc} — the GL recognizes it as giving on ${t.late.to.date} (${t.late.to.batch})` }] });
     }
     if (stripe.length) {

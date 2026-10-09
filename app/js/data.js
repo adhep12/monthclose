@@ -100,13 +100,18 @@ export async function loadTrialBalance(month) {
 
 export async function saveTrialBalance(tb) {
   await store.upsert('trial-balances', tb.month, tb);
-  // Keep the account names the JE export uses in step with the latest TB — only the names, so
-  // the rest of the settings keep whatever was saved (or the built-in defaults).
+  // Keep the account names the JE export uses in step with the latest TB.
+  await saveAccountNames(Object.fromEntries(Object.entries(tb.accounts).map(([a, x]) => [a, x.description])));
+}
+
+// Account names (from a trial balance or the chart of accounts): only the names, read fresh, so
+// the rest of the settings keep whatever was saved (or the built-in defaults).
+export async function saveAccountNames(names) {
   const saved = (await store.get('settings', 'fa-config')) || {};
-  const names = Object.fromEntries(Object.entries(tb.accounts).map(([a, x]) => [a, x.description]));
   const next = { ...saved, accountNames: { ...(saved.accountNames || {}), ...names } };
   await store.upsert('settings', 'fa-config', next);
   configCache = mergeConfig(next);
+  return configCache.accountNames;
 }
 
 export async function removeTrialBalance(month) {
