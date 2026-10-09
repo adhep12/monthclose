@@ -10,6 +10,7 @@ import { money, parseAmount, round2 } from '../money.js';
 import { fiscalYear, monthName, addMonths, lastDayOfMonth, monthOfDate, currentMonth } from '../fiscal.js';
 import { explain, uploadFile, filesAvailable } from '../store.js';
 import { when } from '../audit.js';
+import { statementName, renamed, statementTags } from '../naming.js';
 
 const SOURCE_LABEL = { statement: 'CDARS statement', workbook: 'old workbook', export: 'IntraFi export', typed: 'typed' };
 
@@ -48,10 +49,12 @@ export default async function (main, { user, rerender }) {
       if (r.type === 'skip') { toast(`${file.name}: ${r.why}`); return; }
       if (r.type === 'picture') { toast(`${file.name}: ${r.why}`, 'error'); return; }
       let fileKey = null;
-      if (filesAvailable()) { try { fileKey = (await uploadFile('statements', file))?.key || null; } catch { /* numbers still used */ } }
+      const stored = r.type === 'cdars' ? statementName({ account: 'cd', period: r.data.date, original: file.name })
+        : statementName({ account: 'IntraFiExport', period: month, original: file.name });
+      if (filesAvailable()) { try { fileKey = (await uploadFile('statements', renamed(file, stored)))?.key || null; } catch { /* numbers still used */ } }
       if (r.type === 'cdars') {
         const touched = applyCdarsStatement(cds, r.data, { user, file: file.name });
-        touched.forEach((cd) => { cd.files = { ...(cd.files || {}), [r.data.date]: { name: file.name, key: fileKey } }; });
+        touched.forEach((cd) => { cd.files = { ...(cd.files || {}), [r.data.date]: { name: stored, originalName: file.name, ...statementTags('cd', r.data.month), key: fileKey } }; });
         await persist(touched, `${file.name}: updated ${touched.map((c) => `…${c.last4}`).join(', ')} for ${monthName(r.data.month)}.`);
       } else if (r.type === 'intrafi-export') {
         const m = await askValue('Which month is this export for?', 'Accrued interest in the export runs through the day before you ran it — run on the 1st, it’s the month before.', { type: 'month', value: month, ok: 'Apply' });

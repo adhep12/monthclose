@@ -45,6 +45,16 @@ export const noLongDashes = (v) => (typeof v === 'string' ? v.replace(/\s*—\s*
 
 export async function downloadWorkbook(filename, sheets) {
   const XLSX = await loadXLSX();
+  XLSX.writeFile(buildWorkbook(XLSX, sheets), noLongDashes(filename));
+}
+
+// The same workbook as bytes, for putting in a zip (the audit binder).
+export async function workbookBytes(sheets) {
+  const XLSX = await loadXLSX();
+  return new Uint8Array(XLSX.write(buildWorkbook(XLSX, sheets), { type: 'array', bookType: 'xlsx' }));
+}
+
+function buildWorkbook(XLSX, sheets) {
   const wb = XLSX.utils.book_new();
   for (const { name, rows, cols, freeze } of sheets) {
     // A cell may be { v, z } to give it its own number format; other numbers get the accounting one.
@@ -58,7 +68,7 @@ export async function downloadWorkbook(filename, sheets) {
     if (freeze) ws['!freeze'] = freeze;
     XLSX.utils.book_append_sheet(wb, ws, noLongDashes(name).slice(0, 31));
   }
-  XLSX.writeFile(wb, noLongDashes(filename));
+  return wb;
 }
 
 // ---- Helpers shared by the parsers -------------------------------------------------------

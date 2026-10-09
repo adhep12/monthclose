@@ -10,8 +10,9 @@ import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks, depositHint, aliasList } from '../poc/gl-deposits.js';
 import { glBatchIndex, auditRows, auditSummary, assignRefs } from '../poc/audit-trail.js';
-import { parseGlRegister, parseStatementOfActivities, glChanges } from '../gl.js';
-import { readWorkbook, downloadWorkbook } from '../xlsx-io.js';
+import { parseStatementOfActivities } from '../gl.js';
+import { uploadGlRegister as uploadGl } from '../gl-upload.js';
+import { readWorkbook, downloadWorkbook, workbookBytes } from '../xlsx-io.js';
 import { confirmationState, confirmValues, stampEntered, stampBadge, logChange, nowIso, when } from '../audit.js';
 import { money, round2, sum, parseAmount } from '../money.js';
 import { fiscalYear, fyStart, addMonths, monthName, currentMonth } from '../fiscal.js';
@@ -203,7 +204,9 @@ function blank(month) {
   return { month, bank: {}, statements: {}, bankStatements: {}, excluded: {}, adjustments: [], dit: [], timing: {}, gl: {}, notes: '', log: [], autoConfirm: {} };
 }
 
-export default async function (main, { user, rerender, month: openMonthParam = null }) {
+// With `binder: { fy }`, nothing is drawn: it returns { workbook() }, the FY's Excel export as bytes,
+// for the audit binder.
+export default async function (main, { user, rerender, month: openMonthParam = null, binder = null }) {
   const relist = !listed || Date.now() - listed.at > LIST_FRESH_MS || !Object.keys(recentSaves).length;
   const [recs, glActs, cfg, cds, soas, sfList] = await Promise.all([relist ? loadPocMonths() : listed.recs, listGlActivity(), loadPocConfig(), loadCds(), listSoa(), listSfGiving().catch(() => [])]);
   if (relist) listed = { at: Date.now(), recs };
@@ -222,8 +225,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   const hasData = (r) => r && !r.source?.ditOnly;
   const nowFy = fiscalYear(addMonths(currentMonth(), -1));
   const years = [...new Set([...(cfg.fiscalYears || []), nowFy, ...recs.filter(hasData).map((r) => fiscalYear(r.month))])].sort();
-  let fy = Number(store.get(FY_KEY, '')) || nowFy;
-  if (!years.includes(fy)) fy = nowFy;
+  let fy = binder?.fy || Number(store.get(FY_KEY, '')) || nowFy;
+  if (!binder && !years.includes(fy)) fy = nowFy;
   const show = store.get(SHOW_KEY, 'stacked');
   const adjOpen = store.get(ADJ_OPEN_KEY, '') === '1';
   const pickFy = (y) => { store.set(FY_KEY, String(y)); rerender(); };
@@ -2021,33 +2024,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         g.typedAt ? h('button', { onclick: () => decide(m, (r) => { r.gl = {}; }, 'Cleared GL overrides', again, close) }, 'Clear override') : null));
   }
 
-  async function uploadGlRegister(file) {
-    try {
-      toast(`Reading ${file.name}… a full year takes a few seconds.`);
-      const { XLSX, wb } = await readWorkbook(file);
-      const res = parseGlRegister(XLSX, wb);
-      if (!(await ask('Load GL register', `${res.lines.toLocaleString()} journal lines for ${res.periods.map((p) => short(p.month)).join(', ')}. Each month is compared with its last upload, batch by batch: anything added, changed or removed is listed and kept in the month's GL history.`, { ok: `Load ${res.periods.length} months` }))) return false;
-      const report = [];
-      for (const p of res.periods) {
-        const before = glBy[p.month];
-        const ch = glChanges(before, p);
-        const entry = { at: nowIso(), by: user, file: file.name, runAt: res.runAt, batches: Object.keys(p.index).length,
-          ...(ch ? { added: ch.added.map((x) => x.batch), changed: ch.changed, removed: ch.removed } : { first: true }) };
-        const g = { ...p, fileName: file.name, runAt: res.runAt, uploadedBy: user, uploadedAt: nowIso(), history: [...(before?.history || []), entry].slice(-24) };
-        await saveGlActivity(g); glBy[p.month] = g; recentGl[p.month] = g;
-        if (ch && (ch.added.length || ch.changed.length || ch.removed.length)) {
-          report.push(`${monthName(p.month)}: ${[ch.added.length ? `${ch.added.length} new` : '', ch.changed.length ? `${ch.changed.length} changed (${ch.changed.slice(0, 4).map((x) => `${x.batch} ${money(x.was, { dash: false })} → ${money(x.now, { dash: false })}`).join(', ')}${ch.changed.length > 4 ? '…' : ''})` : '', ch.removed.length ? `${ch.removed.length} removed (${ch.removed.slice(0, 4).map((x) => `${x.batch} ${x.desc}`).join(', ')}${ch.removed.length > 4 ? '…' : ''})` : ''].filter(Boolean).join(' · ')}`);
-        }
-      }
-      if (report.length) await notify('GL loaded — what changed since the last upload', report);
-      else toast(`GL loaded for ${res.periods.length} months — nothing changed in months uploaded before.`);
-      return true;
-    } catch (err) { notify('Couldn’t load the GL register', [explain(err, '')]); return false; }
-  }
+  const uploadGlRegister = (file) => uploadGl(file, { user, glBy, onSaved: (g) => { recentGl[g.month] = g; } });
 
   // ---- Export: Excel workbook, or print / save as PDF ---------------------------------------
   // The sheet as it stands (every adjustment line opened up), plus where each number came from.
-  async function exportExcel() {
+  async function exportExcel({ bytes = false } = {}) {
     const stamp = `Exported ${new Date().toLocaleString()}${user ? ` by ${user}` : ''} · figures as imported and entered in the Proof of Cash app`;
     const all = rows.flatMap((r) => (r.toggle ? [{ ...r, label: 'Total Adjustments (all accounts)' }, ...adjRows().map((a) => ({ ...a, label: `    ${a.label}` }))] : r.indent ? [] : [r]));
     const pct = (d, g) => (d == null || !g ? null : { v: Math.round((d / g) * 1e6) / 1e6, z: '0.00%' });
@@ -2091,7 +2072,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           try { await saveRec(fresh); trails[m] = { rs, ...res }; break; } catch (err) { if (!err?.conflict || attempt) throw err; }
         }
       }
-    } catch (err) { toast(explain(err, 'Couldn’t save the reference numbers, so the export wasn’t made. Try again.'), 'error'); return; }
+    } catch (err) {
+      if (bytes) throw new Error(explain(err, 'Couldn’t save the proof of cash reference numbers.'));
+      toast(explain(err, 'Couldn’t save the reference numbers, so the export wasn’t made. Try again.'), 'error'); return;
+    }
     for (const { m, c, rec } of cols) {
       if (!c) continue;
       const t = trails[m];
@@ -2141,14 +2125,16 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
       if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
     }
+    const sheets = [
+      { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
+      { name: 'How to audit this', rows: readMeRows(stamp), cols: [30, 110] },
+      { name: 'Adjustments summary', rows: summary, cols: [10, 28, 44, 7, 15, 14, 15, 18], freeze: { ySplit: 1 } },
+      { name: 'Adjustments detail', rows: adj, cols: [15, 10, 26, 50, 32, 14, 22, 60, 12, 60, 60], freeze: { xSplit: 1, ySplit: 1 } },
+      { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
+    ];
+    if (bytes) return workbookBytes(sheets);
     try {
-      await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, [
-        { name: `FY${fy} Proof of Cash`, rows: sheetRows, cols: [44, 15, 13, ...months.flatMap(() => [15, 13])], freeze: { xSplit: 1, ySplit: 5 } },
-        { name: 'How to audit this', rows: readMeRows(stamp), cols: [30, 110] },
-        { name: 'Adjustments summary', rows: summary, cols: [10, 28, 44, 7, 15, 14, 15, 18], freeze: { ySplit: 1 } },
-        { name: 'Adjustments detail', rows: adj, cols: [15, 10, 26, 50, 32, 14, 22, 60, 12, 60, 60], freeze: { xSplit: 1, ySplit: 1 } },
-        { name: 'Checks', rows: checks, cols: [14, 24, 28, 90] },
-      ]);
+      await downloadWorkbook(`Proof of Cash FY${fy} ${new Date().toISOString().slice(0, 10)}.xlsx`, sheets);
     } catch (err) { toast(explain(err, 'Couldn’t build the Excel file.'), 'error'); }
   }
 
@@ -2227,6 +2213,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     scrollMemory[fy] = { y: window.scrollY, x: [...main.querySelectorAll('.screen-only .sheet')].map((el) => el.scrollLeft) };
     keepScroll();
   };
+
+  if (binder) return { workbook: () => exportExcel({ bytes: true }), months: cols.filter((x) => x.c).map((x) => x.m) };
 
   mount(main,
     h('div', { class: 'page-head' },
