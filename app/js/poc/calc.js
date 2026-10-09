@@ -482,8 +482,11 @@ export function computePoc(rec, { prior = null, gl = null, cd = null, glBalances
   // Accrued and realized CD interest come from the CD schedule when it has the month.
   const t = { ...(rec.timing || {}) };
   if (cd?.hasData) { t.accrued = cd.accrued; t.realizedPrior = cd.realized; t.fromSchedule = true; }
+  // Interest received inside another settlement, with no deposit of its own (gl.js noCashInterest).
+  t.noCashInterestItems = deposits?.noCashInterest || [];
+  t.noCashInterest = round2(sum(t.noCashInterestItems, (x) => x.amount));
   const revAdjusted = round2(bankRev + adjTotal + (ditChange || 0) + (t.restricted || 0) + (t.merchAR || 0));
-  const intAdjusted = round2(bankInt + (t.accrued || 0) - (t.realizedPrior || 0));
+  const intAdjusted = round2(bankInt + (t.accrued || 0) - (t.realizedPrior || 0) + (t.noCashInterest || 0));
 
   // GL figures: a number typed in the app (stamped typedAt) wins; then Acumatica (GL register or
   // statement of activities upload); then whatever came in with the old workbook.

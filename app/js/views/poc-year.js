@@ -9,7 +9,7 @@ import { monthSummary, cdSourcesFor, detachCdarsStatement, detachExport } from '
 import { computePoc, glFigures, BANK_SOURCES, balanceMethodInterest, ADJUSTMENT_TYPES, wiseOutgoingCheck, fidelityTransfers, statementTies, EVIDENCE, reviewableDeposits, defaultExclusions, exclusionInfo, stripeSplit } from '../poc/calc.js';
 import { attachFiles, ACCOUNT_FILES } from '../poc/attach.js';
 import { depositChecks, depositHint, aliasList } from '../poc/gl-deposits.js';
-import { glBatchIndex, auditRows, auditSummary, assignRefs } from '../poc/audit-trail.js';
+import { glBatchIndex, auditRows, auditSummary, assignRefs, NO_CASH_INTEREST } from '../poc/audit-trail.js';
 import { parseStatementOfActivities } from '../gl.js';
 import { uploadGlRegister as uploadGl } from '../gl-upload.js';
 import { readWorkbook, downloadWorkbook, workbookBytes } from '../xlsx-io.js';
@@ -51,6 +51,7 @@ export function adjDetail(a) {
   if (a.id === 'auto-glwise-fees') return 'Wise fees on incoming gifts';
   if (a.id?.startsWith('auto-glkey-')) return a.type === 'transfer' ? 'KeyBank deposits from our accounts' : a.amount > 0 ? 'KeyBank cash gifts spent before deposit' : 'KeyBank deposits that aren’t giving';
   if (a.id?.startsWith('auto-glnocash-')) return 'Revenue booked with no cash this month';
+  if (a.id?.startsWith('auto-glprepaid-')) return 'Prepaid rent (received before it’s earned)';
   if (a.id?.startsWith('auto-glfee-')) return 'Fees kept by giving platforms (Overflow)';
   if (a.id?.startsWith('auto-glrelease-')) return 'Revenue released from a liability';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
@@ -65,7 +66,7 @@ export function adjGroup(a) {
   if (id.startsWith('auto-ex-')) return a.type === 'prior-period' ? ADJ_GROUPS[4] : ADJ_GROUPS[2];
   if (id.startsWith('auto-glrev-')) return ADJ_GROUPS[2];
   if (id.startsWith('auto-glfee-')) return ADJ_GROUPS[3];
-  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-glrelease-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
+  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-glprepaid-') || id.startsWith('auto-glrelease-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
   if (id.startsWith('auto-glkey-')) return a.type === 'transfer' ? ADJ_GROUPS[0] : a.amount > 0 ? ADJ_GROUPS[3] : ADJ_GROUPS[2];
   if (id === 'auto-stripe-disputes' || id.startsWith('auto-glstripe-') || id.startsWith('auto-glpaypal-') || id === 'auto-glwise-fees') return ADJ_GROUPS[3];
   // Entered by hand, or from the workbook: by the type chosen.
@@ -338,6 +339,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     { section: 'Adjustments for Timing' },
     { label: 'Plus Accrued Interest', int: (c) => c.timing.accrued || 0 },
     { label: 'Less realized accrued interest from prior period', int: (c) => -(c.timing.realizedPrior || 0) },
+    { label: NO_CASH_INTEREST, int: (c) => c.timing.noCashInterest || null, noCashInt: true,
+      hint: 'Interest the GL booked with no cash or investment account on the other side: received inside another settlement (Sep 2026: interest on the OneStory escrow, credited on the closing statement, GL019115).' },
     { label: 'Change in Restricted Revenue', rev: (c) => c.timing.restricted || null },
     { label: 'Merchandise AR', rev: (c) => c.timing.merchAR || null },
     { label: 'Bank Revenue - Adjusted', rev: (c) => c.revAdjusted, int: (c) => c.intAdjusted, strong: true },
@@ -364,6 +367,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     if (r.ditDetail) return () => openDit(m);
     if (r.dit) return () => openDit(m);
     if (r.gl) return () => openGl(m);
+    if (r.noCashInt) return () => openNoCashInterest(m);
     void kind;
     return null;
   }
@@ -633,6 +637,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
+          id === 'osmOp' ? osmLiabilities(m) : null,
           accountJeBlock(rec, id, jeCtx(() => draw(), { setSentAs: async (x, as) => {
             rec.paypalSentAs = { ...(rec.paypalSentAs || {}), [x.key]: { as, by: user, at: nowIso() } };
             logChange(rec, user, `PayPal payment sent ${x.date} ${x.desc} ${money(x.amount, { dash: false })}: booked as ${as === 'refund' ? 'a refund to a donor (4012)' : 'software (8030)'}`);
@@ -668,6 +673,34 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         } catch (err) { toast(explain(err, 'Couldn’t update the CD schedule.'), 'error'); }
       },
     }));
+  }
+
+  // OneStory Marshall's liabilities from the GL, month by month to this one: prepaid rent (2033,
+  // rent received before it's earned) and tenants' security deposits (2032, held, never revenue).
+  function osmLiabilities(m) {
+    const ms = months.filter((x) => x <= m && glBy[x]?.accounts);
+    const rows = [];
+    const bal = { 2033: 0, 2032: 0 };
+    for (const x of ms) {
+      const a = glBy[x].accounts;
+      const r = { m: x };
+      for (const acct of ['2033', '2032']) {
+        const net = round2(-(a[acct] || 0)); // a credit adds to what's held
+        bal[acct] = round2(bal[acct] + net);
+        r[acct] = net; r[`bal${acct}`] = bal[acct];
+      }
+      if (r['2033'] || r['2032'] || rows.length) rows.push(r);
+    }
+    if (!rows.length) return null;
+    return h('div', {}, h('h3', {}, 'Held for tenants (from the GL)'),
+      h('p', { class: 'muted small' }, 'Prepaid rent is rent received before it’s earned: it comes out of revenue the month it arrives and back in the month the GL releases it (Dr 2033, Cr 4030, no cash), both on the sheet under Timing. September 2026’s 27,204.20 is the whole closing credit (October rent 26,459.07 plus 745.13 of 9/30 rent), to be released at once. Security deposits are held and never become revenue.'),
+      table([
+        { label: 'Month', cell: (r) => monthName(r.m) },
+        { label: 'Prepaid rent in (out)', num: true, cell: (r) => money(r['2033']) },
+        { label: 'Prepaid rent held', num: true, cell: (r) => money(r.bal2033, { dash: false }) },
+        { label: 'Security deposits in (out)', num: true, cell: (r) => money(r['2032']) },
+        { label: 'Security deposits held', num: true, cell: (r) => money(r.bal2032, { dash: false }) },
+      ], rows));
   }
 
   // Money out of Wise is never revenue. Sent to one of our own accounts, it should land there — and
@@ -987,6 +1020,31 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       close?.(true);
     } catch (err) { toast(explain(err, 'Couldn’t save that.'), 'error'); }
   }
+  // Interest the GL booked with no deposit of its own: each entry, with Confirm (rec.intConfirm,
+  // by batch) once someone has checked it against the settlement document.
+  const intItems = (m) => (cols.find((x) => x.m === m)?.c?.timing?.noCashInterestItems || []);
+  const intToConfirm = (m) => intItems(m).filter((x) => !byMonth[m]?.intConfirm?.[x.batch] || Math.abs(byMonth[m].intConfirm[x.batch].amount - x.amount) >= 0.005);
+  function noCashInterestTable(m, close, { onlyTodo = false } = {}) {
+    const again = { kind: 'nocashint', m };
+    const items = onlyTodo ? intToConfirm(m) : intItems(m);
+    const conf = (x) => { const k = byMonth[m]?.intConfirm?.[x.batch]; return k && Math.abs(k.amount - x.amount) < 0.005 ? k : null; };
+    return table([
+      { label: 'Date', cell: (x) => x.date },
+      { label: 'GL entry', cell: (x) => h('span', { class: 'wrap' }, `${x.batch} · ${x.desc}`) },
+      { label: 'Amount', num: true, cell: (x) => money(x.amount) },
+      { label: 'Evidence', cell: () => h('span', { class: 'small' }, 'GL (no bank document): check it against the settlement document') },
+      { label: 'Status', cell: (x) => (conf(x) ? statusCell({ state: 'confirmed', by: conf(x).by, at: conf(x).at }) : statusCell({ state: 'todo' })) },
+      { label: '', cell: (x) => actionsCell(conf(x)
+        ? { more: [h('button', { class: 'small-btn', onclick: () => decide(m, (r) => { if (r.intConfirm) delete r.intConfirm[x.batch]; }, `Undid confirmation: interest without a deposit ${x.batch} ${money(x.amount, { dash: false })}`, again, close) }, 'Undo confirm')] }
+        : { confirm: () => decide(m, (r) => { r.intConfirm = { ...(r.intConfirm || {}), [x.batch]: { amount: x.amount, by: user, at: nowIso() } }; }, `Confirmed interest without a deposit: ${x.batch} ${money(x.amount, { dash: false })}`, again, close) }) },
+    ], items);
+  }
+  async function openNoCashInterest(m) {
+    await panel(`${NO_CASH_INTEREST} — ${monthName(m)}`, (body, close) => mount(body,
+      h('p', { class: 'muted small' }, 'Interest income (4050) the GL booked with no cash or investment account on the other side: received inside another settlement, not as a deposit of its own, so no bank statement lists it. September 2026: interest on the OneStory escrow, credited on the closing statement (IBA Interest). Check each against its settlement document and confirm it.'),
+      intItems(m).length ? noCashInterestTable(m, close) : h('p', { class: 'muted' }, 'None this month.')), { wide: true });
+  }
+
   // How a deposit on the statement counts: revenue, or taken out (and why).
   // Which pop-up a decision was made in (an adjustment group), and the line itself, are kept with
   // it: a line decided out of a group (counted as revenue, moved to another group) is still listed
@@ -1830,6 +1888,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     const out = [];
     const add = (what, n, detail, go, kind = 'warn', inline = null) => { if (n) out.push({ what, n, detail, go, kind, inline }); };
     const missing = (c.warnings || []).filter((w) => ['operating', 'incoming', 'outgoing'].includes(w.kind));
+    const intOpen = intToConfirm(m);
+    add('Interest without a deposit to confirm', intOpen.length, intOpen.map((x) => `${x.batch} ${money(x.amount, { dash: false })}`).join('; '), () => openNoCashInterest(m), 'warn',
+      (close) => noCashInterestTable(m, close, { onlyTodo: true }));
     add('Statements missing', missing.length, missing.map((w) => w.text).join(' '), () => openMonth(m), 'warn',
       () => h('p', { class: 'small' }, 'Attach them in the month’s pop-up (or drop them on the Cass Operating cell).'));
     const other = (c.warnings || []).filter((w) => !['operating', 'incoming', 'outgoing'].includes(w.kind));
@@ -2083,9 +2144,9 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         // The month as a real date shown "Feb 2026", so Excel's filter lists the months by year, in order.
         const period = { v: new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1, 12), z: 'mmm yyyy' };
         for (const r of t.rs) adj.push([r.ref, period, r.group, r.what, r.who, r.amount, r.evidence, r.bank, r.glBatch, r.gl, r.why]);
-        const rowTotal = Object.fromEntries(ADJ_GROUPS.map((k) => [k, adjFor(k)(c)]));
+        const rowTotal = { ...Object.fromEntries(ADJ_GROUPS.map((k) => [k, adjFor(k)(c)])), [NO_CASH_INTEREST]: c.timing.noCashInterest || 0 };
         const sm = auditSummary(t.rs);
-        for (const k of ADJ_GROUPS) {
+        for (const k of [...ADJ_GROUPS, NO_CASH_INTEREST]) {
           const xs = sm.filter((x) => x.group === k);
           if (!xs.length) continue;
           const tot = round2(sum(xs, (x) => x.total));
@@ -2123,6 +2184,10 @@ export default async function (main, { user, rerender, month: openMonthParam = n
       if (dep?.keyBank) { const kl = c.lines.find((x) => x.id === 'keyOp'); if (kl?.rev != null) checks.push([monthName(m), 'KeyBank deposits vs GL', Math.abs((kl?.rev || 0) - dep.keyBank.glIn) < 0.005 ? 'Match' : 'DIFFERENT', `Statement ${money(kl?.rev || 0, { dash: false })}; GL into 1061 ${money(dep.keyBank.glIn, { dash: false })}`]); }
       for (const r of (dep?.dit?.rows || []).filter((x) => x.overridden && x.settled)) checks.push([monthName(m), 'Deposit in transit overridden*', 'AGAINST THE STATEMENT', `${r.desc} ${money(r.amount, { dash: false })}: ${r.evidence}; set ${r.counts ? 'in transit' : 'not in transit'} by ${r.choice.by} — ${r.choice.note || ''}`]);
       if (dep?.dit) checks.push([monthName(m), 'Deposits in transit', dep.dit.flagged ? `${dep.dit.flagged} TO CONFIRM` : 'From the GL', `${money(dep.dit.total, { dash: false })}${dep.dit.workbookTotal != null ? `; the old workbook had ${money(dep.dit.workbookTotal, { dash: false })}` : ''}`]);
+      for (const x of c.timing.noCashInterestItems || []) {
+        const k = rec?.intConfirm?.[x.batch];
+        checks.push([monthName(m), 'Interest without a deposit', k && Math.abs(k.amount - x.amount) < 0.005 ? `Confirmed (${k.by})` : 'NOT CONFIRMED', `${x.batch} ${x.date} ${x.desc}: ${money(x.amount, { dash: false })} of 4050 with no deposit; evidence is the GL entry and the settlement document.`]);
+      }
       if (c.diffRev != null) checks.push([monthName(m), 'Revenue difference', money(c.diffRev, { dash: false }), c.glRev ? `${((c.diffRev / c.glRev) * 100).toFixed(2)}% of GL revenue (${c.glSource || 'GL'})` : '']);
     }
     const sheets = [
@@ -2256,6 +2321,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     else if (r.kind === 'account') openAccount(r.id, r.m);
     else if (r.kind === 'month') openMonth(r.m);
     else if (r.kind === 'gl') openGl(r.m);
+    else if (r.kind === 'nocashint') openNoCashInterest(r.m);
     else if (r.kind === 'todo') openTodo(r.m);
     else if (r.kind === 'aliases') openAliases();
     else if (r.kind === 'sf') openSfMonth(r.m);

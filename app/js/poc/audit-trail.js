@@ -22,6 +22,10 @@ const md = (d) => (d ? `${Number(d.slice(5, 7))}/${d.slice(8, 10)}` : '');
 const BATCH = /\b((?:GL|AR|AP|CA|IN)\d{5,})\b/;
 const PLUMBING = /^Trnsfr (from|to) Checking Acct/i;
 
+// Interest the GL booked with no deposit of its own (gl.js noCashInterest): its own sheet row on
+// the interest side, and its own group in the audit tabs, so it never mixes into revenue's.
+export const NO_CASH_INTEREST = 'Plus interest received without a deposit';
+
 // Every GL batch the uploads know, by Acumatica's batch number: its date, description, what it
 // booked (cash side included) and, for batches that touch a bank account, its lines.
 export function glBatchIndex(glBy = {}) {
@@ -38,6 +42,7 @@ export function glBatchIndex(glBy = {}) {
     for (const x of g?.keyReceipts || []) put(m, x, '1061');
     for (const x of g?.wiseReceipts || []) put(m, x, '1013');
     for (const x of [...(g?.noCashRevenue || []), ...(g?.stripeReclass || [])]) put(m, x, null);
+    for (const x of g?.noCashInterest || []) put(m, { ...x, accounts: { 4050: x.amount } }, null);
     for (const x of g?.paypalRefunds || []) put(m, { ...x, accounts: { 4012: -x.amount } }, null);
   }
   return out;
@@ -132,6 +137,22 @@ export function auditRows({ m, rec, c, glIndex = new Map(), priorDeposits = null
   if (c.ditChange != null) {
     for (const x of ditList(dep?.dit, rec)) rows.push(ditRow(x, 1, `Deposit in transit at the end of ${monthLabel(m)}`));
     if (!c.priorDitMissing) for (const x of ditList(priorDeposits?.dit, priorRec)) rows.push(ditRow(x, -1, `${monthLabel(priorMonth(m))}’s deposit in transit, cleared this month`));
+  }
+  // Interest received without a deposit (an escrow's interest credited on a closing statement):
+  // no bank document, so the GL entry and the settlement document are the evidence.
+  for (const x of c.timing?.noCashInterestItems || []) {
+    const b = glIndex.get(x.batch);
+    const ok = rec?.intConfirm?.[x.batch];
+    rows.push({
+      key: `nocashint|${x.batch}`, month: m, group: NO_CASH_INTEREST, line: NO_CASH_INTEREST,
+      what: `Interest booked with no deposit of its own — ${x.desc}`, who: 'Received inside another settlement',
+      date: x.date || '', amount: round2(x.amount),
+      evidence: EVIDENCE.gl.label, evidenceKey: 'gl',
+      bank: 'None: no deposit of its own; the settlement document (e.g. a closing statement) shows it',
+      glBatch: x.batch,
+      gl: b ? [`${md(b.date)} ${b.desc || ''}`.trim(), `Cr 4050 ${money2(x.amount)}`].filter(Boolean).join(' · ') : `Cr 4050 ${money2(x.amount)}`,
+      why: `Interest income the GL booked with no cash or investment account on the other side: received inside another settlement, so no statement lists it.${ok ? ` Confirmed by ${ok.by}${ok.at ? `, ${String(ok.at).slice(0, 10)}` : ''}${ok.note ? `: “${ok.note}”` : ''}.` : ' Not confirmed yet.'}`,
+    });
   }
   // Two lines alike in every way (the same fee twice on one day) are told apart by their order.
   const seen = {};
