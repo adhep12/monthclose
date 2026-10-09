@@ -85,7 +85,7 @@ export const WISE_GL = '1013';
 export const PAYPAL_GL = '1012';
 // Accounts where revenue arrives as cash: a revenue entry with none of these on its other side
 // had no cash this month (a sale on account, a gift reclassed to a liability).
-const CASH_SIDE = ['1100', '1012', '1013', '1015', '1200', '1020', '1060', '1061', '2041'];
+const CASH_SIDE = ['1100', '1110', '1111', '1012', '1013', '1015', '1200', '1020', '1060', '1061', '2041'];
 function cashReceipts(batches, cashGl = CASS_GL) {
   const out = [];
   for (const b of batches) {

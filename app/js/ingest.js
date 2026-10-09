@@ -1,7 +1,7 @@
 // Works out what an uploaded file is and parses it. Everything is read in the browser.
 
 import { pdfLines } from './pdf-text.js';
-import { looksLikeCass, parseCassStatement } from './poc/cass.js';
+import { looksLikeCass, parseCassStatement, osmAccountOf, osmStatement } from './poc/cass.js';
 import { detectIntrafi, parseCdarsStatement, parseIcsStatement, parseIntrafiExport } from './cd/intrafi.js';
 import { looksLikeStripeMonthly, parseStripeMonthly } from './poc/stripe.js';
 import { readWorkbook } from './xlsx-io.js';
@@ -20,6 +20,8 @@ export async function readStatementFile(file) {
     const lines = await pdfLines(await file.arrayBuffer());
     // A scanned statement is just pictures of pages — there's no text in it to read.
     if (!lines.length) return { type: 'picture', scanned: true, data: {}, why: SCANNED };
+    const osm = osmAccountOf(lines);
+    if (osm) return { type: 'bank', data: osmStatement(lines, osm) };
     if (looksLikeCass(lines)) return { type: 'cass', data: parseCassStatement(lines) };
     const k = detectIntrafi(lines);
     if (k === 'cdars') return { type: 'cdars', data: parseCdarsStatement(lines) };

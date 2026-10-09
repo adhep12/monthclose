@@ -29,7 +29,7 @@ const ADJ_OPEN_KEY = 'monthclose:poc-adj-open';
 const UNDOABLE = ['ics', 'cd', 'delap', 'tschetter'];
 const TYPED_FIELDS = ['rev', 'int', 'ending', 'priorEnding', 'netDeposits', 'fees', 'beginning', 'feesYtd'];
 // Row order of the workbook's "Per Bank Statement" block.
-const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp'];
+const SHEET_ORDER = ['wise', 'paypal', 'stripe', 'keyOp', 'keyMM', 'ics', 'cd', 'delap', 'tschetter', 'cassOp', 'osmOp', 'osmSav'];
 const label = (id) => BANK_SOURCES.find((s) => s.id === id)?.label || id;
 const short = (m) => monthName(m, { short: true }).split(' ')[0];
 const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } } };
@@ -269,10 +269,11 @@ export default async function (main, { user, rerender, month: openMonthParam = n
   // Where a figure came from, in words. Figures typed in the app carry who entered them; the
   // workbook import's figures don't.
   const sourceOf = (l) => (l.from === 'typed' ? (l.enteredBy ? 'Typed' : 'Workbook import') : l.from || 'Workbook import');
-  const usedAccounts = SHEET_ORDER.filter((id) => cols.some((x) => x.rec && hasFig(line(x.c, id))));
+  // An account is expected from the first month it has a figure (OneStory's from September 2026).
+  const firstMonth = Object.fromEntries(SHEET_ORDER.map((id) => [id, cols.find((x) => x.rec && hasFig(line(x.c, id)))?.m || null]));
   const waitingOn = (x) => {
     if (!x.rec) return ['nothing attached'];
-    const out = usedAccounts.filter((id) => !hasFig(line(x.c, id))).map(label);
+    const out = SHEET_ORDER.filter((id) => firstMonth[id] && firstMonth[id] <= x.m && !hasFig(line(x.c, id))).map(label);
     if ((x.c.warnings || []).some((w) => ['operating', 'incoming', 'outgoing'].includes(w.kind))) out.push('a Cass statement');
     if (x.c.diffRev == null) out.push('the GL');
     return out;
@@ -918,7 +919,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         c?.warnings?.length ? h('div', { class: 'notice warn' }, h('ul', {}, c.warnings.map((w) => h('li', {}, w.text)))) : null,
 
         h('h3', {}, 'Statements'),
-        dropTarget(h('label', { class: 'drop-zone' }, h('strong', {}, 'Drop statements here'), h('span', { class: 'drop-hint' }, ' or click to choose — Cass (Operating, Incoming, Outgoing), Stripe CSV, ICS, CDARS, Wise, PayPal, KeyBank, any number at once'), input), onFiles),
+        dropTarget(h('label', { class: 'drop-zone' }, h('strong', {}, 'Drop statements here'), h('span', { class: 'drop-hint' }, ' or click to choose — Cass (Operating, Incoming, Outgoing), OneStory Marshall (Operating, Savings), Stripe CSV, ICS, CDARS, Wise, PayPal, KeyBank, any number at once'), input), onFiles),
         attached.length ? table([
           { label: 'Statement', cell: (x) => x.label },
           { label: 'File', cell: (x) => h('span', { class: 'break' }, x.s.fileName || '') },
