@@ -51,6 +51,7 @@ export function adjDetail(a) {
   if (a.id === 'auto-glwise-fees') return 'Wise fees on incoming gifts';
   if (a.id?.startsWith('auto-glkey-')) return a.type === 'transfer' ? 'KeyBank deposits from our accounts' : a.amount > 0 ? 'KeyBank cash gifts spent before deposit' : 'KeyBank deposits that aren’t giving';
   if (a.id?.startsWith('auto-glnocash-')) return 'Revenue booked with no cash this month';
+  if (a.id?.startsWith('auto-glprepaid-')) return 'Prepaid rent (received before it’s earned)';
   if (a.id?.startsWith('auto-glfee-')) return 'Fees kept by giving platforms (Overflow)';
   if (a.id?.startsWith('auto-glrelease-')) return 'Revenue released from a liability';
   return a.label.trim().replace(/\s*-\s*plus \(minus\)?\s*$/i, '').replace(/^\((.*)\)$/, '$1').trim();
@@ -65,7 +66,7 @@ export function adjGroup(a) {
   if (id.startsWith('auto-ex-')) return a.type === 'prior-period' ? ADJ_GROUPS[4] : ADJ_GROUPS[2];
   if (id.startsWith('auto-glrev-')) return ADJ_GROUPS[2];
   if (id.startsWith('auto-glfee-')) return ADJ_GROUPS[3];
-  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-glrelease-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
+  if (id.startsWith('auto-glnocash-') || id.startsWith('auto-glprepaid-') || id.startsWith('auto-glrelease-') || id.startsWith('auto-stripelate-') || (id.startsWith('auto-glstripe-') && a.clearing)) return ADJ_GROUPS[4];
   if (id.startsWith('auto-glkey-')) return a.type === 'transfer' ? ADJ_GROUPS[0] : a.amount > 0 ? ADJ_GROUPS[3] : ADJ_GROUPS[2];
   if (id === 'auto-stripe-disputes' || id.startsWith('auto-glstripe-') || id.startsWith('auto-glpaypal-') || id === 'auto-glwise-fees') return ADJ_GROUPS[3];
   // Entered by hand, or from the workbook: by the type chosen.
@@ -338,6 +339,8 @@ export default async function (main, { user, rerender, month: openMonthParam = n
     { section: 'Adjustments for Timing' },
     { label: 'Plus Accrued Interest', int: (c) => c.timing.accrued || 0 },
     { label: 'Less realized accrued interest from prior period', int: (c) => -(c.timing.realizedPrior || 0) },
+    { label: 'Plus interest received without a deposit', int: (c) => c.timing.noCashInterest || null,
+      hint: 'Interest the GL booked with no cash or investment account on the other side: received inside another settlement (Sep 2026: interest on the OneStory escrow, credited on the closing statement, GL019115).' },
     { label: 'Change in Restricted Revenue', rev: (c) => c.timing.restricted || null },
     { label: 'Merchandise AR', rev: (c) => c.timing.merchAR || null },
     { label: 'Bank Revenue - Adjusted', rev: (c) => c.revAdjusted, int: (c) => c.intAdjusted, strong: true },
@@ -633,6 +636,7 @@ export default async function (main, { user, rerender, month: openMonthParam = n
           id === 'cassOp' ? cassSummary(c, m, close) : null,
           id === 'cassOp' || id === 'stripe' ? stripeCheckBox(c.stripeCheck, { rec, user, onChange: async () => { try { await commit(); } catch (err) { toast(explain(err, 'Couldn’t save.'), 'error'); } draw(); } }) : null,
           id === 'wise' ? wiseOutBox(rec, close) : null,
+          id === 'osmOp' ? osmLiabilities(m) : null,
           accountJeBlock(rec, id, jeCtx(() => draw(), { setSentAs: async (x, as) => {
             rec.paypalSentAs = { ...(rec.paypalSentAs || {}), [x.key]: { as, by: user, at: nowIso() } };
             logChange(rec, user, `PayPal payment sent ${x.date} ${x.desc} ${money(x.amount, { dash: false })}: booked as ${as === 'refund' ? 'a refund to a donor (4012)' : 'software (8030)'}`);
@@ -668,6 +672,34 @@ export default async function (main, { user, rerender, month: openMonthParam = n
         } catch (err) { toast(explain(err, 'Couldn’t update the CD schedule.'), 'error'); }
       },
     }));
+  }
+
+  // OneStory Marshall's liabilities from the GL, month by month to this one: prepaid rent (2033,
+  // rent received before it's earned) and tenants' security deposits (2032, held, never revenue).
+  function osmLiabilities(m) {
+    const ms = months.filter((x) => x <= m && glBy[x]?.accounts);
+    const rows = [];
+    const bal = { 2033: 0, 2032: 0 };
+    for (const x of ms) {
+      const a = glBy[x].accounts;
+      const r = { m: x };
+      for (const acct of ['2033', '2032']) {
+        const net = round2(-(a[acct] || 0)); // a credit adds to what's held
+        bal[acct] = round2(bal[acct] + net);
+        r[acct] = net; r[`bal${acct}`] = bal[acct];
+      }
+      if (r['2033'] || r['2032'] || rows.length) rows.push(r);
+    }
+    if (!rows.length) return null;
+    return h('div', {}, h('h3', {}, 'Held for tenants (from the GL)'),
+      h('p', { class: 'muted small' }, 'Prepaid rent is rent received before it’s earned: it comes out of revenue the month it arrives and back in the month the GL releases it (Dr 2033, Cr 4030, no cash), both on the sheet under Timing. September 2026’s 27,204.20 is the whole closing credit (October rent 26,459.07 plus 745.13 of 9/30 rent), to be released at once. Security deposits are held and never become revenue.'),
+      table([
+        { label: 'Month', cell: (r) => monthName(r.m) },
+        { label: 'Prepaid rent in (out)', num: true, cell: (r) => money(r['2033']) },
+        { label: 'Prepaid rent held', num: true, cell: (r) => money(r.bal2033, { dash: false }) },
+        { label: 'Security deposits in (out)', num: true, cell: (r) => money(r['2032']) },
+        { label: 'Security deposits held', num: true, cell: (r) => money(r.bal2032, { dash: false }) },
+      ], rows));
   }
 
   // Money out of Wise is never revenue. Sent to one of our own accounts, it should land there — and

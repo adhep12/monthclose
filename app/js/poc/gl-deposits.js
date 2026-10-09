@@ -482,6 +482,8 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
       const x = (res.fees ||= {})[f.account] || (res.fees[f.account] = { amount: 0, batches: [] });
       x.amount = round2(x.amount + f.amount); x.batches.push(f);
     }
+    // Interest the GL booked with no deposit behind it (gl.js noCashInterest).
+    res.noCashInterest = glBy[m]?.noCashInterest || [];
     for (const g of glBy[m]?.investmentGl || []) {
       const x = (res.investment ||= {})[g.account] || (res.investment[g.account] = { gain: 0, batches: [] });
       x.gain = round2(x.gain + g.gain); x.batches.push(g);
@@ -633,8 +635,27 @@ export function depositChecks({ recs, glBy, config = DEFAULT_POC_CONFIG, names =
     // Revenue the GL booked with no cash this month: merchandise sold on account (collected later,
     // when the receivable is paid), or a gift moved to a liability.
     for (const x of glBy[m]?.noCashRevenue || []) {
-      const amount = revenueIn(x.accounts);
+      let amount = revenueIn(x.accounts);
       if (Math.abs(amount) < 0.005) continue;
+      // OneStory prepaid rent (2033): rent received before it's earned. The part of the entry that
+      // moves revenue into (or out of) the liability is timing on its own line, linked to the
+      // month the money came in; whatever's left is revenue moved with no cash.
+      const prepaid = round2(-(x.accounts['2033'] || 0));
+      if ('4030' in x.accounts && Math.abs(prepaid) >= 0.005) {
+        const pid = `auto-glprepaid-${x.batch}`;
+        const into = prepaid < 0;
+        const from = into ? null : Object.keys(glBy).filter((mm) => mm < m).sort().reverse()
+          .find((mm) => (glBy[mm]?.noCashRevenue || []).some((y) => (y.accounts['2033'] || 0) > 0.005));
+        const padj = { id: pid, account: 'osmOp', type: 'timing', auto: true, gl: x.batch, amount: prepaid, evidence: 'gl',
+          label: into ? 'Prepaid rent received, not yet earned (2033)' : `Prepaid rent earned (2033)${from ? `, received ${monthLabel(from)}` : ''}`,
+          note: `GL ${x.batch} (${x.date}): ${into ? 'moves' : 'releases'} ${money2(Math.abs(prepaid))} ${into ? 'from rental income into' : 'from'} ${accountName('2033', names)}${into ? '' : ' into rental income'}.`,
+          why: into ? 'The money came in this month, but it’s rent for a later period: the GL holds it as prepaid rent (a liability) until it’s earned.'
+            : 'Rent received in an earlier month, recognized now: the GL takes it out of prepaid rent with no cash moving this month.',
+          detail: [{ date: x.date, amount: Math.abs(prepaid), desc: x.desc }] };
+        if (!dismissed[pid]) res.adjustments.push(padj);
+        amount = round2(amount - prepaid);
+        if (Math.abs(amount) < 0.005) continue;
+      }
       const id = `auto-glnocash-${x.batch}`;
       const onAccount = Object.keys(x.accounts).some((a) => /^12[1-9]\d$/.test(a));
       // OneStory Marshall's rent (4030) belongs with its own account's line.

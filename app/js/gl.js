@@ -54,6 +54,7 @@ export function parseGlRegister(XLSX, wb) {
     p.paypalRefunds = p.batches.filter((b) => b.refunds >= 0.005 && PAYPAL_GL in b.accounts)
       .map((b) => ({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount: round2(b.refunds) }));
     p.noCashRevenue = noCashRevenue(p.batches);
+    p.noCashInterest = noCashInterest(p.batches);
     p.stripeReclass = stripeReclasses(p.batches);
     p.investmentFees = investmentFees(p.batches);
     p.investmentGl = investmentGl(p.batches);
@@ -185,6 +186,21 @@ export function fingerprint(lines) {
 
 // Revenue entries with no cash on the other side: merchandise sold on account (Dr 1210), a gift
 // reclassed to a liability (Cr 2052). Stripe's own reclasses are kept separately.
+// Interest income (4050) booked with no cash or investment account on the other side: received
+// inside another settlement, not as its own deposit (Sep 2026: GL019115, 576.13 of interest on the
+// OneStory escrow, credited on the closing statement). CD interest (1150), ICS (1160), the money
+// markets and the investment gains (8999) all have their account on the other side.
+const NOT_NO_CASH = ['1060', '1120', '1150', '1160', '1170', '1171', '8999'];
+function noCashInterest(batches) {
+  const out = [];
+  for (const b of batches) {
+    if (!('4050' in b.accounts) || CASH_SIDE.some((a) => a in b.accounts) || NOT_NO_CASH.some((a) => a in b.accounts)) continue;
+    const amount = round2(-(b.accounts['4050'] || 0));
+    if (Math.abs(amount) >= 0.005) out.push({ batch: b.batch, date: b.date, desc: b.desc.slice(0, 120), amount });
+  }
+  return out;
+}
+
 function noCashRevenue(batches) {
   const out = [];
   for (const b of batches) {
